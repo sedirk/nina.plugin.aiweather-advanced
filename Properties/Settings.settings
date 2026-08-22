@@ -47,6 +47,9 @@
     <Setting Name="GeminiKey" Type="System.String" Scope="User">
       <Value Profile="(Default)" />
     </Setting>
+    <Setting Name="GeminiRequestEveryChecks" Type="System.Int32" Scope="User">
+      <Value Profile="(Default)">1</Value>
+    </Setting>
     <Setting Name="AnthropicKey" Type="System.String" Scope="User">
       <Value Profile="(Default)" />
     </Setting>

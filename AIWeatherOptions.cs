@@ -115,6 +115,17 @@ namespace AIWeather
             }
         }
 
+        public int GeminiRequestEveryChecks
+        {
+            get => Properties.Settings.Default.GeminiRequestEveryChecks;
+            set
+            {
+                Properties.Settings.Default.GeminiRequestEveryChecks = System.Math.Clamp(value, 1, 10000);
+                CoreUtil.SaveSettings(Properties.Settings.Default);
+                RaisePropertyChanged();
+            }
+        }
+
         public bool UseSunAltitudeLimit
         {
             get => Properties.Settings.Default.UseSunAltitudeLimit;

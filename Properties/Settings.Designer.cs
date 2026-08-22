@@ -203,6 +203,18 @@ namespace AIWeather.Properties {
 
         [global::System.Configuration.UserScopedSettingAttribute()]
         [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("1")]
+        public int GeminiRequestEveryChecks {
+            get {
+                return ((int)(this["GeminiRequestEveryChecks"]));
+            }
+            set {
+                this["GeminiRequestEveryChecks"] = value;
+            }
+        }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
         [global::System.Configuration.DefaultSettingValueAttribute("")]
         public string AnthropicKey {
             get {

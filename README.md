@@ -38,11 +38,13 @@ Choose how the plugin acquires sky images based on your camera setup:
 | **Local** | Built-in heuristic analysis | None (works offline) |
 | **GitHub Models** | ⚠️ Retired by GitHub on July 30, 2026 — no longer works; analyses fall back to Local | — |
 | **OpenAI** | GPT-4o, GPT-4o Mini | API key |
-| **Google Gemini** | Gemini 1.5 Flash, 1.5 Pro, 2.0 Flash | API key |
+| **Google Gemini** | Dynamically discovered vision-capable Gemini models | API key |
 | **Anthropic Claude** | Claude 3.5 Sonnet, Claude 3.5 Haiku, Claude 3 Opus | API key |
 | **Ollama / Custom** | Any vision model served by Ollama, LM Studio, llama.cpp or LocalAI (e.g. LLaVA, Qwen2.5-VL) | Local server URL (no API key) |
 
-If a cloud AI provider fails or times out (60-second limit), the plugin automatically falls back to local analysis so that safety monitoring is never interrupted.
+If a cloud AI provider fails or times out (60-second limit), the orchestration layer explicitly falls back to local analysis so that safety monitoring is never interrupted. A fallback remains machine-identifiable and can never be recorded as a successful online teacher label.
+
+Gemini has additional quota protection. The plugin distinguishes short-window rate limits from explicit quota exhaustion, honors Google's retry guidance, and suppresses repeated traffic while the same quota window is active. Daily quota exhaustion pauses online requests until the Pacific-time reset; temporary provider/network failures keep bounded exponential retry. The options panel can also call Gemini only once every `N` weather checks while the local safety analyzer still runs on every check.
 
 ### Safety Monitor Integration
 
@@ -110,6 +112,8 @@ In the plugin options, choose the capture mode that matches your camera:
 - **GitHub Models** was retired by GitHub on July 30, 2026 and no longer works for anyone; if selected, analyses fall back to the Local heuristic.
 - **Ollama / Custom** runs fully local: point it to your server URL (default `http://localhost:11434/v1`) and pick a vision model (e.g. `llava`, `qwen2.5vl`). Works with Ollama, LM Studio, llama.cpp, and LocalAI — no API key needed. Thinking-capable models (Gemma 4, Qwen 3.x, DeepSeek) reason at length before answering by default, which can multiply analysis times past the timeout: the "Disable model thinking" option (on by default) turns that off. Uncheck it only on fast hardware.
 
+For Gemini, **Gemini online request: once every N weather checks** controls API pacing. `1` keeps the original behavior. A larger value spends fewer requests without reducing camera capture or local safety freshness. For example, a 2-minute weather interval over an 8-hour night contains about 240 checks, so `N=12` schedules roughly 20 Gemini calls. Only those online-call checks can create teacher labels.
+
 ### Shared knowledge wiki
 
 While monitoring, the plugin appends a compact daily sky digest (condition and
@@ -139,6 +143,7 @@ local models. Leave it empty and nothing changes.
 ### 4. Set Monitoring Parameters
 
 - **Check Interval** (minutes): How often the plugin captures and analyzes an image. 5-10 minutes is recommended for active monitoring.
+- **Gemini online request ratio**: when Gemini is selected, call it once every `N` weather checks. Local safety analysis still runs on each intervening check.
 - **Cloud Coverage Threshold** (%): The maximum cloud coverage considered safe for imaging. Default is 70%. Lower values are more conservative.
 
 ### 5. Fail-safe

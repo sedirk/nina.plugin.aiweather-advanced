@@ -57,7 +57,15 @@ namespace AIWeather.Services
             AnalysisFailureCategory category,
             int attempts,
             long latencyMilliseconds,
-            int? httpStatus = null)
+            int? httpStatus = null,
+            string? providerFailureCode = null,
+            DateTime? retryAfterUtc = null,
+            string? quotaMetric = null,
+            string? quotaId = null,
+            int consecutiveQuotaFailures = 0,
+            bool requestSuppressed = false,
+            int requestEveryChecks = 0,
+            long requestSequence = 0)
         {
             return new AnalysisProvenance
             {
@@ -70,7 +78,15 @@ namespace AIWeather.Services
                 FailureCategory = category,
                 Attempts = Math.Max(0, attempts),
                 HttpStatus = httpStatus,
-                LatencyMilliseconds = Math.Max(0, latencyMilliseconds)
+                LatencyMilliseconds = Math.Max(0, latencyMilliseconds),
+                ProviderFailureCode = providerFailureCode,
+                RetryAfterUtc = retryAfterUtc,
+                QuotaMetric = quotaMetric,
+                QuotaId = quotaId,
+                ConsecutiveQuotaFailures = Math.Max(0, consecutiveQuotaFailures),
+                RequestSuppressed = requestSuppressed,
+                RequestEveryChecks = Math.Max(0, requestEveryChecks),
+                RequestSequence = Math.Max(0, requestSequence)
             };
         }
 

@@ -1,7 +1,7 @@
 {
   "Identifier": "AI Weather",
   "Name": "AI Weather - All Sky Camera Monitor",
-  "Version": "1.20.0.0",
+  "Version": "1.21.0.0",
   "MinimumApplicationVersion": "3.0.0.0",
   "Author": "Michele Bergo",
   "Homepage": "https://github.com/michelebergo/nina.plugin.aiweather",
@@ -24,6 +24,17 @@
     }
   },
   "ChangeLog": [
+    {
+      "Version": "1.21.0.0",
+      "Date": "2026-08-22",
+      "Changes": [
+        "Added quota-aware Gemini error handling: structured QuotaFailure, RetryInfo, quota metric and quota ID details are preserved instead of treating every HTTP 429 as an identical network failure",
+        "Stopped immediate retries after an explicit quota rejection; per-minute failures honor the provider delay and escalate repeated probes to 10, 30 and 60 minutes, while per-day failures pause until the documented Pacific-time reset",
+        "Added a process-wide circuit per API-key fingerprint and model so ordinary weather checks send no Gemini traffic while the same quota window remains active; local safety analysis continues and the next probe time is shown in the bilingual UI",
+        "Added a Gemini request ratio setting that calls the online teacher once every N weather checks while retaining local analysis on every check; the default of 1 preserves existing behavior and scheduled local checks never become teacher labels",
+        "Added deterministic smoke coverage for Gemini response parsing, minute/day quota backoff, open-circuit suppression, request pacing, fallback metadata and bilingual runtime summaries"
+      ]
+    },
     {
       "Version": "1.20.0.0",
       "Date": "2026-08-22",

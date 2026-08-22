@@ -224,6 +224,12 @@
                 </StackPanel>
                 <TextBlock Text="{Binding GeminiKeyStatus}" Margin="0,4,0,0" FontSize="10" Foreground="#AAAAAA"/>
                 <TextBlock Text="{i18n:Loc Options.UsedGemini}" Margin="0,4,0,0" FontSize="10" Foreground="#AAAAAA"/>
+                <TextBlock Text="{i18n:Loc Options.GeminiRequestEveryChecks}" Margin="0,10,0,2"/>
+                <TextBox Text="{Binding GeminiRequestEveryChecks, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
+                         Width="100" HorizontalAlignment="Left"/>
+                <TextBlock Text="{i18n:Loc Options.GeminiRequestEveryChecksHelp}"
+                           Margin="0,4,0,0" FontSize="10" Foreground="#AAAAAA"
+                           TextWrapping="Wrap" MaxWidth="440" HorizontalAlignment="Left"/>
             </StackPanel>
 
             <!-- Anthropic Key -->

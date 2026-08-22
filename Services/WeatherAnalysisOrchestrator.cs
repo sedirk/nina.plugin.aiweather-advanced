@@ -79,12 +79,33 @@ namespace AIWeather.Services
             var fallback = student.Clone();
             fallback.Provenance.IsFallback = true;
             fallback.Provenance.FailureCategory = teacherAttempt.Provenance.FailureCategory;
+            fallback.Provenance.ProviderFailureCode = teacherAttempt.Provenance.ProviderFailureCode;
+            fallback.Provenance.RetryAfterUtc = teacherAttempt.Provenance.RetryAfterUtc;
+            fallback.Provenance.QuotaMetric = teacherAttempt.Provenance.QuotaMetric;
+            fallback.Provenance.QuotaId = teacherAttempt.Provenance.QuotaId;
+            fallback.Provenance.ConsecutiveQuotaFailures =
+                teacherAttempt.Provenance.ConsecutiveQuotaFailures;
+            fallback.Provenance.RequestSuppressed = teacherAttempt.Provenance.RequestSuppressed;
+            fallback.Provenance.RequestEveryChecks = teacherAttempt.Provenance.RequestEveryChecks;
+            fallback.Provenance.RequestSequence = teacherAttempt.Provenance.RequestSequence;
             fallback.Description = BuildFallbackDescription(teacherAttempt, fallback.Description);
 
-            Logger.Warning(
-                $"Teacher analysis failed ({teacherAttempt.Provenance.Provider}/" +
-                $"{teacherAttempt.Provenance.Model}, {teacherAttempt.Provenance.FailureCategory}); " +
-                "using explicit local heuristic fallback");
+            var retrySummary = teacherAttempt.Provenance.RetryAfterUtc is DateTime retryAfterUtc
+                ? $", retry after {retryAfterUtc:O}"
+                : string.Empty;
+            var fallbackLog =
+                $"Teacher analysis did not produce an online result (" +
+                $"{teacherAttempt.Provenance.Provider}/{teacherAttempt.Provenance.Model}, " +
+                $"{teacherAttempt.Provenance.FailureCategory}{retrySummary}); " +
+                "using explicit local heuristic fallback";
+            if (teacherAttempt.Provenance.FailureCategory == AnalysisFailureCategory.ScheduledLocal)
+            {
+                Logger.Debug(fallbackLog);
+            }
+            else
+            {
+                Logger.Warning(fallbackLog);
+            }
 
             return new WeatherAnalysisBundle
             {
@@ -110,6 +131,22 @@ namespace AIWeather.Services
             var source = string.IsNullOrWhiteSpace(attempt.Provenance.Provider)
                 ? "online teacher"
                 : attempt.Provenance.Provider;
+
+            if (attempt.Provenance.FailureCategory == AnalysisFailureCategory.QuotaExhausted)
+            {
+                var retry = attempt.Provenance.RetryAfterUtc is DateTime retryAfterUtc
+                    ? $"; next online attempt after {retryAfterUtc:O}"
+                    : string.Empty;
+                return $"[Fallback: Local] {source} API quota unavailable{retry}. " +
+                       localDescription;
+            }
+
+            if (attempt.Provenance.FailureCategory == AnalysisFailureCategory.ScheduledLocal)
+            {
+                return $"[Scheduled: Local] {source} online request runs every " +
+                       $"{attempt.Provenance.RequestEveryChecks} checks. {localDescription}";
+            }
+
             return $"[Fallback: Local] {source} failed ({attempt.Provenance.FailureCategory}). {localDescription}";
         }
 

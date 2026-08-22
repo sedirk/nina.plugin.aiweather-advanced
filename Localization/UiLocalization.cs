@@ -94,6 +94,8 @@ namespace AIWeather.Localization
                 ["Options.GitHubToken"] = new("GitHub Personal Access Token:", "GitHub 个人访问令牌："),
                 ["Options.OpenAiKey"] = new("OpenAI API Key:", "OpenAI API 密钥："),
                 ["Options.GeminiKey"] = new("Google Gemini API Key:", "Google Gemini API 密钥："),
+                ["Options.GeminiRequestEveryChecks"] = new("Gemini online request: once every N weather checks:", "Gemini 在线调用：每 N 次天气检查调用一次："),
+                ["Options.GeminiRequestEveryChecksHelp"] = new("The local safety analysis still runs on every weather check. 1 preserves the current behavior; a larger N saves API quota. Example: with a 2-minute check interval and an 8-hour night, N=12 makes about 20 online calls per night. Only checks that actually call Gemini can produce teacher labels.", "本地安全分析仍会在每次天气检查时运行。设为 1 保持原有行为；增大 N 可节省 API 配额。例如：检查间隔为 2 分钟、每晚运行 8 小时时，N=12 约为每晚调用 20 次。只有实际调用 Gemini 的检查才能生成教师标签。"),
                 ["Options.AnthropicKey"] = new("Anthropic API Key:", "Anthropic API 密钥："),
                 ["Options.UsedOpenAi"] = new("Used with https://api.openai.com", "用于 https://api.openai.com"),
                 ["Options.UsedGemini"] = new("Used with Generative Language API", "用于 Generative Language API"),
@@ -225,6 +227,12 @@ namespace AIWeather.Localization
                 ["Runtime.OnlineTeacher"] = new("online teacher", "在线教师"),
                 ["Runtime.Fallback"] = new(" | fallback ({0})", "｜回退（{0}）"),
                 ["Runtime.FallbackDescription"] = new("[Fallback: Local] {0} failed ({1}). {2}", "[回退：本地] {0} 失败（{1}）。{2}"),
+                ["Runtime.FallbackQuota"] = new(" | API quota paused until {0}", "｜API 配额暂停至 {0}"),
+                ["Runtime.FallbackQuotaNoTime"] = new(" | API quota temporarily unavailable", "｜API 配额暂不可用"),
+                ["Runtime.FallbackQuotaDescription"] = new("[Fallback: Local] {0} API quota is temporarily unavailable; next online attempt after {1}. {2}", "[回退：本地] {0} API 配额暂不可用；下次在线尝试时间为 {1}。{2}"),
+                ["Runtime.FallbackQuotaDescriptionNoTime"] = new("[Fallback: Local] {0} API quota is temporarily unavailable. {1}", "[回退：本地] {0} API 配额暂不可用。{1}"),
+                ["Runtime.ScheduledLocal"] = new(" | scheduled local check (Gemini every {0} checks)", "｜按计划使用本地检查（Gemini 每 {0} 次调用一次）"),
+                ["Runtime.ScheduledLocalDescription"] = new("[Scheduled: Local] {0} is configured to run once every {1} weather checks; this check used local analysis. {2}", "[计划：本地] {0} 已设为每 {1} 次天气检查在线调用一次；本次使用本地分析。{2}"),
                 ["Runtime.LocalRainDescription"] = new("Rain detected - unsafe for imaging", "检测到降雨——不适合拍摄"),
                 ["Runtime.LocalFogDescription"] = new("Fog detected - poor imaging conditions", "检测到雾——拍摄条件较差"),
                 ["Runtime.LocalCloudDescription"] = new("{0} - {1:F1}% cloud coverage", "{0}——云量 {1:F1}%"),
@@ -410,6 +418,30 @@ namespace AIWeather.Localization
                         : string.IsNullOrWhiteSpace(result.Provenance.Provider)
                             ? Text("Runtime.OnlineTeacher")
                             : result.Provenance.Provider;
+
+                if (result.Provenance.FailureCategory == AnalysisFailureCategory.QuotaExhausted)
+                {
+                    return result.Provenance.RetryAfterUtc is DateTime retryAfterUtc
+                        ? Text(
+                            "Runtime.FallbackQuotaDescription",
+                            provider,
+                            FormatRetryAfter(retryAfterUtc),
+                            localDescription)
+                        : Text(
+                            "Runtime.FallbackQuotaDescriptionNoTime",
+                            provider,
+                            localDescription);
+                }
+
+                if (result.Provenance.FailureCategory == AnalysisFailureCategory.ScheduledLocal)
+                {
+                    return Text(
+                        "Runtime.ScheduledLocalDescription",
+                        provider,
+                        Math.Max(1, result.Provenance.RequestEveryChecks),
+                        localDescription);
+                }
+
                 return Text(
                     "Runtime.FallbackDescription",
                     provider,
@@ -422,11 +454,35 @@ namespace AIWeather.Localization
                 : result.Description;
         }
 
+        public static string FallbackStatus(AnalysisProvenance provenance)
+        {
+            if (provenance.FailureCategory == AnalysisFailureCategory.QuotaExhausted)
+            {
+                return provenance.RetryAfterUtc is DateTime retryAfterUtc
+                    ? Text("Runtime.FallbackQuota", FormatRetryAfter(retryAfterUtc))
+                    : Text("Runtime.FallbackQuotaNoTime");
+            }
+
+            if (provenance.FailureCategory == AnalysisFailureCategory.ScheduledLocal)
+            {
+                return Text(
+                    "Runtime.ScheduledLocal",
+                    Math.Max(1, provenance.RequestEveryChecks));
+            }
+
+            return Text("Runtime.Fallback", FailureCategory(provenance.FailureCategory));
+        }
+
         public static string FailureCategory(AnalysisFailureCategory category)
         {
             if (!IsChineseCulture())
             {
-                return category.ToString();
+                return category switch
+                {
+                    AnalysisFailureCategory.QuotaExhausted => "API quota temporarily unavailable",
+                    AnalysisFailureCategory.ScheduledLocal => "scheduled local check",
+                    _ => category.ToString()
+                };
             }
 
             return category switch
@@ -441,8 +497,22 @@ namespace AIWeather.Localization
                 AnalysisFailureCategory.SchemaRejected => "响应结构不合格",
                 AnalysisFailureCategory.Cancelled => "已取消",
                 AnalysisFailureCategory.ServiceRetired => "服务已停止",
+                AnalysisFailureCategory.QuotaExhausted => "API 配额暂不可用",
+                AnalysisFailureCategory.ScheduledLocal => "按计划使用本地检查",
                 _ => "未知错误"
             };
+        }
+
+        private static string FormatRetryAfter(DateTime retryAfterUtc)
+        {
+            var normalizedUtc = retryAfterUtc.Kind == DateTimeKind.Utc
+                ? retryAfterUtc
+                : DateTime.SpecifyKind(retryAfterUtc, DateTimeKind.Utc);
+            var local = normalizedUtc.ToLocalTime();
+            var format = local.Date == DateTime.Now.Date
+                ? "HH:mm:ss"
+                : "yyyy-MM-dd HH:mm:ss";
+            return local.ToString(format, CultureInfo.CurrentCulture);
         }
 
         public static string Boolean(bool value) => Text(value ? "Common.True" : "Common.False");

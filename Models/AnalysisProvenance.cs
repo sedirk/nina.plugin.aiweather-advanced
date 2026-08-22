@@ -35,7 +35,9 @@ namespace AIWeather.Models
         SchemaRejected,
         Cancelled,
         ServiceRetired,
-        Unknown
+        Unknown,
+        QuotaExhausted,
+        ScheduledLocal
     }
 
     public sealed class AnalysisProvenance
@@ -50,6 +52,14 @@ namespace AIWeather.Models
         public int Attempts { get; set; }
         public int? HttpStatus { get; set; }
         public long LatencyMilliseconds { get; set; }
+        public string? ProviderFailureCode { get; set; }
+        public DateTime? RetryAfterUtc { get; set; }
+        public string? QuotaMetric { get; set; }
+        public string? QuotaId { get; set; }
+        public int ConsecutiveQuotaFailures { get; set; }
+        public bool RequestSuppressed { get; set; }
+        public int RequestEveryChecks { get; set; }
+        public long RequestSequence { get; set; }
 
         public AnalysisProvenance Clone()
         {
@@ -64,7 +74,15 @@ namespace AIWeather.Models
                 FailureCategory = FailureCategory,
                 Attempts = Attempts,
                 HttpStatus = HttpStatus,
-                LatencyMilliseconds = LatencyMilliseconds
+                LatencyMilliseconds = LatencyMilliseconds,
+                ProviderFailureCode = ProviderFailureCode,
+                RetryAfterUtc = RetryAfterUtc,
+                QuotaMetric = QuotaMetric,
+                QuotaId = QuotaId,
+                ConsecutiveQuotaFailures = ConsecutiveQuotaFailures,
+                RequestSuppressed = RequestSuppressed,
+                RequestEveryChecks = RequestEveryChecks,
+                RequestSequence = RequestSequence
             };
         }
     }

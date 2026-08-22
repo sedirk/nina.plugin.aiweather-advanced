@@ -650,7 +650,7 @@ namespace AIWeather
 
                 var provenance = _currentAnalysis.Provenance;
                 var fallback = provenance.IsFallback
-                    ? UiLocalization.Text("Runtime.Fallback", UiLocalization.FailureCategory(provenance.FailureCategory))
+                    ? UiLocalization.FallbackStatus(provenance)
                     : string.Empty;
                 return UiLocalization.Text("Runtime.Source", provenance.Provider, provenance.Model, fallback);
             }

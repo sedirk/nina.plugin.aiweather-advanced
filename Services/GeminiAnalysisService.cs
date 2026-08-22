@@ -4,13 +4,11 @@ using System;
 using System.Drawing;
 using System.Drawing.Imaging;
 using System.Diagnostics;
-using System.Globalization;
 using System.IO;
 using System.Net;
 using System.Net.Http;
 using System.Text;
 using System.Text.Json;
-using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -19,20 +17,54 @@ namespace AIWeather.Services
     [System.Runtime.Versioning.SupportedOSPlatform("windows")]
     public class GeminiAnalysisService : IOnlineWeatherAnalysisService
     {
-        private static readonly HttpClient Http = new HttpClient();
+        private static readonly HttpClient SharedHttp = new HttpClient();
         private const int MaxAttempts = 3;
         private static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(60);
 
         private readonly string _apiKey;
         private readonly string _modelName;
+        private readonly HttpClient _http;
+        private readonly GeminiQuotaCircuitBreaker _quotaCircuit;
+        private readonly Func<DateTimeOffset> _utcNow;
+        private readonly int _requestEveryChecks;
+        private long _requestSequence;
         private bool _isInitialized;
 
-        public GeminiAnalysisService(string apiKey, string modelName)
+        public GeminiAnalysisService(
+            string apiKey,
+            string modelName,
+            int requestEveryChecks = 1)
+            : this(
+                apiKey,
+                NormalizeModelName(modelName),
+                SharedHttp,
+                GeminiQuotaCircuitRegistry.Get(apiKey, NormalizeModelName(modelName)),
+                () => DateTimeOffset.UtcNow,
+                requestEveryChecks)
+        {
+        }
+
+        internal GeminiAnalysisService(
+            string apiKey,
+            string modelName,
+            HttpClient http,
+            GeminiQuotaCircuitBreaker quotaCircuit,
+            Func<DateTimeOffset> utcNow,
+            int requestEveryChecks = 1)
         {
             _apiKey = apiKey;
             // The alias tracks Google's latest stable Flash release; concrete version IDs
             // get retired out from under a hardcoded fallback (gemini-2.0-flash was).
-            _modelName = string.IsNullOrWhiteSpace(modelName) ? "gemini-flash-latest" : modelName.Trim();
+            _modelName = NormalizeModelName(modelName);
+            _http = http ?? throw new ArgumentNullException(nameof(http));
+            _quotaCircuit = quotaCircuit ?? throw new ArgumentNullException(nameof(quotaCircuit));
+            _utcNow = utcNow ?? throw new ArgumentNullException(nameof(utcNow));
+            _requestEveryChecks = Math.Clamp(requestEveryChecks, 1, 10000);
+        }
+
+        private static string NormalizeModelName(string modelName)
+        {
+            return string.IsNullOrWhiteSpace(modelName) ? "gemini-flash-latest" : modelName.Trim();
         }
 
         public Task<bool> InitializeAsync(CancellationToken cancellationToken = default)
@@ -92,6 +124,41 @@ namespace AIWeather.Services
                         0,
                         stopwatch.ElapsedMilliseconds),
                     "Gemini API key is missing or the service was not initialized");
+            }
+
+            if (_quotaCircuit.TryGetActive(_utcNow(), out var activeQuota))
+            {
+                return BuildQuotaFailure(
+                    activeQuota,
+                    attempts: 0,
+                    stopwatch.ElapsedMilliseconds,
+                    httpStatus: null,
+                    requestSuppressed: true);
+            }
+
+            // Once a quota window expires, probe immediately even if this ordinary check
+            // would otherwise fall between paced online calls. Otherwise N=12 with a
+            // two-minute weather interval could silently postpone Google's first allowed
+            // probe by another 22 minutes after the displayed retry time.
+            var quotaProbeDue = activeQuota.ConsecutiveFailures > 0;
+
+            var requestSequence = Interlocked.Increment(ref _requestSequence);
+            if (!quotaProbeDue
+                && _requestEveryChecks > 1
+                && (requestSequence - 1) % _requestEveryChecks != 0)
+            {
+                Logger.Debug(
+                    $"Gemini online request intentionally skipped by pacing policy " +
+                    $"(check {requestSequence}, every {_requestEveryChecks} checks); " +
+                    "local analysis remains active");
+                return BuildScheduledLocal(requestSequence, stopwatch.ElapsedMilliseconds);
+            }
+
+            if (quotaProbeDue)
+            {
+                Logger.Info(
+                    $"Gemini quota pause expired; forcing one online probe now " +
+                    $"(scheduled check {requestSequence}, every {_requestEveryChecks} checks)");
             }
 
             try
@@ -158,15 +225,44 @@ namespace AIWeather.Services
 
                         Logger.Info($"Calling Gemini API (attempt {attempt}/{MaxAttempts})...");
 
-                        using var response = await Http.SendAsync(request, linkedCts.Token);
+                        using var response = await _http.SendAsync(request, linkedCts.Token);
                         var json = await response.Content.ReadAsStringAsync(linkedCts.Token);
 
                         if (!response.IsSuccessStatusCode)
                         {
+                            var serverRetryDelay = GetServerRetryDelay(response, json, _utcNow());
+                            var quota = GeminiQuotaParser.Parse(
+                                response.StatusCode,
+                                json,
+                                serverRetryDelay);
+                            if (quota.IsQuotaFailure)
+                            {
+                                var circuit = _quotaCircuit.RecordFailure(_utcNow(), quota);
+                                Logger.Warning(
+                                    $"Gemini API quota unavailable: HTTP {(int)response.StatusCode}; " +
+                                    $"immediate retries suppressed, next online attempt no earlier than " +
+                                    $"{circuit.RetryAfterUtc:O}; consecutive quota failures " +
+                                    $"{circuit.ConsecutiveFailures}; metric " +
+                                    $"{circuit.QuotaMetric ?? "unknown"}; quota id " +
+                                    $"{circuit.QuotaId ?? "unknown"}; daily quota " +
+                                    $"{circuit.IsDailyQuota}.");
+                                return BuildQuotaFailure(
+                                    circuit,
+                                    attempt,
+                                    stopwatch.ElapsedMilliseconds,
+                                    (int)response.StatusCode,
+                                    requestSuppressed: false);
+                            }
+
+                            if (_quotaCircuit.Reset())
+                            {
+                                Logger.Info("Gemini quota circuit reset after a non-quota API response");
+                            }
+
                             var isTransient = IsTransientStatus(response.StatusCode);
                             if (isTransient && attempt < MaxAttempts)
                             {
-                                var delay = GetRetryDelay(response, json, attempt);
+                                var delay = GetTransientRetryDelay(response, json, attempt);
                                 Logger.Warning(
                                     $"Gemini API temporarily unavailable: HTTP {(int)response.StatusCode}. " +
                                     $"Retrying in {delay.TotalSeconds:F1}s (attempt {attempt + 1}/{MaxAttempts}).");
@@ -178,6 +274,11 @@ namespace AIWeather.Services
                                 $"Gemini API error after {attempt} attempt(s): HTTP {(int)response.StatusCode}: " +
                                 TruncateForLog(json));
                             throw new GeminiApiException(response.StatusCode, json, attempt, isTransient);
+                        }
+
+                        if (_quotaCircuit.Reset())
+                        {
+                            Logger.Info("Gemini quota circuit closed after a successful API response");
                         }
 
                         Logger.Info("Gemini API responded, parsing response...");
@@ -213,7 +314,7 @@ namespace AIWeather.Services
                     }
                     catch (HttpRequestException ex) when (attempt < MaxAttempts)
                     {
-                        var delay = GetRetryDelay(null, null, attempt);
+                        var delay = GetTransientRetryDelay(null, null, attempt);
                         Logger.Warning(
                             $"Gemini network request failed: {ex.Message}. " +
                             $"Retrying in {delay.TotalSeconds:F1}s (attempt {attempt + 1}/{MaxAttempts}).");
@@ -301,131 +402,110 @@ namespace AIWeather.Services
             return code == 408 || code == 429 || code == 500 || code == 502 || code == 503 || code == 504;
         }
 
-        private static TimeSpan GetRetryDelay(HttpResponseMessage? response, string? responseBody, int attempt)
+        private OnlineAnalysisAttempt BuildQuotaFailure(
+            GeminiQuotaCircuitState circuit,
+            int attempts,
+            long latencyMilliseconds,
+            int? httpStatus,
+            bool requestSuppressed)
         {
-            var maximumServerDelay = TimeSpan.FromSeconds(30);
-            var retryAfter = response?.Headers.RetryAfter;
-            if (retryAfter?.Delta is TimeSpan delta && delta > TimeSpan.Zero)
+            var retryAfterUtc = circuit.RetryAfterUtc.UtcDateTime;
+            var action = requestSuppressed ? "API request skipped" : "API request rejected";
+            var reason =
+                $"Gemini quota unavailable; {action}; next online attempt after " +
+                $"{retryAfterUtc:O}";
+
+            if (requestSuppressed)
             {
-                return delta > maximumServerDelay ? maximumServerDelay : delta;
+                Logger.Info(
+                    $"Gemini quota circuit active; API request skipped until " +
+                    $"{circuit.RetryAfterUtc:O} (consecutive quota failures " +
+                    $"{circuit.ConsecutiveFailures})");
             }
 
-            if (retryAfter?.Date is DateTimeOffset retryDate)
+            return OnlineAnalysisAttempt.Failed(
+                AnalysisMetadata.FailedOnline(
+                    AnalysisOrigin.Gemini,
+                    "Gemini",
+                    _modelName,
+                    AnalysisFailureCategory.QuotaExhausted,
+                    attempts,
+                    latencyMilliseconds,
+                    httpStatus,
+                    providerFailureCode: circuit.ProviderFailureCode,
+                    retryAfterUtc: retryAfterUtc,
+                    quotaMetric: circuit.QuotaMetric,
+                    quotaId: circuit.QuotaId,
+                    consecutiveQuotaFailures: circuit.ConsecutiveFailures,
+                    requestSuppressed: requestSuppressed),
+                reason);
+        }
+
+        private OnlineAnalysisAttempt BuildScheduledLocal(
+            long requestSequence,
+            long latencyMilliseconds)
+        {
+            return OnlineAnalysisAttempt.Failed(
+                AnalysisMetadata.FailedOnline(
+                    AnalysisOrigin.Gemini,
+                    "Gemini",
+                    _modelName,
+                    AnalysisFailureCategory.ScheduledLocal,
+                    attempts: 0,
+                    latencyMilliseconds,
+                    providerFailureCode: "scheduled_local",
+                    requestSuppressed: true,
+                    requestEveryChecks: _requestEveryChecks,
+                    requestSequence: requestSequence),
+                $"Gemini pacing policy uses local analysis on this check; " +
+                $"online request runs every {_requestEveryChecks} checks");
+        }
+
+        private static TimeSpan GetTransientRetryDelay(
+            HttpResponseMessage? response,
+            string? responseBody,
+            int attempt)
+        {
+            var maximumMonitorDelay = TimeSpan.FromSeconds(30);
+            var serverDelay = GetServerRetryDelay(response, responseBody, DateTimeOffset.UtcNow);
+            if (serverDelay.HasValue)
             {
-                var requestedDelay = retryDate - DateTimeOffset.UtcNow;
-                if (requestedDelay > TimeSpan.Zero)
-                {
-                    return requestedDelay > maximumServerDelay
-                        ? maximumServerDelay
-                        : requestedDelay;
-                }
+                return serverDelay.Value > maximumMonitorDelay
+                    ? maximumMonitorDelay
+                    : serverDelay.Value;
             }
 
-            // Gemini commonly puts quota retry guidance in the JSON body as a
-            // google.rpc.RetryInfo duration (or in the human-readable message) without a
-            // Retry-After header. Respect it so retries do not make a 429 quota window worse.
-            if (TryGetGeminiRetryDelay(responseBody, out var geminiDelay))
-            {
-                return geminiDelay > maximumServerDelay ? maximumServerDelay : geminiDelay;
-            }
-
-            // Exponential backoff with jitter, as recommended for transient Gemini errors.
+            // Exponential backoff with jitter for network errors and provider 5xx responses.
+            // Explicit QuotaFailure responses never enter this loop.
             var exponentialSeconds = Math.Min(8.0, Math.Pow(2.0, attempt - 1));
             var jitterMilliseconds = Random.Shared.Next(150, 651);
             return TimeSpan.FromSeconds(exponentialSeconds) + TimeSpan.FromMilliseconds(jitterMilliseconds);
         }
 
-        private static bool TryGetGeminiRetryDelay(string? responseBody, out TimeSpan delay)
+        private static TimeSpan? GetServerRetryDelay(
+            HttpResponseMessage? response,
+            string? responseBody,
+            DateTimeOffset nowUtc)
         {
-            delay = TimeSpan.Zero;
-            if (string.IsNullOrWhiteSpace(responseBody))
+            var retryAfter = response?.Headers.RetryAfter;
+            if (retryAfter?.Delta is TimeSpan delta && delta > TimeSpan.Zero)
             {
-                return false;
+                return delta;
             }
 
-            try
+            if (retryAfter?.Date is DateTimeOffset retryDate)
             {
-                using var document = JsonDocument.Parse(responseBody);
-                if (document.RootElement.TryGetProperty("error", out var error))
+                var requestedDelay = retryDate - nowUtc;
+                if (requestedDelay > TimeSpan.Zero)
                 {
-                    if (error.TryGetProperty("details", out var details)
-                        && details.ValueKind == JsonValueKind.Array)
-                    {
-                        foreach (var detail in details.EnumerateArray())
-                        {
-                            if (detail.ValueKind == JsonValueKind.Object
-                                && detail.TryGetProperty("retryDelay", out var retryDelay)
-                                && retryDelay.ValueKind == JsonValueKind.String
-                                && TryParseGoogleDuration(retryDelay.GetString(), out delay))
-                            {
-                                return true;
-                            }
-                        }
-                    }
-
-                    if (error.TryGetProperty("message", out var message)
-                        && message.ValueKind == JsonValueKind.String
-                        && TryParseRetryDelayFromMessage(message.GetString(), out delay))
-                    {
-                        return true;
-                    }
+                    return requestedDelay;
                 }
             }
-            catch (JsonException)
-            {
-                // Some proxies return text or HTML instead of Google's normal JSON body.
-            }
 
-            return TryParseRetryDelayFromMessage(responseBody, out delay);
-        }
-
-        private static bool TryParseGoogleDuration(string? value, out TimeSpan delay)
-        {
-            delay = TimeSpan.Zero;
-            if (string.IsNullOrWhiteSpace(value) || !value.EndsWith("s", StringComparison.OrdinalIgnoreCase))
-            {
-                return false;
-            }
-
-            if (!double.TryParse(
-                    value.Substring(0, value.Length - 1),
-                    NumberStyles.Float,
-                    CultureInfo.InvariantCulture,
-                    out var seconds)
-                || seconds <= 0)
-            {
-                return false;
-            }
-
-            delay = TimeSpan.FromSeconds(seconds);
-            return true;
-        }
-
-        private static bool TryParseRetryDelayFromMessage(string? value, out TimeSpan delay)
-        {
-            delay = TimeSpan.Zero;
-            if (string.IsNullOrWhiteSpace(value))
-            {
-                return false;
-            }
-
-            var match = Regex.Match(
-                value,
-                @"(?i)\bretry\s+in\s+(?<seconds>\d+(?:\.\d+)?)s\b",
-                RegexOptions.CultureInvariant);
-            if (!match.Success
-                || !double.TryParse(
-                    match.Groups["seconds"].Value,
-                    NumberStyles.Float,
-                    CultureInfo.InvariantCulture,
-                    out var seconds)
-                || seconds <= 0)
-            {
-                return false;
-            }
-
-            delay = TimeSpan.FromSeconds(seconds);
-            return true;
+            var parsed = GeminiQuotaParser.Parse(
+                response?.StatusCode ?? (HttpStatusCode)0,
+                responseBody);
+            return parsed.RetryDelay;
         }
 
         private static string TruncateForLog(string value, int maxLength = 1000)

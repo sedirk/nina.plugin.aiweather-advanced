@@ -98,6 +98,7 @@ namespace AIWeather.Equipment
                     || e.PropertyName == nameof(Properties.Settings.Default.GitHubToken)
                     || e.PropertyName == nameof(Properties.Settings.Default.OpenAIKey)
                     || e.PropertyName == nameof(Properties.Settings.Default.GeminiKey)
+                    || e.PropertyName == nameof(Properties.Settings.Default.GeminiRequestEveryChecks)
                     || e.PropertyName == nameof(Properties.Settings.Default.AnthropicKey))
                 {
                     UpdateAnalysisService();
@@ -171,7 +172,8 @@ namespace AIWeather.Equipment
             {
                 _analysisService = new GeminiAnalysisService(
                     Properties.Settings.Default.GeminiKey,
-                    model);
+                    model,
+                    Properties.Settings.Default.GeminiRequestEveryChecks);
                 return;
             }
 

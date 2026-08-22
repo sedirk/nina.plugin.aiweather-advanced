@@ -334,6 +334,14 @@ namespace AIWeather
                 changed = true;
             }
 
+            var normalizedGeminiRequestEveryChecks = Math.Clamp(
+                Properties.Settings.Default.GeminiRequestEveryChecks, 1, 10000);
+            if (Properties.Settings.Default.GeminiRequestEveryChecks != normalizedGeminiRequestEveryChecks)
+            {
+                Properties.Settings.Default.GeminiRequestEveryChecks = normalizedGeminiRequestEveryChecks;
+                changed = true;
+            }
+
             var normalizedSampleEveryChecks = Math.Clamp(
                 Properties.Settings.Default.DatasetSampleEveryChecks, 1, 10000);
             if (Properties.Settings.Default.DatasetSampleEveryChecks != normalizedSampleEveryChecks)
@@ -1075,6 +1083,21 @@ namespace AIWeather
                 if (value < 1) value = 1;
                 if (value > 60) value = 60;
                 Properties.Settings.Default.CheckIntervalMinutes = value;
+                CoreUtil.SaveSettings(Properties.Settings.Default);
+                RaisePropertyChanged();
+            }
+        }
+
+        /// <summary>
+        /// Runs the Gemini online teacher once every N ordinary weather checks. Local
+        /// analysis still runs on every check, so camera and safety freshness are unchanged.
+        /// </summary>
+        public int GeminiRequestEveryChecks
+        {
+            get => Properties.Settings.Default.GeminiRequestEveryChecks;
+            set
+            {
+                Properties.Settings.Default.GeminiRequestEveryChecks = Math.Clamp(value, 1, 10000);
                 CoreUtil.SaveSettings(Properties.Settings.Default);
                 RaisePropertyChanged();
             }
