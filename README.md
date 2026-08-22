@@ -84,6 +84,8 @@ The preview panel in NINA shows:
 - Real-time activity log of captures, analyses, and events
 - Controls to force an immediate refresh or save the current image
 
+The engineering records for the two independent RTSP failure modes are available in Chinese: [stale analysis frames](docs/RTSP_STALE_FRAME_INCIDENT.zh-CN.md) and [white/blank native live preview airspace](docs/RTSP_PREVIEW_NATIVE_AIRSPACE_INCIDENT.zh-CN.md). A working preview does not prove that the analysis frame is fresh, and a successful analysis does not prove that LibVLC is visibly presenting its HWND; the two paths are tested separately.
+
 ## Installation
 
 1. Download the latest release from the [Releases](https://github.com/michelebergo/nina.plugin.aiweather/releases) page.

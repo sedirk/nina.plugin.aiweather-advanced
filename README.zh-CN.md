@@ -24,7 +24,7 @@ AI Weather 是一款面向 [N.I.N.A.](https://nighttime-imaging.eu/)（Nighttime
 - **更完整的失效安全逻辑**：过期结果、相机或模型失败、可选外部 ASCOM 安全设备异常、白天停用或无法取得太阳高度时都不会继续沿用旧的 `Safe`。
 - **高级序列符号**：在 N.I.N.A. 3.3 及以上版本中发布 `Cloud`、`Confidence`、`Condition`、`Rain`、`Fog` 和 `Safe`。
 
-教师—学生数据集的设计、字段、隐私边界和后续训练路线详见 [设计文档](docs/TEACHER_STUDENT_DATASET_DESIGN.zh-CN.md)。
+教师—学生数据集的设计、字段、隐私边界和后续训练路线详见 [设计文档](docs/TEACHER_STUDENT_DATASET_DESIGN.zh-CN.md)。RTSP 相关的两次独立工程事故分别记录在 [分析通道旧帧事故](docs/RTSP_STALE_FRAME_INCIDENT.zh-CN.md) 和 [实时预览白底与原生空域事故](docs/RTSP_PREVIEW_NATIVE_AIRSPACE_INCIDENT.zh-CN.md) 中。
 
 ## 主要能力
 
