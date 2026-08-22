@@ -1,5 +1,7 @@
 # AI Weather - All Sky Camera Monitor for NINA
 
+[简体中文](README.zh-CN.md) | English
+
 A plugin for [N.I.N.A.](https://nighttime-imaging.eu/) (Nighttime Imaging 'N' Astronomy) that uses artificial intelligence to analyze images from all-sky cameras and determine real-time weather conditions. It integrates directly with NINA's safety monitoring system to automatically protect your astronomy equipment when conditions become unsafe.
 
 ## Why This Plugin?
