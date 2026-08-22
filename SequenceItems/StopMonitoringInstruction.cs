@@ -1,4 +1,5 @@
 using AIWeather.Equipment;
+using AIWeather.Localization;
 using NINA.Core.Model;
 using NINA.Core.Utility;
 using NINA.Sequencer.SequenceItem;
@@ -27,7 +28,7 @@ namespace AIWeather.SequenceItems {
                 if (!monitor.Connected) {
                     Logger.Info("AI Weather monitoring is not running");
                     progress?.Report(new ApplicationStatus() {
-                        Status = "AI Weather: Not currently monitoring"
+                        Status = UiLocalization.Text("Sequencer.NotRunning")
                     });
                     return Task.CompletedTask;
                 }
@@ -37,7 +38,7 @@ namespace AIWeather.SequenceItems {
 
                 Logger.Info("AI Weather: Monitoring stopped from sequencer");
                 progress?.Report(new ApplicationStatus() {
-                    Status = "AI Weather: Monitoring stopped"
+                    Status = UiLocalization.Text("Sequencer.Stopped")
                 });
             } catch (Exception ex) {
                 Logger.Error($"AI Weather: Error stopping monitoring from sequencer: {ex.Message}", ex);
@@ -51,7 +52,7 @@ namespace AIWeather.SequenceItems {
         }
 
         public override string ToString() {
-            return "AI Weather - Stop Monitoring";
+            return UiLocalization.Text("Sequencer.Stop");
         }
     }
 }

@@ -3,6 +3,7 @@ using NINA.Core.Utility;
 using System;
 using System.Drawing;
 using System.Drawing.Imaging;
+using System.Diagnostics;
 using System.IO;
 using System.Net.Http;
 using System.Net.Http.Headers;
@@ -47,11 +48,17 @@ namespace AIWeather.Services
 
         public async Task<WeatherAnalysisResult> AnalyzeImageAsync(Bitmap image, AstroContext? astroContext = null, CancellationToken cancellationToken = default)
         {
+            var stopwatch = Stopwatch.StartNew();
+            var failureCategory = AnalysisFailureCategory.Unknown;
+            int? failureHttpStatus = null;
             if (!_isInitialized)
             {
                 Logger.Warning("Ollama service not initialized, falling back to local analysis");
                 var fallback = new LocalWeatherAnalysisService();
-                return await fallback.AnalyzeImageAsync(image, astroContext, cancellationToken);
+                var local = await fallback.AnalyzeImageAsync(image, astroContext, cancellationToken);
+                local.Provenance.IsFallback = true;
+                local.Provenance.FailureCategory = AnalysisFailureCategory.ModelUnavailable;
+                return local;
             }
 
             try
@@ -114,6 +121,8 @@ namespace AIWeather.Services
 
                 if (!response.IsSuccessStatusCode)
                 {
+                    failureHttpStatus = (int)response.StatusCode;
+                    failureCategory = AnalysisMetadata.FromHttpStatus(response.StatusCode);
                     Logger.Error($"Ollama API error: HTTP {(int)response.StatusCode}: {json}");
                     throw new InvalidOperationException($"HTTP {(int)response.StatusCode}: {json}");
                 }
@@ -125,14 +134,28 @@ namespace AIWeather.Services
                 var content = ExtractMessageContent(root);
 
                 var result = PromptText.ParseAIResponse(content);
+                if (!WeatherAnalysisValidator.IsValidTeacherResult(result, out var validationReason))
+                {
+                    failureCategory = AnalysisFailureCategory.SchemaRejected;
+                    throw new InvalidDataException($"Ollama response rejected by weather schema: {validationReason}");
+                }
+                result.Provenance = AnalysisMetadata.Online(
+                    AnalysisOrigin.Ollama, "Ollama", _modelName, 1,
+                    stopwatch.ElapsedMilliseconds, (int)response.StatusCode);
                 Logger.Info($"Ollama analysis complete: {result.Condition}, Cloud Coverage: {result.CloudCoverage:F1}%");
                 return result;
             }
             catch (OperationCanceledException ex)
             {
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    throw;
+                }
                 Logger.Warning($"Ollama API call timed out or was cancelled, falling back to local analysis: {ex.Message}");
                 var fallback = new LocalWeatherAnalysisService();
                 var result = await fallback.AnalyzeImageAsync(image, astroContext, cancellationToken);
+                result.Provenance.IsFallback = true;
+                result.Provenance.FailureCategory = AnalysisFailureCategory.Timeout;
                 result.Description = $"[Fallback: Local] Ollama timed out. {result.Description}";
                 return result;
             }
@@ -141,6 +164,15 @@ namespace AIWeather.Services
                 Logger.Error($"Error in Ollama analysis, falling back to local analysis: {ex.Message}", ex);
                 var fallback = new LocalWeatherAnalysisService();
                 var result = await fallback.AnalyzeImageAsync(image, astroContext, cancellationToken);
+                result.Provenance.IsFallback = true;
+                result.Provenance.FailureCategory = failureCategory != AnalysisFailureCategory.Unknown
+                    ? failureCategory
+                    : ex is HttpRequestException
+                        ? AnalysisFailureCategory.Network
+                        : ex is InvalidDataException
+                            ? AnalysisFailureCategory.SchemaRejected
+                            : AnalysisFailureCategory.Unknown;
+                result.Provenance.HttpStatus = failureHttpStatus;
                 result.Description = $"[Fallback: Local] Ollama error. {result.Description}";
                 return result;
             }

@@ -80,6 +80,30 @@ namespace AIWeather.Properties {
                 this["CheckIntervalMinutes"] = value;
             }
         }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("False")]
+        public bool UseSunAltitudeLimit {
+            get {
+                return ((bool)(this["UseSunAltitudeLimit"]));
+            }
+            set {
+                this["UseSunAltitudeLimit"] = value;
+            }
+        }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("-6.0")]
+        public double SunAltitudeLimitDegrees {
+            get {
+                return ((double)(this["SunAltitudeLimitDegrees"]));
+            }
+            set {
+                this["SunAltitudeLimitDegrees"] = value;
+            }
+        }
         
         [global::System.Configuration.UserScopedSettingAttribute()]
         [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
@@ -319,6 +343,126 @@ namespace AIWeather.Properties {
             set {
                 this["SafetyStatusFilePath"] = value;
             }
+        }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("False")]
+        public bool DatasetEnabled {
+            get { return ((bool)(this["DatasetEnabled"])); }
+            set { this["DatasetEnabled"] = value; }
+        }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("False")]
+        public bool DatasetPaused {
+            get { return ((bool)(this["DatasetPaused"])); }
+            set { this["DatasetPaused"] = value; }
+        }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("")]
+        public string DatasetDirectory {
+            get { return ((string)(this["DatasetDirectory"])); }
+            set { this["DatasetDirectory"] = value; }
+        }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("10")]
+        public int DatasetSamplingIntervalMinutes {
+            get { return ((int)(this["DatasetSamplingIntervalMinutes"])); }
+            set { this["DatasetSamplingIntervalMinutes"] = value; }
+        }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("1")]
+        public int DatasetSampleEveryChecks {
+            get { return ((int)(this["DatasetSampleEveryChecks"])); }
+            set { this["DatasetSampleEveryChecks"] = value; }
+        }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("20")]
+        public double DatasetMaxSizeGb {
+            get { return ((double)(this["DatasetMaxSizeGb"])); }
+            set { this["DatasetMaxSizeGb"] = value; }
+        }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("5")]
+        public double DatasetMinFreeSpaceGb {
+            get { return ((double)(this["DatasetMinFreeSpaceGb"])); }
+            set { this["DatasetMinFreeSpaceGb"] = value; }
+        }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("1280")]
+        public int DatasetImageWidth {
+            get { return ((int)(this["DatasetImageWidth"])); }
+            set { this["DatasetImageWidth"] = value; }
+        }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("720")]
+        public int DatasetImageHeight {
+            get { return ((int)(this["DatasetImageHeight"])); }
+            set { this["DatasetImageHeight"] = value; }
+        }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("50")]
+        public double DatasetImageScalePercent {
+            get { return ((double)(this["DatasetImageScalePercent"])); }
+            set { this["DatasetImageScalePercent"] = value; }
+        }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("85")]
+        public int DatasetJpegQuality {
+            get { return ((int)(this["DatasetJpegQuality"])); }
+            set { this["DatasetJpegQuality"] = value; }
+        }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("20")]
+        public double DatasetDisagreementThreshold {
+            get { return ((double)(this["DatasetDisagreementThreshold"])); }
+            set { this["DatasetDisagreementThreshold"] = value; }
+        }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("4")]
+        public int DatasetNearDuplicateHammingDistance {
+            get { return ((int)(this["DatasetNearDuplicateHammingDistance"])); }
+            set { this["DatasetNearDuplicateHammingDistance"] = value; }
+        }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("False")]
+        public bool DatasetSaveTeacherRaw {
+            get { return ((bool)(this["DatasetSaveTeacherRaw"])); }
+            set { this["DatasetSaveTeacherRaw"] = value; }
+        }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("True")]
+        public bool DatasetRecordQuarantine {
+            get { return ((bool)(this["DatasetRecordQuarantine"])); }
+            set { this["DatasetRecordQuarantine"] = value; }
         }
     }
 }

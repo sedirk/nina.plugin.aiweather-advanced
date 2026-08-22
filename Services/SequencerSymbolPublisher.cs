@@ -115,6 +115,29 @@ namespace AIWeather.Services
             }
         }
 
+        /// <summary>
+        /// Publishes an explicit unsafe state while daylight analysis is suspended. The
+        /// visual fields are unknown because no frame was captured, but Safe must be false
+        /// rather than retaining the previous night's value or becoming permissive.
+        /// </summary>
+        public static void PublishSuspended()
+        {
+            if (!EnsureProvider()) { return; }
+            try
+            {
+                Set("Cloud", null);
+                Set("Confidence", null);
+                Set("Condition", "SunAltitudeSuspended");
+                Set("Rain", null);
+                Set("Fog", null);
+                Set("Safe", false);
+            }
+            catch (Exception ex)
+            {
+                Logger.Warning($"Failed to publish Sun-altitude suspension symbols: {ex.Message}");
+            }
+        }
+
         private static void Set(string token, object? value)
         {
             _addOrUpdate!.Invoke(_provider, new object?[] { token, value });

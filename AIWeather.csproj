@@ -58,4 +58,9 @@
     <Resource Include="ai_weather_logo.png" />
   </ItemGroup>
 
+  <!-- Keep the executable smoke harness out of the plugin assembly. -->
+  <ItemGroup>
+    <Compile Remove="tests\**\*.cs" />
+  </ItemGroup>
+
 </Project>

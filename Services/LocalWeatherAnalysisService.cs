@@ -3,6 +3,7 @@ using NINA.Core.Utility;
 using System;
 using System.Drawing;
 using System.Drawing.Imaging;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Threading;
@@ -27,6 +28,7 @@ namespace AIWeather.Services
 
         public async Task<WeatherAnalysisResult> AnalyzeImageAsync(Bitmap image, AstroContext? astroContext = null, CancellationToken cancellationToken = default)
         {
+            var stopwatch = Stopwatch.StartNew();
             if (!_isInitialized)
             {
                 await InitializeAsync(cancellationToken);
@@ -73,6 +75,8 @@ namespace AIWeather.Services
                     };
                 }, cancellationToken);
 
+                result.Provenance = AnalysisMetadata.Local(stopwatch.ElapsedMilliseconds);
+
                 Logger.Info($"Weather analysis complete: {result.Condition}, Cloud Coverage: {result.CloudCoverage:F1}%, Safe: {result.IsSafeForImaging}");
                 return result;
             }
@@ -86,7 +90,8 @@ namespace AIWeather.Services
                     CloudCoverage = 0,
                     Confidence = 0,
                     IsSafeForImaging = false,
-                    Description = $"Analysis failed: {ex.Message}"
+                    Description = $"Analysis failed: {ex.Message}",
+                    Provenance = AnalysisMetadata.Local(stopwatch.ElapsedMilliseconds)
                 };
             }
         }

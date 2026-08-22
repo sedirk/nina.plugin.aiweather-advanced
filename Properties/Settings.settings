@@ -17,6 +17,12 @@
     <Setting Name="CheckIntervalMinutes" Type="System.Int32" Scope="User">
       <Value Profile="(Default)">5</Value>
     </Setting>
+    <Setting Name="UseSunAltitudeLimit" Type="System.Boolean" Scope="User">
+      <Value Profile="(Default)">False</Value>
+    </Setting>
+    <Setting Name="SunAltitudeLimitDegrees" Type="System.Double" Scope="User">
+      <Value Profile="(Default)">-6.0</Value>
+    </Setting>
     <Setting Name="CloudCoverageThreshold" Type="System.Double" Scope="User">
       <Value Profile="(Default)">70.0</Value>
     </Setting>
@@ -76,6 +82,51 @@
     </Setting>
     <Setting Name="SafetyStatusFilePath" Type="System.String" Scope="User">
       <Value Profile="(Default)">C:\\Users\\miche\\Documents\\N.I.N.A\\sky_conditions.txt</Value>
+    </Setting>
+    <Setting Name="DatasetEnabled" Type="System.Boolean" Scope="User">
+      <Value Profile="(Default)">False</Value>
+    </Setting>
+    <Setting Name="DatasetPaused" Type="System.Boolean" Scope="User">
+      <Value Profile="(Default)">False</Value>
+    </Setting>
+    <Setting Name="DatasetDirectory" Type="System.String" Scope="User">
+      <Value Profile="(Default)" />
+    </Setting>
+    <Setting Name="DatasetSamplingIntervalMinutes" Type="System.Int32" Scope="User">
+      <Value Profile="(Default)">10</Value>
+    </Setting>
+    <Setting Name="DatasetSampleEveryChecks" Type="System.Int32" Scope="User">
+      <Value Profile="(Default)">1</Value>
+    </Setting>
+    <Setting Name="DatasetMaxSizeGb" Type="System.Double" Scope="User">
+      <Value Profile="(Default)">20</Value>
+    </Setting>
+    <Setting Name="DatasetMinFreeSpaceGb" Type="System.Double" Scope="User">
+      <Value Profile="(Default)">5</Value>
+    </Setting>
+    <Setting Name="DatasetImageWidth" Type="System.Int32" Scope="User">
+      <Value Profile="(Default)">1280</Value>
+    </Setting>
+    <Setting Name="DatasetImageHeight" Type="System.Int32" Scope="User">
+      <Value Profile="(Default)">720</Value>
+    </Setting>
+    <Setting Name="DatasetImageScalePercent" Type="System.Double" Scope="User">
+      <Value Profile="(Default)">50</Value>
+    </Setting>
+    <Setting Name="DatasetJpegQuality" Type="System.Int32" Scope="User">
+      <Value Profile="(Default)">85</Value>
+    </Setting>
+    <Setting Name="DatasetDisagreementThreshold" Type="System.Double" Scope="User">
+      <Value Profile="(Default)">20</Value>
+    </Setting>
+    <Setting Name="DatasetNearDuplicateHammingDistance" Type="System.Int32" Scope="User">
+      <Value Profile="(Default)">4</Value>
+    </Setting>
+    <Setting Name="DatasetSaveTeacherRaw" Type="System.Boolean" Scope="User">
+      <Value Profile="(Default)">False</Value>
+    </Setting>
+    <Setting Name="DatasetRecordQuarantine" Type="System.Boolean" Scope="User">
+      <Value Profile="(Default)">True</Value>
     </Setting>
   </Settings>
 </SettingsFile>

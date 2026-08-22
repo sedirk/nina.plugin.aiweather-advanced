@@ -10,6 +10,7 @@ using LibVLCSharp.Shared;
 using NINA.Core.Utility;
 using AIWeather.Views;
 using AIWeather.Models;
+using AIWeather.Services;
 using System.Windows.Controls.Primitives;
 
 namespace AIWeather
@@ -27,6 +28,7 @@ namespace AIWeather
         private readonly SemaphoreSlim _streamGate = new SemaphoreSlim(1, 1);
         private CancellationTokenSource? _startCts;
         private Media? _currentMedia;
+        private string? _activePlaybackUrl;
 
         public AIWeatherPreviewView()
         {
@@ -70,11 +72,11 @@ namespace AIWeather
                             var runningSource = viewModel.Sources?.FirstOrDefault(src => src.IsRunning);
                             if (runningSource != null && viewModel.CurrentCaptureMode == CaptureMode.RTSPStream)
                             {
-                                Logger.Info($"🔄 View reloaded with running RTSP stream - restarting playback for {runningSource.FullUrl}");
+                                Logger.Info($"🔄 View reloaded with running RTSP stream - checking playback for {RedactRtspCredentials(runningSource.FullUrl)}");
                                 // Restart the stream only if we're still on the UI thread and view is loaded
                                 if (this.IsLoaded)
                                 {
-                                    Logger.Info($"Attempting StartStreamAsync with URL: {runningSource.FullUrl}");
+                                    Logger.Info($"Attempting StartStreamAsync with URL: {RedactRtspCredentials(runningSource.FullUrl)}");
                                     await StartStreamAsync(runningSource.FullUrl, runningSource.Username, runningSource.Password);
                                     Logger.Info("✅ RTSP stream successfully restarted after navigation");
                                 }
@@ -104,7 +106,7 @@ namespace AIWeather
                 {
                     try
                     {
-                        UpdateVideoHostLayoutToFill();
+                        UpdateVideoHostLayoutToFit();
                     }
                     catch (Exception ex)
                     {
@@ -122,7 +124,7 @@ namespace AIWeather
                     {
                         try
                         {
-                            UpdateVideoHostLayoutToFill();
+                            UpdateVideoHostLayoutToFit();
                         }
                         catch (Exception ex)
                         {
@@ -223,7 +225,7 @@ namespace AIWeather
                 _isStartingStream = true;
 
                 Logger.Info($"StartStream called with URL: {RedactRtspCredentials(rtspUrl)}");
-                Logger.Info($"Username: '{username ?? "(null)"}', Password length: {password?.Length ?? 0}");
+                Logger.Info($"Authentication: {(string.IsNullOrWhiteSpace(username) ? "not configured separately" : "configured")}");
 
                 if (_libVLC == null)
                 {
@@ -238,6 +240,15 @@ namespace AIWeather
                 }
 
                 Logger.Info($"VideoPanel found. Size: {VideoPanel.ActualWidth}x{VideoPanel.ActualHeight}");
+
+                var playbackUrl = BuildAuthenticatedUrl(rtspUrl, username, password);
+                if (_videoHost?.Player?.IsPlaying == true
+                    && string.Equals(_activePlaybackUrl, playbackUrl, StringComparison.Ordinal))
+                {
+                    Logger.Debug("RTSP preview is already playing this source; skipping duplicate restart");
+                    UpdateVideoHostLayoutToFit();
+                    return;
+                }
 
                 // Cancel any previous start loop before tearing down the current player/host.
                 _startCts?.Cancel();
@@ -303,14 +314,13 @@ namespace AIWeather
 
                 try
                 {
-                    UpdateVideoHostLayoutToFill();
+                    UpdateVideoHostLayoutToFit();
                 }
                 catch (Exception ex)
                 {
                     Logger.Debug($"VideoHost initial resize failed: {ex.Message}");
                 }
 
-                var playbackUrl = BuildAuthenticatedUrl(rtspUrl, username, password);
                 Logger.Info($"Creating media for URL: {RedactRtspCredentials(playbackUrl)}");
 
                 _currentMedia?.Dispose();
@@ -348,7 +358,7 @@ namespace AIWeather
                         Logger.Info("RTSP stream playing successfully!");
                         try
                         {
-                            UpdateVideoHostLayoutToFill();
+                            UpdateVideoHostLayoutToFit();
                         }
                         catch (Exception ex)
                         {
@@ -382,6 +392,10 @@ namespace AIWeather
                         $"  3. Ensure camera is reachable (ping the IP address)\n" +
                         $"  4. Try the URL in VLC media player to verify it works\n" +
                         $"  5. Some cameras require specific paths like /h264, /live, or /stream");
+                }
+                else
+                {
+                    _activePlaybackUrl = playbackUrl;
                 }
 
                 Logger.Info($"Started RTSP stream: {RedactRtspCredentials(playbackUrl)}");
@@ -446,6 +460,7 @@ namespace AIWeather
         {
             try
             {
+                _activePlaybackUrl = null;
                 _startCts?.Cancel();
                 _startCts?.Dispose();
                 _startCts = null;
@@ -588,7 +603,7 @@ namespace AIWeather
             if (sender is PasswordBox passwordBox && passwordBox.DataContext is CameraSource source)
             {
                 source.Password = passwordBox.Password;
-                Logger.Debug($"Password updated for camera source: {RedactRtspCredentials(source.MediaUrl)}");
+                Logger.Debug($"Password updated for camera source: {RedactRtspCredentials(source.FullUrl)}");
                 try
                 {
                     Properties.Settings.Default.RtspPassword = source.Password ?? string.Empty;
@@ -603,24 +618,7 @@ namespace AIWeather
 
         private static string RedactRtspCredentials(string? input)
         {
-            if (string.IsNullOrEmpty(input))
-            {
-                return string.Empty;
-            }
-
-            // Redact credentials in URLs like: rtsp://user:pass@host/...
-            // Keep username, replace password with ***.
-            try
-            {
-                return System.Text.RegularExpressions.Regex.Replace(
-                    input,
-                    @"(?i)\b(rtsps?:\/\/)(?<user>[^:@\/\s]+):[^@\s]+@",
-                    "$1${user}:***@");
-            }
-            catch
-            {
-                return input;
-            }
+            return LogRedactor.RedactRtspUrl(input);
         }
 
         private void PasswordBox_Loaded(object sender, RoutedEventArgs e)
@@ -635,7 +633,7 @@ namespace AIWeather
         {
             try
             {
-                UpdateVideoHostLayoutToFill();
+                UpdateVideoHostLayoutToFit();
             }
             catch (Exception ex)
             {
@@ -643,13 +641,13 @@ namespace AIWeather
             }
         }
 
-        // Resize and position the native video output so it fills the panel (cropping as needed).
-        // This matches the "no bands" look of Berg's RTSP Client plugin.
-        private void UpdateVideoHostLayoutToFill()
+        // Resize the native video output so the complete frame remains visible.
+        // Any aspect-ratio mismatch is shown as letterboxing/pillarboxing instead of cropping.
+        private void UpdateVideoHostLayoutToFit()
         {
             if (!Dispatcher.CheckAccess())
             {
-                Dispatcher.Invoke(UpdateVideoHostLayoutToFill);
+                Dispatcher.Invoke(UpdateVideoHostLayoutToFit);
                 return;
             }
 
@@ -701,10 +699,9 @@ namespace AIWeather
                 return;
             }
 
-            // Keep the HWND viewport exactly the size of the panel.
-            // Then ask VLC to scale the video up so it fully covers the viewport (cropping as needed).
-            // This avoids relying on WPF clipping (HwndHost isn't reliably clipped) and prevents
-            // letterboxing/"white bands" after navigation/relayout.
+            // Keep the HWND viewport exactly the size of the panel and ask VLC to scale the
+            // picture to the largest size that still fits inside it. This avoids relying on WPF
+            // clipping (HwndHost isn't reliably clipped) while preserving the complete frame.
             _videoHost.HorizontalAlignment = HorizontalAlignment.Left;
             _videoHost.VerticalAlignment = VerticalAlignment.Top;
             _videoHost.Margin = new Thickness(0);
@@ -712,15 +709,15 @@ namespace AIWeather
             _videoHost.Height = panelHeight;
             _videoHost.ResizeTo(panelWidth, panelHeight);
 
-            var scaleToFill = Math.Max(panelWidth / videoWidth, panelHeight / videoHeight);
-            if (double.IsNaN(scaleToFill) || double.IsInfinity(scaleToFill) || scaleToFill <= 0.001)
+            var scaleToFit = Math.Min(panelWidth / videoWidth, panelHeight / videoHeight);
+            if (double.IsNaN(scaleToFit) || double.IsInfinity(scaleToFit) || scaleToFit <= 0.001)
             {
-                scaleToFill = 1.0;
+                scaleToFit = 1.0;
             }
 
             try
             {
-                _videoHost.Player.Scale = (float)scaleToFill;
+                _videoHost.Player.Scale = (float)scaleToFit;
             }
             catch
             {

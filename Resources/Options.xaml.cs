@@ -1,3 +1,4 @@
+using AIWeather.Localization;
 using System.ComponentModel.Composition;
 using System.Threading.Tasks;
 using System.Windows;
@@ -47,7 +48,7 @@ namespace AIWeather
             {
                 using var dialog = new System.Windows.Forms.FolderBrowserDialog
                 {
-                    Description = "Select folder to monitor for sky images",
+                    Description = UiLocalization.Text("Options.DialogSkyFolder"),
                     UseDescriptionForTitle = true,
                     ShowNewFolderButton = false
                 };
@@ -357,6 +358,64 @@ namespace AIWeather
             }
         }
 
+        private void BrowseDatasetFolder_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                using var dialog = new System.Windows.Forms.FolderBrowserDialog
+                {
+                    Description = UiLocalization.Text("Options.DialogDatasetFolder"),
+                    UseDescriptionForTitle = true,
+                    ShowNewFolderButton = true
+                };
+
+                if (sender is FrameworkElement element
+                    && element.DataContext is AIWeather plugin)
+                {
+                    var current = plugin.Options.DatasetDirectory;
+                    if (!string.IsNullOrWhiteSpace(current)
+                        && System.IO.Directory.Exists(current))
+                    {
+                        dialog.SelectedPath = current;
+                    }
+
+                    if (dialog.ShowDialog() == System.Windows.Forms.DialogResult.OK
+                        && !string.IsNullOrWhiteSpace(dialog.SelectedPath))
+                    {
+                        plugin.Options.DatasetDirectory = dialog.SelectedPath;
+                    }
+                }
+            }
+            catch (System.Exception ex)
+            {
+                NINA.Core.Utility.Logger.Error($"Error choosing dataset directory: {ex.Message}", ex);
+            }
+        }
+
+        private void OpenDatasetFolder_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                if (sender is not FrameworkElement element
+                    || element.DataContext is not AIWeather plugin)
+                {
+                    return;
+                }
+
+                var path = plugin.Options.DatasetDirectory;
+                System.IO.Directory.CreateDirectory(path);
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = path,
+                    UseShellExecute = true
+                });
+            }
+            catch (System.Exception ex)
+            {
+                NINA.Core.Utility.Logger.Error($"Error opening dataset directory: {ex.Message}", ex);
+            }
+        }
+
         private void BrowseSafetyStatusFile_Click(object sender, RoutedEventArgs e)
         {
             try
@@ -391,8 +450,8 @@ namespace AIWeather
 
                 var dialog = new SaveFileDialog
                 {
-                    Title = "Choose status file to write (Safe/Unsafe)",
-                    Filter = "Text files (*.txt)|*.txt|All files (*.*)|*.*",
+                    Title = UiLocalization.Text("Options.DialogStatusFile"),
+                    Filter = UiLocalization.Text("Options.DialogTextFiles"),
                     DefaultExt = ".txt",
                     AddExtension = true,
                     FileName = initialFileName,

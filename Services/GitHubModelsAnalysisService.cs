@@ -51,6 +51,8 @@ namespace AIWeather.Services
             }
             var fallback = new LocalWeatherAnalysisService();
             var result = await fallback.AnalyzeImageAsync(image, astroContext, cancellationToken);
+            result.Provenance.IsFallback = true;
+            result.Provenance.FailureCategory = AnalysisFailureCategory.ServiceRetired;
             result.Description = $"[Fallback: Local] GitHub Models is retired — switch provider in the options. {result.Description}";
             return result;
         }

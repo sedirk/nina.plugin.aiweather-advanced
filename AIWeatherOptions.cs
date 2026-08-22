@@ -115,6 +115,29 @@ namespace AIWeather
             }
         }
 
+        public bool UseSunAltitudeLimit
+        {
+            get => Properties.Settings.Default.UseSunAltitudeLimit;
+            set
+            {
+                Properties.Settings.Default.UseSunAltitudeLimit = value;
+                CoreUtil.SaveSettings(Properties.Settings.Default);
+                RaisePropertyChanged();
+            }
+        }
+
+        public double SunAltitudeLimitDegrees
+        {
+            get => Properties.Settings.Default.SunAltitudeLimitDegrees;
+            set
+            {
+                Properties.Settings.Default.SunAltitudeLimitDegrees =
+                    Services.SolarAltitudeGuard.NormalizeLimit(value);
+                CoreUtil.SaveSettings(Properties.Settings.Default);
+                RaisePropertyChanged();
+            }
+        }
+
         public double CloudCoverageThreshold
         {
             get => Properties.Settings.Default.CloudCoverageThreshold;
@@ -248,6 +271,179 @@ namespace AIWeather
             set
             {
                 Properties.Settings.Default.SafetyStatusFilePath = value;
+                CoreUtil.SaveSettings(Properties.Settings.Default);
+                RaisePropertyChanged();
+            }
+        }
+
+        public bool DatasetEnabled
+        {
+            get => Properties.Settings.Default.DatasetEnabled;
+            set
+            {
+                Properties.Settings.Default.DatasetEnabled = value;
+                CoreUtil.SaveSettings(Properties.Settings.Default);
+                RaisePropertyChanged();
+            }
+        }
+
+        public bool DatasetPaused
+        {
+            get => Properties.Settings.Default.DatasetPaused;
+            set
+            {
+                Properties.Settings.Default.DatasetPaused = value;
+                CoreUtil.SaveSettings(Properties.Settings.Default);
+                RaisePropertyChanged();
+            }
+        }
+
+        public string DatasetDirectory
+        {
+            get
+            {
+                var configured = Properties.Settings.Default.DatasetDirectory;
+                return string.IsNullOrWhiteSpace(configured)
+                    ? DatasetRecorderOptions.DefaultRootDirectory()
+                    : configured;
+            }
+            set
+            {
+                Properties.Settings.Default.DatasetDirectory = value?.Trim() ?? string.Empty;
+                CoreUtil.SaveSettings(Properties.Settings.Default);
+                RaisePropertyChanged();
+            }
+        }
+
+        public int DatasetSamplingIntervalMinutes
+        {
+            get => Properties.Settings.Default.DatasetSamplingIntervalMinutes;
+            set
+            {
+                Properties.Settings.Default.DatasetSamplingIntervalMinutes = System.Math.Clamp(value, 1, 1440);
+                CoreUtil.SaveSettings(Properties.Settings.Default);
+                RaisePropertyChanged();
+            }
+        }
+
+        public int DatasetSampleEveryChecks
+        {
+            get => Properties.Settings.Default.DatasetSampleEveryChecks;
+            set
+            {
+                Properties.Settings.Default.DatasetSampleEveryChecks = System.Math.Clamp(value, 1, 10000);
+                CoreUtil.SaveSettings(Properties.Settings.Default);
+                RaisePropertyChanged();
+            }
+        }
+
+        public double DatasetMaxSizeGb
+        {
+            get => Properties.Settings.Default.DatasetMaxSizeGb;
+            set
+            {
+                Properties.Settings.Default.DatasetMaxSizeGb = System.Math.Clamp(value, 0.1, 10240);
+                CoreUtil.SaveSettings(Properties.Settings.Default);
+                RaisePropertyChanged();
+            }
+        }
+
+        public double DatasetMinFreeSpaceGb
+        {
+            get => Properties.Settings.Default.DatasetMinFreeSpaceGb;
+            set
+            {
+                Properties.Settings.Default.DatasetMinFreeSpaceGb = System.Math.Clamp(value, 0.1, 10240);
+                CoreUtil.SaveSettings(Properties.Settings.Default);
+                RaisePropertyChanged();
+            }
+        }
+
+        public int DatasetImageWidth
+        {
+            get => Properties.Settings.Default.DatasetImageWidth;
+            set
+            {
+                Properties.Settings.Default.DatasetImageWidth = System.Math.Clamp(value, 320, 7680);
+                CoreUtil.SaveSettings(Properties.Settings.Default);
+                RaisePropertyChanged();
+            }
+        }
+
+        public int DatasetImageHeight
+        {
+            get => Properties.Settings.Default.DatasetImageHeight;
+            set
+            {
+                Properties.Settings.Default.DatasetImageHeight = System.Math.Clamp(value, 180, 4320);
+                CoreUtil.SaveSettings(Properties.Settings.Default);
+                RaisePropertyChanged();
+            }
+        }
+
+        public double DatasetImageScalePercent
+        {
+            get => Properties.Settings.Default.DatasetImageScalePercent;
+            set
+            {
+                var normalized = double.IsFinite(value) ? value : 50;
+                Properties.Settings.Default.DatasetImageScalePercent =
+                    System.Math.Clamp(normalized, 5, 100);
+                CoreUtil.SaveSettings(Properties.Settings.Default);
+                RaisePropertyChanged();
+            }
+        }
+
+        public int DatasetJpegQuality
+        {
+            get => Properties.Settings.Default.DatasetJpegQuality;
+            set
+            {
+                Properties.Settings.Default.DatasetJpegQuality = System.Math.Clamp(value, 40, 100);
+                CoreUtil.SaveSettings(Properties.Settings.Default);
+                RaisePropertyChanged();
+            }
+        }
+
+        public double DatasetDisagreementThreshold
+        {
+            get => Properties.Settings.Default.DatasetDisagreementThreshold;
+            set
+            {
+                Properties.Settings.Default.DatasetDisagreementThreshold = System.Math.Clamp(value, 0, 100);
+                CoreUtil.SaveSettings(Properties.Settings.Default);
+                RaisePropertyChanged();
+            }
+        }
+
+        public int DatasetNearDuplicateHammingDistance
+        {
+            get => Properties.Settings.Default.DatasetNearDuplicateHammingDistance;
+            set
+            {
+                Properties.Settings.Default.DatasetNearDuplicateHammingDistance = System.Math.Clamp(value, 0, 64);
+                CoreUtil.SaveSettings(Properties.Settings.Default);
+                RaisePropertyChanged();
+            }
+        }
+
+        public bool DatasetSaveTeacherRaw
+        {
+            get => Properties.Settings.Default.DatasetSaveTeacherRaw;
+            set
+            {
+                Properties.Settings.Default.DatasetSaveTeacherRaw = value;
+                CoreUtil.SaveSettings(Properties.Settings.Default);
+                RaisePropertyChanged();
+            }
+        }
+
+        public bool DatasetRecordQuarantine
+        {
+            get => Properties.Settings.Default.DatasetRecordQuarantine;
+            set
+            {
+                Properties.Settings.Default.DatasetRecordQuarantine = value;
                 CoreUtil.SaveSettings(Properties.Settings.Default);
                 RaisePropertyChanged();
             }

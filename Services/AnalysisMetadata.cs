@@ -1,0 +1,173 @@
+using AIWeather.Models;
+using System;
+using System.Net;
+
+namespace AIWeather.Services
+{
+    internal static class AnalysisMetadata
+    {
+        public const string LocalHeuristicModelVersion = "local-heuristic-v1";
+
+        public static AnalysisProvenance Local(
+            long latencyMilliseconds,
+            bool isFallback = false,
+            AnalysisFailureCategory upstreamFailure = AnalysisFailureCategory.None)
+        {
+            return new AnalysisProvenance
+            {
+                Origin = AnalysisOrigin.LocalHeuristic,
+                Provider = "Local",
+                Model = LocalHeuristicModelVersion,
+                PromptVersion = "none",
+                OnlineSucceeded = false,
+                IsFallback = isFallback,
+                FailureCategory = upstreamFailure,
+                Attempts = 1,
+                LatencyMilliseconds = Math.Max(0, latencyMilliseconds)
+            };
+        }
+
+        public static AnalysisProvenance Online(
+            AnalysisOrigin origin,
+            string provider,
+            string model,
+            int attempts,
+            long latencyMilliseconds,
+            int? httpStatus = null)
+        {
+            return new AnalysisProvenance
+            {
+                Origin = origin,
+                Provider = provider,
+                Model = model,
+                PromptVersion = WeatherAnalysisPrompts.PromptVersion,
+                OnlineSucceeded = true,
+                IsFallback = false,
+                FailureCategory = AnalysisFailureCategory.None,
+                Attempts = Math.Max(1, attempts),
+                HttpStatus = httpStatus,
+                LatencyMilliseconds = Math.Max(0, latencyMilliseconds)
+            };
+        }
+
+        public static AnalysisProvenance FailedOnline(
+            AnalysisOrigin origin,
+            string provider,
+            string model,
+            AnalysisFailureCategory category,
+            int attempts,
+            long latencyMilliseconds,
+            int? httpStatus = null)
+        {
+            return new AnalysisProvenance
+            {
+                Origin = origin,
+                Provider = provider,
+                Model = model,
+                PromptVersion = WeatherAnalysisPrompts.PromptVersion,
+                OnlineSucceeded = false,
+                IsFallback = false,
+                FailureCategory = category,
+                Attempts = Math.Max(0, attempts),
+                HttpStatus = httpStatus,
+                LatencyMilliseconds = Math.Max(0, latencyMilliseconds)
+            };
+        }
+
+        public static AnalysisFailureCategory FromHttpStatus(HttpStatusCode? statusCode)
+        {
+            return statusCode switch
+            {
+                HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden => AnalysisFailureCategory.Authentication,
+                HttpStatusCode.NotFound => AnalysisFailureCategory.ModelUnavailable,
+                HttpStatusCode.RequestTimeout or HttpStatusCode.GatewayTimeout => AnalysisFailureCategory.Timeout,
+                (HttpStatusCode)429 => AnalysisFailureCategory.RateLimited,
+                null => AnalysisFailureCategory.Network,
+                _ => AnalysisFailureCategory.Unknown
+            };
+        }
+    }
+
+    internal static class WeatherAnalysisValidator
+    {
+        public static bool IsValidTeacherResult(WeatherAnalysisResult? result, out string reason)
+        {
+            if (result == null)
+            {
+                reason = "result is null";
+                return false;
+            }
+
+            if (!Enum.IsDefined(typeof(WeatherCondition), result.Condition)
+                || result.Condition == WeatherCondition.Unknown)
+            {
+                reason = "condition is missing or unknown";
+                return false;
+            }
+
+            if (!IsPercentage(result.CloudCoverage))
+            {
+                reason = "cloudCoverage is outside 0-100 or is not finite";
+                return false;
+            }
+
+            if (!IsPercentage(result.Confidence))
+            {
+                reason = "confidence is outside 0-100 or is not finite";
+                return false;
+            }
+
+            if (string.IsNullOrWhiteSpace(result.Description))
+            {
+                reason = "description is empty";
+                return false;
+            }
+
+            reason = string.Empty;
+            return true;
+        }
+
+        /// <summary>
+        /// A structurally valid result can still contradict its own label. It may be shown
+        /// and used exactly as before, but it belongs in dataset quarantine rather than the
+        /// automatically trainable label pool.
+        /// </summary>
+        public static bool IsInternallyConsistent(WeatherAnalysisResult result, out string reason)
+        {
+            if (result.RainDetected && result.Condition != WeatherCondition.Rainy)
+            {
+                reason = "rainDetected=true but condition is not Rainy";
+                return false;
+            }
+
+            if (result.FogDetected && result.Condition != WeatherCondition.Foggy)
+            {
+                reason = "fogDetected=true but condition is not Foggy";
+                return false;
+            }
+
+            var plausible = result.Condition switch
+            {
+                WeatherCondition.Clear => result.CloudCoverage <= 25,
+                WeatherCondition.PartlyCloudy => result.CloudCoverage >= 5 && result.CloudCoverage <= 60,
+                WeatherCondition.MostlyCloudy => result.CloudCoverage >= 40 && result.CloudCoverage <= 95,
+                WeatherCondition.Overcast => result.CloudCoverage >= 70,
+                _ => true
+            };
+
+            if (!plausible)
+            {
+                reason = $"condition {result.Condition} contradicts cloudCoverage {result.CloudCoverage:F1}";
+                return false;
+            }
+
+            reason = string.Empty;
+            return true;
+        }
+
+        private static bool IsPercentage(double value)
+        {
+            return !double.IsNaN(value) && !double.IsInfinity(value) && value >= 0 && value <= 100;
+        }
+    }
+}

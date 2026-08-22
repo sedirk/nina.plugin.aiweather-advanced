@@ -31,7 +31,7 @@ namespace AIWeather.Services
             {
                 lock (_captureLock)
                 {
-                    return _capture != null && _capture.IsOpened;
+                    return !_isDisposed && _capture != null && _capture.IsOpened;
                 }
             }
         }
@@ -45,7 +45,8 @@ namespace AIWeather.Services
 
             lock (_captureLock)
             {
-                return _capture != null
+                return !_isDisposed
+                    && _capture != null
                     && _capture.IsOpened
                     && string.Equals(_lastInitializedRtspUrl, rtspUrl, StringComparison.Ordinal);
             }
@@ -89,6 +90,11 @@ namespace AIWeather.Services
                 {
                     lock (_captureLock)
                     {
+                        if (_isDisposed)
+                        {
+                            throw new ObjectDisposedException(nameof(RtspCaptureService));
+                        }
+
                         _capture?.Dispose();
                         Logger.Debug($"RtspCaptureService - Creating VideoCapture with URL: {RedactRtspUrl(rtspUrl)}");
                         // Prefer FFmpeg backend for RTSP stability.
@@ -128,31 +134,7 @@ namespace AIWeather.Services
 
         private static string RedactRtspUrl(string url)
         {
-            if (string.IsNullOrWhiteSpace(url))
-            {
-                return url;
-            }
-
-            try
-            {
-                if (Uri.TryCreate(url, UriKind.Absolute, out var uri) && !string.IsNullOrEmpty(uri.UserInfo))
-                {
-                    var parts = uri.UserInfo.Split(new[] { ':' }, 2);
-                    var user = parts.Length > 0 ? parts[0] : string.Empty;
-                    var builder = new UriBuilder(uri)
-                    {
-                        UserName = user,
-                        Password = "***"
-                    };
-                    return builder.Uri.ToString();
-                }
-            }
-            catch
-            {
-                // best-effort redaction
-            }
-
-            return url;
+            return LogRedactor.RedactRtspUrl(url);
         }
 
         /// <summary>
@@ -162,16 +144,16 @@ namespace AIWeather.Services
         {
             try
             {
-                if (_capture == null || !_capture.IsOpened)
-                {
-                    Logger.Warning("RTSP capture is not initialized");
-                    return null;
-                }
-
                 return await Task.Run(() =>
                 {
                     lock (_captureLock)
                     {
+                        if (_isDisposed || _capture == null || !_capture.IsOpened)
+                        {
+                            Logger.Warning("RTSP capture is not initialized");
+                            return null;
+                        }
+
                         // RTSP sources can return a few empty frames initially.
                         // Retry briefly to avoid reporting capture failure while video is actually playing.
                         for (var attempt = 0; attempt < 25; attempt++)
@@ -590,18 +572,35 @@ namespace AIWeather.Services
             return null;
         }
 
-        public void Dispose()
+        /// <summary>
+        /// Closes the active stream while keeping this service reusable. NINA can disconnect
+        /// and reconnect the same singleton safety monitor many times in one process.
+        /// </summary>
+        public void Reset()
         {
-            if (_isDisposed) return;
-
             lock (_captureLock)
             {
                 _capture?.Dispose();
                 _capture = null;
                 _lastInitializedRtspUrl = string.Empty;
             }
+        }
 
-            _isDisposed = true;
+        public void Dispose()
+        {
+            lock (_captureLock)
+            {
+                if (_isDisposed)
+                {
+                    return;
+                }
+
+                _capture?.Dispose();
+                _capture = null;
+                _lastInitializedRtspUrl = string.Empty;
+                _isDisposed = true;
+            }
+
             GC.SuppressFinalize(this);
         }
     }

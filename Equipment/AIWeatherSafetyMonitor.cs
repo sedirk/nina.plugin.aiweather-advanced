@@ -11,6 +11,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using AIWeather.Models;
 using AIWeather.Services;
+using AIWeather.Localization;
 
 namespace AIWeather.Equipment
 {
@@ -25,7 +26,10 @@ namespace AIWeather.Equipment
         public static AIWeatherSafetyMonitor Instance => _instance ??= new AIWeatherSafetyMonitor();
 
         private readonly UnifiedCaptureService _captureService;
+        private readonly WeatherAnalysisOrchestrator _analysisOrchestrator;
+        private readonly TeacherStudentDatasetRecorder _datasetRecorder;
         private IWeatherAnalysisService _analysisService;
+        private IWeatherAnalysisService? _initializedAnalysisService;
         private Timer? _monitoringTimer;
         private WeatherAnalysisResult? _lastResult;
         private Bitmap? _lastImage;
@@ -34,6 +38,12 @@ namespace AIWeather.Equipment
         private CancellationTokenSource? _cts;
         private readonly SemaphoreSlim _checkGate = new SemaphoreSlim(1, 1);
         private IProfileService? _profileService;
+        private WeatherAnalysisBundle? _lastAnalysisBundle;
+        private AstroContext? _lastAstroContext;
+        private bool _isSolarAltitudeSuspended;
+        private bool _solarContextUnavailable;
+        private double? _currentSunAltitude;
+        private double _activeSunAltitudeLimit = SolarAltitudeGuard.DefaultLimitDegrees;
 
         // When the last analysis actually succeeded. The sky verdict expires: a monitor that
         // keeps answering with the last known state after its camera died reports SAFE all
@@ -69,7 +79,15 @@ namespace AIWeather.Equipment
         public AIWeatherSafetyMonitor()
         {
             _captureService = new UnifiedCaptureService(cameraMediator: null);
+            _analysisOrchestrator = new WeatherAnalysisOrchestrator();
+            _datasetRecorder = new TeacherStudentDatasetRecorder(
+                logger: new NinaDatasetRecorderLogger());
             _analysisService = new LocalWeatherAnalysisService();
+            _datasetRecorder.StatusChanged += (_, _) =>
+            {
+                RaisePropertyChanged(nameof(DatasetStatus));
+                RaisePropertyChanged(nameof(DatasetStatusText));
+            };
             
             // Subscribe to settings changes
             Properties.Settings.Default.PropertyChanged += (s, e) =>
@@ -83,6 +101,23 @@ namespace AIWeather.Equipment
                     || e.PropertyName == nameof(Properties.Settings.Default.AnthropicKey))
                 {
                     UpdateAnalysisService();
+                }
+
+                if (!string.IsNullOrWhiteSpace(e.PropertyName)
+                    && e.PropertyName.StartsWith("Dataset", StringComparison.Ordinal))
+                {
+                    _datasetRecorder.NotifyConfigurationChanged();
+                    RaisePropertyChanged(nameof(DatasetStatus));
+                    RaisePropertyChanged(nameof(DatasetStatusText));
+                }
+
+                if (e.PropertyName == nameof(Properties.Settings.Default.UseSunAltitudeLimit)
+                    || e.PropertyName == nameof(Properties.Settings.Default.SunAltitudeLimitDegrees))
+                {
+                    RaisePropertyChanged(nameof(IsSolarAltitudeSuspended));
+                    RaisePropertyChanged(nameof(CurrentSunAltitude));
+                    RaisePropertyChanged(nameof(SunAltitudeLimitDegrees));
+                    RequestImmediateWeatherCheck();
                 }
             };
         }
@@ -160,14 +195,58 @@ namespace AIWeather.Equipment
             _analysisService = new LocalWeatherAnalysisService();
         }
 
+        private async Task<IWeatherAnalysisService> EnsureAnalysisServiceInitializedAsync(
+            CancellationToken cancellationToken)
+        {
+            // Option bindings can change SelectedModel/provider credentials while the
+            // monitor is connected. UpdateAnalysisService then replaces the service with a
+            // fresh instance; without initializing that instance, every later check silently
+            // falls back to the local analyzer until the monitor is manually reconnected.
+            var service = _analysisService;
+            if (ReferenceEquals(_initializedAnalysisService, service))
+            {
+                return service;
+            }
+
+            var configuredService = service;
+            var analysisReady = await service.InitializeAsync(cancellationToken);
+            if (!analysisReady)
+            {
+                if (service is IOnlineWeatherAnalysisService)
+                {
+                    // Preserve the configured teacher instance. Its online-only attempt will
+                    // carry the initialization failure into the explicit orchestrator, which
+                    // runs the student and records unambiguous provenance.
+                    Logger.Warning("Selected online teacher failed to initialize; explicit local fallback will be used");
+                }
+                else
+                {
+                    Logger.Warning("Selected analysis provider failed to initialize; falling back to local analysis");
+                    service = new LocalWeatherAnalysisService();
+                    await service.InitializeAsync(cancellationToken);
+
+                    // Do not overwrite a newer provider instance if a setting changed while the
+                    // previous instance was being initialized. The newer instance will be picked
+                    // up and initialized on the next serialized weather check.
+                    if (ReferenceEquals(_analysisService, configuredService))
+                    {
+                        _analysisService = service;
+                    }
+                }
+            }
+
+            _initializedAnalysisService = service;
+            return service;
+        }
+
         #region ISafetyMonitor Implementation
 
-        public string Category => "All Sky Camera";
+        public string Category => UiLocalization.Text("Equipment.Category");
         public bool HasSetupDialog => true;
         public string Id => "AIWeatherSafetyMonitor";
-        public string Name => "All Sky Camera Safety Monitor";
-        public string Description => "Monitors all-sky camera for weather conditions and provides safety status for imaging";
-        public string DriverInfo => "All Sky Camera Plugin v1.0";
+        public string Name => UiLocalization.Text("Equipment.Name");
+        public string Description => UiLocalization.Text("Equipment.Description");
+        public string DriverInfo => UiLocalization.Text("Equipment.DriverInfo") + " v1.0";
         public string DriverVersion => "1.0.0";
 
         private bool _connected = false;
@@ -201,7 +280,7 @@ namespace AIWeather.Equipment
                     var username = Properties.Settings.Default.RtspUsername;
                     var password = Properties.Settings.Default.RtspPassword;
 
-                    Logger.Info($"Safety Monitor - RTSP URL: '{rtspUrl}'");
+                    Logger.Info($"Safety Monitor - RTSP URL: '{LogRedactor.RedactRtspUrl(rtspUrl)}'");
                     _captureService.ConfigureRTSP(rtspUrl ?? "", username, password);
                     success = !string.IsNullOrWhiteSpace(rtspUrl);
                 }
@@ -233,19 +312,18 @@ namespace AIWeather.Equipment
 
                 // Initialize analysis service
                 UpdateAnalysisService();
-                var analysisReady = await _analysisService.InitializeAsync(token);
-                if (!analysisReady)
-                {
-                    Logger.Warning("Selected analysis provider failed to initialize; falling back to local analysis");
-                    _analysisService = new LocalWeatherAnalysisService();
-                    await _analysisService.InitializeAsync(token);
-                }
+                await EnsureAnalysisServiceInitializedAsync(token);
 
                 // A fresh connection starts with no verdict at all: unsafe until the first
                 // analysis succeeds, never inheriting the state of a previous session.
                 _lastAnalysisUtc = DateTime.MinValue;
                 _isCurrentlySafe = false;
                 _staleLogged = false;
+                _isSolarAltitudeSuspended = false;
+                _solarContextUnavailable = false;
+                _currentSunAltitude = null;
+                _activeSunAltitudeLimit = SolarAltitudeGuard.NormalizeLimit(
+                    Properties.Settings.Default.SunAltitudeLimitDegrees);
 
                 // Best-effort: the lazy path in IsExternalMonitorSafe retries on its own
                 // schedule, but connecting here surfaces a wrong ProgID in the log at once.
@@ -288,7 +366,9 @@ namespace AIWeather.Equipment
                 Logger.Info("Disconnecting All Sky Camera Safety Monitor");
 
                 StopPeriodicMonitoring();
-                _captureService.Dispose();
+                // Disconnect is reversible in NINA. Keep the singleton capture service alive
+                // so a later Connect can build a fresh RTSP pipeline in the same process.
+                _captureService.Reset();
 
                 // Values are no longer being refreshed: blank the sequencer symbols so an
                 // expression cannot keep acting on a stale reading.
@@ -298,6 +378,9 @@ namespace AIWeather.Equipment
                 // SAFE inherited from before the disconnect.
                 _lastAnalysisUtc = DateTime.MinValue;
                 _isCurrentlySafe = false;
+                _isSolarAltitudeSuspended = false;
+                _solarContextUnavailable = false;
+                _currentSunAltitude = null;
 
                 lock (_externalGate)
                 {
@@ -322,10 +405,23 @@ namespace AIWeather.Equipment
         /// configured). Anything unknown counts as unsafe — a missing answer is not a
         /// permission to keep imaging.
         /// </summary>
-        public bool IsSafe => _isCurrentlySafe && IsAnalysisFresh() && IsExternalMonitorSafe();
+        public bool IsSafe => !_isSolarAltitudeSuspended
+                              && _isCurrentlySafe
+                              && IsAnalysisFresh()
+                              && IsExternalMonitorSafe();
 
         /// <summary>The sky verdict alone, without freshness or the external monitor.</summary>
         public bool IsSkyConditionSafe => _isCurrentlySafe;
+
+        public DatasetStatusSnapshot DatasetStatus => _datasetRecorder.Status;
+
+        public string DatasetStatusText => DatasetStatus.ToDisplayString();
+
+        public bool IsSolarAltitudeSuspended => _isSolarAltitudeSuspended;
+
+        public double? CurrentSunAltitude => _currentSunAltitude;
+
+        public double SunAltitudeLimitDegrees => _activeSunAltitudeLimit;
 
         /// <summary>
         /// Why the monitor is reporting what it reports, in one line for the panel. Until
@@ -340,25 +436,35 @@ namespace AIWeather.Equipment
             {
                 if (!Connected)
                 {
-                    return "Not connected";
+                    return UiLocalization.Text("Runtime.NotConnected");
+                }
+
+                if (_isSolarAltitudeSuspended)
+                {
+                    return _solarContextUnavailable || !_currentSunAltitude.HasValue
+                        ? UiLocalization.Text("Runtime.SolarUnavailable")
+                        : UiLocalization.Text(
+                            "Runtime.SolarSuspended",
+                            _currentSunAltitude.Value,
+                            _activeSunAltitudeLimit);
                 }
 
                 if (_lastAnalysisUtc == DateTime.MinValue)
                 {
-                    return "Waiting for the first sky analysis";
+                    return UiLocalization.Text("Runtime.WaitingFirst");
                 }
 
                 if (!IsAnalysisFresh())
                 {
                     var age = (DateTime.UtcNow - _lastAnalysisUtc).TotalMinutes;
-                    return $"Stale data: last analysis {age:F0} min ago, limit {MaxDataAge().TotalMinutes:F0} min — check the camera source";
+                    return UiLocalization.Text("Runtime.Stale", age, MaxDataAge().TotalMinutes);
                 }
 
                 if (Properties.Settings.Default.UseAscomSafetyMonitor && !IsExternalMonitorSafe())
                 {
                     return _externalMonitor.Connected
-                        ? "External safety monitor reports unsafe"
-                        : "External safety monitor cannot be connected or read";
+                        ? UiLocalization.Text("Runtime.ExternalUnsafe")
+                        : UiLocalization.Text("Runtime.ExternalUnreadable");
                 }
 
                 if (!_isCurrentlySafe)
@@ -366,20 +472,23 @@ namespace AIWeather.Equipment
                     var r = _lastResult;
                     if (r == null)
                     {
-                        return "No usable analysis";
+                        return UiLocalization.Text("Runtime.NoUsable");
                     }
                     if (r.RainDetected)
                     {
-                        return "Rain detected";
+                        return UiLocalization.Text("Runtime.Rain");
                     }
                     if (r.FogDetected)
                     {
-                        return "Fog detected";
+                        return UiLocalization.Text("Runtime.Fog");
                     }
-                    return $"Cloud coverage {r.CloudCoverage:F0}% (safe below {Properties.Settings.Default.CloudCoverageSafeThreshold}%)";
+                    return UiLocalization.Text(
+                        "Runtime.CloudUnsafe",
+                        r.CloudCoverage,
+                        Properties.Settings.Default.CloudCoverageSafeThreshold);
                 }
 
-                return "Sky clear and data current";
+                return UiLocalization.Text("Runtime.SkyClear");
             }
         }
 
@@ -517,7 +626,14 @@ namespace AIWeather.Equipment
             var unsafeThreshold = Properties.Settings.Default.CloudCoverageThreshold;
             var safeThreshold = Properties.Settings.Default.CloudCoverageSafeThreshold;
 
-            bool baseConditionsSafe = result.IsSafeForImaging && !result.RainDetected && !result.FogDetected;
+            // Provider-supplied IsSafeForImaging is useful for display and disagreement
+            // sampling, but it is not a visual ground truth: every provider bakes different
+            // hard-coded thresholds into that field. The N.I.N.A. safety decision is owned
+            // here and uses the user's High/Low thresholds plus rain/fog and validity.
+            bool baseConditionsSafe = result.Condition != WeatherCondition.Unknown
+                                      && result.Confidence > 0
+                                      && !result.RainDetected
+                                      && !result.FogDetected;
 
             if (!baseConditionsSafe)
             {
@@ -641,15 +757,159 @@ namespace AIWeather.Equipment
             Logger.Info("Stopped periodic monitoring");
         }
 
+        private void RequestImmediateWeatherCheck()
+        {
+            var tokenSource = _cts;
+            if (!Connected || tokenSource == null || tokenSource.IsCancellationRequested)
+            {
+                return;
+            }
+
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await PerformWeatherCheckAsync(tokenSource.Token);
+                }
+                catch (OperationCanceledException) when (tokenSource.IsCancellationRequested)
+                {
+                    // Normal disconnect/shutdown race.
+                }
+                catch (Exception ex)
+                {
+                    Logger.Error($"Immediate weather check after Sun-altitude setting change failed: {ex.Message}", ex);
+                }
+            });
+        }
+
+        private AstroContext? TryComputeAstroContext(DateTime utcNow)
+        {
+            try
+            {
+                if (_profileService == null)
+                {
+                    Logger.Warning("Cannot compute astronomical context: N.I.N.A. profile service is unavailable");
+                    return null;
+                }
+
+                var astro = _profileService.ActiveProfile.AstrometrySettings;
+                var context = AstroContext.Compute(
+                    astro.Latitude,
+                    astro.Longitude,
+                    astro.Elevation,
+                    utcNow);
+                Logger.Info(
+                    $"Astro context: Sun {context.SunAltitude:F1}° ({context.SunState}), " +
+                    $"Moon {context.MoonIllumination:F0}% {context.MoonPhase} at {context.MoonAltitude:F1}°");
+                return context;
+            }
+            catch (Exception ex)
+            {
+                Logger.Warning($"Failed to compute astronomical context: {ex.Message}");
+                return null;
+            }
+        }
+
+        private void EnterSolarAltitudeSuspension(
+            SolarAltitudeGateDecision decision,
+            AstroContext? astroContext)
+        {
+            var wasSuspended = _isSolarAltitudeSuspended;
+            _isSolarAltitudeSuspended = true;
+            _solarContextUnavailable = !decision.HasAstronomicalContext;
+            _currentSunAltitude = decision.SunAltitude;
+            _activeSunAltitudeLimit = decision.LimitDegrees;
+            _lastAstroContext = astroContext;
+            _isCurrentlySafe = false;
+
+            if (!wasSuspended)
+            {
+                // A new observing window must earn a fresh verdict. Never let tonight's
+                // first check inherit yesterday's safe state or keep a daytime frame ready
+                // for manual dataset collection.
+                _lastAnalysisUtc = DateTime.MinValue;
+                _lastResult = null;
+                _lastAnalysisBundle = null;
+                _lastImage?.Dispose();
+                _lastImage = null;
+                _staleLogged = false;
+
+                if (decision.HasAstronomicalContext && decision.SunAltitude.HasValue)
+                {
+                    Logger.Info(
+                        $"Sun-altitude guard suspended weather analysis before capture: " +
+                        $"Sun {decision.SunAltitude.Value:F1}° >= limit {decision.LimitDegrees:F1}°. " +
+                        "No frame, model/API call, or dataset sample will be produced.");
+                }
+                else
+                {
+                    Logger.Warning(
+                        "Sun-altitude guard suspended weather analysis before capture because " +
+                        "astronomical context is unavailable. Safety remains UNSAFE.");
+                }
+            }
+            else
+            {
+                Logger.Debug("Sun-altitude guard remains active; skipping capture and analysis");
+            }
+
+            SequencerSymbolPublisher.PublishSuspended();
+            RaisePropertyChanged(nameof(IsSolarAltitudeSuspended));
+            RaisePropertyChanged(nameof(CurrentSunAltitude));
+            RaisePropertyChanged(nameof(SunAltitudeLimitDegrees));
+            RaisePropertyChanged(nameof(IsSafe));
+            RaisePropertyChanged(nameof(SafetyStateReason));
+            WriteSafetyStatusFile();
+        }
+
+        private void LeaveSolarAltitudeSuspension(
+            SolarAltitudeGateDecision decision,
+            AstroContext? astroContext)
+        {
+            var wasSuspended = _isSolarAltitudeSuspended;
+            _isSolarAltitudeSuspended = false;
+            _solarContextUnavailable = false;
+            _currentSunAltitude = decision.SunAltitude;
+            _activeSunAltitudeLimit = decision.LimitDegrees;
+            _lastAstroContext = astroContext;
+
+            if (wasSuspended)
+            {
+                Logger.Info(
+                    $"Sun-altitude guard released: Sun {decision.SunAltitude:F1}° is below " +
+                    $"limit {decision.LimitDegrees:F1}°. Weather analysis is resuming.");
+                RaisePropertyChanged(nameof(IsSolarAltitudeSuspended));
+                RaisePropertyChanged(nameof(CurrentSunAltitude));
+                RaisePropertyChanged(nameof(SunAltitudeLimitDegrees));
+                RaisePropertyChanged(nameof(IsSafe));
+                RaisePropertyChanged(nameof(SafetyStateReason));
+            }
+        }
+
         private async Task PerformWeatherCheckAsync(CancellationToken cancellationToken)
         {
             await _checkGate.WaitAsync(cancellationToken);
+            Bitmap? frame = null;
             try
             {
                 var captureMode = (CaptureMode)Properties.Settings.Default.CaptureMode;
                 Logger.Debug($"PerformWeatherCheckAsync - Mode: {captureMode}");
 
-                Bitmap? frame = null;
+                // The Sun gate deliberately runs before opening/capturing the camera and
+                // before invoking any model. This is what prevents daylight overexposure
+                // from entering the dataset and avoids spending online API quota.
+                var astroContext = TryComputeAstroContext(DateTime.UtcNow);
+                var solarDecision = SolarAltitudeGuard.Evaluate(
+                    Properties.Settings.Default.UseSunAltitudeLimit,
+                    Properties.Settings.Default.SunAltitudeLimitDegrees,
+                    astroContext);
+                if (solarDecision.ShouldSuspend)
+                {
+                    EnterSolarAltitudeSuspension(solarDecision, astroContext);
+                    return;
+                }
+
+                LeaveSolarAltitudeSuspension(solarDecision, astroContext);
 
                 // Capture image from all modes
                 Logger.Debug($"Capturing image from {captureMode} source");
@@ -669,37 +929,34 @@ namespace AIWeather.Equipment
                 }
 
                 Logger.Debug($"Image captured from {captureMode}, size: {frame.Width}x{frame.Height}");
+                var capturedUtc = DateTime.UtcNow;
 
                 // Analyze the frame
-                Logger.Debug($"Starting AI analysis using {_analysisService.GetType().Name}");
+                var analysisService = await EnsureAnalysisServiceInitializedAsync(cancellationToken);
+                Logger.Debug($"Starting AI analysis using {analysisService.GetType().Name}");
 
-                // Compute astronomical context from observer location
-                AstroContext? astroContext = null;
-                try
-                {
-                    if (_profileService != null)
-                    {
-                        var astro = _profileService.ActiveProfile.AstrometrySettings;
-                        astroContext = AstroContext.Compute(
-                            astro.Latitude, astro.Longitude, astro.Elevation, DateTime.UtcNow);
-                        Logger.Info($"Astro context: Sun {astroContext.SunAltitude:F1}° ({astroContext.SunState}), " +
-                                   $"Moon {astroContext.MoonIllumination:F0}% {astroContext.MoonPhase} at {astroContext.MoonAltitude:F1}°");
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Logger.Warning($"Failed to compute astronomical context: {ex.Message}");
-                }
-
-                var result = await _analysisService.AnalyzeImageAsync(frame, astroContext, cancellationToken);
-                Logger.Debug("AI analysis completed");
+                var analysis = await _analysisOrchestrator.AnalyzeAsync(
+                    analysisService,
+                    frame,
+                    astroContext,
+                    cancellationToken);
+                var result = analysis.EffectiveResult;
+                Logger.Debug(
+                    $"AI analysis completed: effective={result.Provenance.Origin}, " +
+                    $"fallback={analysis.UsedFallback}, " +
+                    $"teacher={analysis.Teacher?.Provenance.Provider ?? "none"}, " +
+                    $"student={analysis.Student.Provenance.Model}");
                 _lastResult = result;
+                _lastAnalysisBundle = analysis;
+                _lastAstroContext = astroContext;
 
-                // The clock the freshness check runs against. Set only on a real result:
-                // every provider falls back to the offline local analyzer internally, so
-                // reaching this line means the sky was actually assessed.
-                _lastAnalysisUtc = DateTime.UtcNow;
-                _staleLogged = false;
+                // Unknown/zero-confidence is a failure result, not fresh sky data. Preserve
+                // the previous timestamp so the fail-safe age limit can expire it.
+                if (result.Condition != WeatherCondition.Unknown && result.Confidence > 0)
+                {
+                    _lastAnalysisUtc = DateTime.UtcNow;
+                    _staleLogged = false;
+                }
 
                 // Store a copy of the image for UI restoration
                 _lastImage?.Dispose();
@@ -707,6 +964,24 @@ namespace AIWeather.Equipment
 
                 // Update Safety State (Hysteresis)
                 UpdateSafetyState(result);
+
+                var externalSafe = Properties.Settings.Default.UseAscomSafetyMonitor
+                    ? IsExternalMonitorSafe()
+                    : (bool?)null;
+
+                // Fast selection + image clone only. Resize, hashing, JPEG encoding and I/O
+                // happen on a bounded background writer. A false return is deliberately
+                // ignored: dataset collection must never affect the safety verdict.
+                _datasetRecorder.TryEnqueue(
+                    frame,
+                    capturedUtc,
+                    astroContext,
+                    analysis,
+                    effectiveSafe: IsSafe,
+                    visualSafe: _isCurrentlySafe,
+                    externalSafetyMonitorSafe: externalSafe,
+                    highThreshold: Properties.Settings.Default.CloudCoverageThreshold,
+                    lowThreshold: Properties.Settings.Default.CloudCoverageSafeThreshold);
 
                 // Expose the reading to the Advanced Sequencer's Symbols sidebar (N.I.N.A. 3.3+).
                 // The published Safe symbol is the composite state, so an expression in the
@@ -717,7 +992,17 @@ namespace AIWeather.Equipment
                 Logger.Info($"Weather Analysis - Condition: {result.Condition}, " +
                           $"Cloud Coverage: {result.CloudCoverage:F1}%, " +
                           $"Safe: {result.IsSafeForImaging}, " +
-                          $"Confidence: {result.Confidence:F1}%");
+                          $"Confidence: {result.Confidence:F1}%, " +
+                          $"Source: {result.Provenance.Provider}/{result.Provenance.Model}, " +
+                          $"Fallback: {result.Provenance.IsFallback}");
+
+                if (analysis.TeacherStudentCloudDifference is double difference)
+                {
+                    Logger.Info(
+                        $"Teacher/student shadow comparison - teacher: " +
+                        $"{analysis.Teacher!.Result!.CloudCoverage:F1}%, student: " +
+                        $"{analysis.Student.CloudCoverage:F1}%, difference: {difference:F1}%");
+                }
 
                 if (Properties.Settings.Default.UseAscomSafetyMonitor)
                 {
@@ -747,7 +1032,6 @@ namespace AIWeather.Equipment
 
                 PruneCaptureFolder(captureFolder);
 
-                frame.Dispose();
             }
             catch (Exception ex)
             {
@@ -759,6 +1043,7 @@ namespace AIWeather.Equipment
             }
             finally
             {
+                frame?.Dispose();
                 _checkGate.Release();
             }
         }
@@ -826,6 +1111,57 @@ namespace AIWeather.Equipment
         /// Get the latest captured image
         /// </summary>
         public Bitmap? GetLatestImage() => _lastImage != null ? new Bitmap(_lastImage) : null;
+
+        /// <summary>
+        /// Adds the most recent frame to the high-priority review queue. This remains a
+        /// no-op when dataset collection is disabled and never re-runs the online teacher.
+        /// </summary>
+        public async Task<bool> KeepLatestFrameForReviewAsync(
+            CancellationToken cancellationToken = default)
+        {
+            await _checkGate.WaitAsync(cancellationToken);
+            try
+            {
+                if (_lastImage == null || _lastAnalysisBundle == null)
+                {
+                    return false;
+                }
+
+                using var image = new Bitmap(_lastImage);
+                var externalSafe = Properties.Settings.Default.UseAscomSafetyMonitor
+                    ? IsExternalMonitorSafe()
+                    : (bool?)null;
+                return _datasetRecorder.TryEnqueue(
+                    image,
+                    DateTime.UtcNow,
+                    _lastAstroContext,
+                    _lastAnalysisBundle,
+                    effectiveSafe: IsSafe,
+                    visualSafe: _isCurrentlySafe,
+                    externalSafetyMonitorSafe: externalSafe,
+                    highThreshold: Properties.Settings.Default.CloudCoverageThreshold,
+                    lowThreshold: Properties.Settings.Default.CloudCoverageSafeThreshold,
+                    manualReview: true);
+            }
+            finally
+            {
+                _checkGate.Release();
+            }
+        }
+
+        public Task ShutdownAsync()
+        {
+            StopPeriodicMonitoring();
+            return _datasetRecorder.StopAsync(TimeSpan.FromSeconds(5));
+        }
+
+        private sealed class NinaDatasetRecorderLogger : IDatasetRecorderLogger
+        {
+            public void Info(string message) => Logger.Info(message);
+            public void Warning(string message) => Logger.Warning(message);
+            public void Error(string message, Exception exception) =>
+                Logger.Error(message, exception);
+        }
 
         /// <summary>
         /// Force an immediate weather check

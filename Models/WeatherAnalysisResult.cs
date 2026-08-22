@@ -21,6 +21,30 @@ namespace AIWeather.Models
         /// Additional metadata from the analysis
         /// </summary>
         public string? RawAnalysisData { get; set; }
+
+        /// <summary>
+        /// Strongly typed source/failure metadata. Kept as an additive property so existing
+        /// N.I.N.A. bindings and third-party consumers of WeatherAnalysisResult keep working.
+        /// </summary>
+        public AnalysisProvenance Provenance { get; set; } = new AnalysisProvenance();
+
+        public WeatherAnalysisResult Clone(bool includeRawAnalysisData = true)
+        {
+            return new WeatherAnalysisResult
+            {
+                Timestamp = Timestamp,
+                Condition = Condition,
+                CloudCoverage = CloudCoverage,
+                Confidence = Confidence,
+                IsSafeForImaging = IsSafeForImaging,
+                Description = Description,
+                Brightness = Brightness,
+                RainDetected = RainDetected,
+                FogDetected = FogDetected,
+                RawAnalysisData = includeRawAnalysisData ? RawAnalysisData : null,
+                Provenance = Provenance.Clone()
+            };
+        }
     }
 
     public enum WeatherCondition

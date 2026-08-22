@@ -3,19 +3,25 @@ using NINA.Core.Utility;
 using System;
 using System.Drawing;
 using System.Drawing.Imaging;
+using System.Diagnostics;
+using System.Globalization;
 using System.IO;
+using System.Net;
 using System.Net.Http;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 
 namespace AIWeather.Services
 {
     [System.Runtime.Versioning.SupportedOSPlatform("windows")]
-    public class GeminiAnalysisService : IWeatherAnalysisService
+    public class GeminiAnalysisService : IOnlineWeatherAnalysisService
     {
         private static readonly HttpClient Http = new HttpClient();
+        private const int MaxAttempts = 3;
+        private static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(60);
 
         private readonly string _apiKey;
         private readonly string _modelName;
@@ -45,11 +51,47 @@ namespace AIWeather.Services
 
         public async Task<WeatherAnalysisResult> AnalyzeImageAsync(Bitmap image, AstroContext? astroContext = null, CancellationToken cancellationToken = default)
         {
+            var attempt = await TryAnalyzeOnlineOnlyAsync(image, astroContext, cancellationToken);
+            if (attempt.Success && attempt.Result != null)
+            {
+                return attempt.Result;
+            }
+
+            // Compatibility for callers that only know IWeatherAnalysisService. This is an
+            // explicit failed online result, never a disguised local fallback. The safety
+            // monitor uses TryAnalyzeOnlineOnlyAsync and owns the fallback decision.
+            return new WeatherAnalysisResult
+            {
+                Timestamp = DateTime.UtcNow,
+                Condition = WeatherCondition.Unknown,
+                CloudCoverage = 50,
+                Confidence = 0,
+                IsSafeForImaging = false,
+                Description = $"Gemini analysis failed: {attempt.Provenance.FailureCategory}",
+                Provenance = attempt.Provenance.Clone()
+            };
+        }
+
+        public async Task<OnlineAnalysisAttempt> TryAnalyzeOnlineOnlyAsync(
+            Bitmap image,
+            AstroContext? astroContext = null,
+            CancellationToken cancellationToken = default)
+        {
+            var stopwatch = Stopwatch.StartNew();
+            var attemptsUsed = 0;
+
             if (!_isInitialized)
             {
-                Logger.Warning("Gemini service not initialized, falling back to local analysis");
-                var fallback = new LocalWeatherAnalysisService();
-                return await fallback.AnalyzeImageAsync(image, astroContext, cancellationToken);
+                Logger.Warning("Gemini service is not initialized; returning an online failure for explicit orchestration");
+                return OnlineAnalysisAttempt.Failed(
+                    AnalysisMetadata.FailedOnline(
+                        AnalysisOrigin.Gemini,
+                        "Gemini",
+                        _modelName,
+                        AnalysisFailureCategory.Authentication,
+                        0,
+                        stopwatch.ElapsedMilliseconds),
+                    "Gemini API key is missing or the service was not initialized");
             }
 
             try
@@ -88,55 +130,332 @@ namespace AIWeather.Services
                     generationConfig = new
                     {
                         temperature = 0.1,
-                        maxOutputTokens = 512
+                        // Newer Gemini Flash models may spend part of the output budget on
+                        // internal reasoning. 512 tokens produced repeatedly truncated JSON
+                        // in live NINA runs, even though the HTTP request itself succeeded.
+                        maxOutputTokens = 2048,
+                        responseMimeType = "application/json"
                     }
                 };
 
-                using var request = new HttpRequestMessage(HttpMethod.Post, url);
-                request.Headers.TryAddWithoutValidation("x-goog-api-key", _apiKey);
-                request.Headers.UserAgent.ParseAdd("NINA-AIWeather/1.0");
-                request.Content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json");
+                var serializedPayload = JsonSerializer.Serialize(payload);
 
-                Logger.Info("Calling Gemini API...");
-
-                // Create a timeout cancellation token source (60 seconds timeout)
-                using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+                // Keep retries inside the original 60-second request budget. A transient
+                // provider failure must not turn a one-minute monitor interval into several
+                // minutes of blocked work.
+                using var timeoutCts = new CancellationTokenSource(RequestTimeout);
                 using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
 
-                using var response = await Http.SendAsync(request, linkedCts.Token);
-                var json = await response.Content.ReadAsStringAsync(linkedCts.Token);
-
-                if (!response.IsSuccessStatusCode)
+                for (var attempt = 1; attempt <= MaxAttempts; attempt++)
                 {
-                    Logger.Error($"Gemini API error: HTTP {(int)response.StatusCode}: {json}");
-                    throw new InvalidOperationException($"HTTP {(int)response.StatusCode}: {json}");
+                    attemptsUsed = attempt;
+                    try
+                    {
+                        using var request = new HttpRequestMessage(HttpMethod.Post, url);
+                        request.Headers.TryAddWithoutValidation("x-goog-api-key", _apiKey);
+                        request.Headers.UserAgent.ParseAdd("NINA-AIWeather/1.0");
+                        request.Content = new StringContent(serializedPayload, Encoding.UTF8, "application/json");
+
+                        Logger.Info($"Calling Gemini API (attempt {attempt}/{MaxAttempts})...");
+
+                        using var response = await Http.SendAsync(request, linkedCts.Token);
+                        var json = await response.Content.ReadAsStringAsync(linkedCts.Token);
+
+                        if (!response.IsSuccessStatusCode)
+                        {
+                            var isTransient = IsTransientStatus(response.StatusCode);
+                            if (isTransient && attempt < MaxAttempts)
+                            {
+                                var delay = GetRetryDelay(response, json, attempt);
+                                Logger.Warning(
+                                    $"Gemini API temporarily unavailable: HTTP {(int)response.StatusCode}. " +
+                                    $"Retrying in {delay.TotalSeconds:F1}s (attempt {attempt + 1}/{MaxAttempts}).");
+                                await Task.Delay(delay, linkedCts.Token);
+                                continue;
+                            }
+
+                            Logger.Error(
+                                $"Gemini API error after {attempt} attempt(s): HTTP {(int)response.StatusCode}: " +
+                                TruncateForLog(json));
+                            throw new GeminiApiException(response.StatusCode, json, attempt, isTransient);
+                        }
+
+                        Logger.Info("Gemini API responded, parsing response...");
+
+                        using var doc = JsonDocument.Parse(json);
+                        var text = ExtractGeminiText(doc.RootElement);
+
+                        var result = PromptText.ParseAIResponse(text);
+                        if (!WeatherAnalysisValidator.IsValidTeacherResult(result, out var validationReason))
+                        {
+                            Logger.Warning($"Gemini returned a response rejected by the weather schema: {validationReason}");
+                            return OnlineAnalysisAttempt.Failed(
+                                AnalysisMetadata.FailedOnline(
+                                    AnalysisOrigin.Gemini,
+                                    "Gemini",
+                                    _modelName,
+                                    AnalysisFailureCategory.SchemaRejected,
+                                    attempt,
+                                    stopwatch.ElapsedMilliseconds,
+                                    (int)response.StatusCode),
+                                validationReason);
+                        }
+
+                        result.Provenance = AnalysisMetadata.Online(
+                            AnalysisOrigin.Gemini,
+                            "Gemini",
+                            _modelName,
+                            attempt,
+                            stopwatch.ElapsedMilliseconds,
+                            (int)response.StatusCode);
+                        Logger.Info($"Gemini analysis complete: {result.Condition}, Cloud Coverage: {result.CloudCoverage:F1}%");
+                        return OnlineAnalysisAttempt.Succeeded(result);
+                    }
+                    catch (HttpRequestException ex) when (attempt < MaxAttempts)
+                    {
+                        var delay = GetRetryDelay(null, null, attempt);
+                        Logger.Warning(
+                            $"Gemini network request failed: {ex.Message}. " +
+                            $"Retrying in {delay.TotalSeconds:F1}s (attempt {attempt + 1}/{MaxAttempts}).");
+                        await Task.Delay(delay, linkedCts.Token);
+                    }
+                    catch (HttpRequestException ex)
+                    {
+                        throw new GeminiApiException(null, ex.Message, attempt, true, ex);
+                    }
                 }
 
-                Logger.Info("Gemini API responded, parsing response...");
-
-                using var doc = JsonDocument.Parse(json);
-                var text = ExtractGeminiText(doc.RootElement);
-
-                var result = PromptText.ParseAIResponse(text);
-                Logger.Info($"Gemini analysis complete: {result.Condition}, Cloud Coverage: {result.CloudCoverage:F1}%");
-                return result;
+                throw new GeminiApiException(null, "Retry loop ended without a response", MaxAttempts, true);
             }
             catch (OperationCanceledException ex)
             {
-                Logger.Warning($"Gemini API call timed out or was cancelled, falling back to local analysis: {ex.Message}");
-                var fallback = new LocalWeatherAnalysisService();
-                var result = await fallback.AnalyzeImageAsync(image, astroContext, cancellationToken);
-                result.Description = $"[Fallback: Local] Gemini timed out. {result.Description}";
-                return result;
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    throw;
+                }
+
+                Logger.Warning($"Gemini API call timed out: {ex.Message}");
+                return OnlineAnalysisAttempt.Failed(
+                    AnalysisMetadata.FailedOnline(
+                        AnalysisOrigin.Gemini,
+                        "Gemini",
+                        _modelName,
+                        AnalysisFailureCategory.Timeout,
+                        attemptsUsed,
+                        stopwatch.ElapsedMilliseconds),
+                    "Gemini request timed out");
+            }
+            catch (GeminiApiException ex)
+            {
+                var status = ex.StatusCode.HasValue ? $"HTTP {(int)ex.StatusCode.Value}" : "network error";
+                var reason = ex.IsTransient
+                    ? $"Gemini temporarily unavailable after {ex.Attempts} attempts ({status})"
+                    : $"Gemini request rejected ({status})";
+
+                Logger.Error($"{reason}: {ex.Message}");
+                return OnlineAnalysisAttempt.Failed(
+                    AnalysisMetadata.FailedOnline(
+                        AnalysisOrigin.Gemini,
+                        "Gemini",
+                        _modelName,
+                        AnalysisMetadata.FromHttpStatus(ex.StatusCode),
+                        ex.Attempts,
+                        stopwatch.ElapsedMilliseconds,
+                        ex.StatusCode.HasValue ? (int)ex.StatusCode.Value : null),
+                    reason);
+            }
+            catch (JsonException ex)
+            {
+                Logger.Error($"Gemini returned malformed envelope JSON: {ex.Message}");
+                return OnlineAnalysisAttempt.Failed(
+                    AnalysisMetadata.FailedOnline(
+                        AnalysisOrigin.Gemini,
+                        "Gemini",
+                        _modelName,
+                        AnalysisFailureCategory.MalformedResponse,
+                        attemptsUsed,
+                        stopwatch.ElapsedMilliseconds,
+                        200),
+                    "Gemini response envelope was malformed");
             }
             catch (Exception ex)
             {
-                Logger.Error($"Error in Gemini analysis, falling back to local analysis: {ex.Message}", ex);
-                var fallback = new LocalWeatherAnalysisService();
-                var result = await fallback.AnalyzeImageAsync(image, astroContext, cancellationToken);
-                result.Description = $"[Fallback: Local] Gemini error. {result.Description}";
-                return result;
+                Logger.Error($"Error in Gemini online analysis: {ex.Message}", ex);
+                return OnlineAnalysisAttempt.Failed(
+                    AnalysisMetadata.FailedOnline(
+                        AnalysisOrigin.Gemini,
+                        "Gemini",
+                        _modelName,
+                        ex is HttpRequestException
+                            ? AnalysisFailureCategory.Network
+                            : AnalysisFailureCategory.Unknown,
+                        attemptsUsed,
+                        stopwatch.ElapsedMilliseconds),
+                    ex.GetType().Name);
             }
+        }
+
+        private static bool IsTransientStatus(HttpStatusCode statusCode)
+        {
+            var code = (int)statusCode;
+            return code == 408 || code == 429 || code == 500 || code == 502 || code == 503 || code == 504;
+        }
+
+        private static TimeSpan GetRetryDelay(HttpResponseMessage? response, string? responseBody, int attempt)
+        {
+            var maximumServerDelay = TimeSpan.FromSeconds(30);
+            var retryAfter = response?.Headers.RetryAfter;
+            if (retryAfter?.Delta is TimeSpan delta && delta > TimeSpan.Zero)
+            {
+                return delta > maximumServerDelay ? maximumServerDelay : delta;
+            }
+
+            if (retryAfter?.Date is DateTimeOffset retryDate)
+            {
+                var requestedDelay = retryDate - DateTimeOffset.UtcNow;
+                if (requestedDelay > TimeSpan.Zero)
+                {
+                    return requestedDelay > maximumServerDelay
+                        ? maximumServerDelay
+                        : requestedDelay;
+                }
+            }
+
+            // Gemini commonly puts quota retry guidance in the JSON body as a
+            // google.rpc.RetryInfo duration (or in the human-readable message) without a
+            // Retry-After header. Respect it so retries do not make a 429 quota window worse.
+            if (TryGetGeminiRetryDelay(responseBody, out var geminiDelay))
+            {
+                return geminiDelay > maximumServerDelay ? maximumServerDelay : geminiDelay;
+            }
+
+            // Exponential backoff with jitter, as recommended for transient Gemini errors.
+            var exponentialSeconds = Math.Min(8.0, Math.Pow(2.0, attempt - 1));
+            var jitterMilliseconds = Random.Shared.Next(150, 651);
+            return TimeSpan.FromSeconds(exponentialSeconds) + TimeSpan.FromMilliseconds(jitterMilliseconds);
+        }
+
+        private static bool TryGetGeminiRetryDelay(string? responseBody, out TimeSpan delay)
+        {
+            delay = TimeSpan.Zero;
+            if (string.IsNullOrWhiteSpace(responseBody))
+            {
+                return false;
+            }
+
+            try
+            {
+                using var document = JsonDocument.Parse(responseBody);
+                if (document.RootElement.TryGetProperty("error", out var error))
+                {
+                    if (error.TryGetProperty("details", out var details)
+                        && details.ValueKind == JsonValueKind.Array)
+                    {
+                        foreach (var detail in details.EnumerateArray())
+                        {
+                            if (detail.ValueKind == JsonValueKind.Object
+                                && detail.TryGetProperty("retryDelay", out var retryDelay)
+                                && retryDelay.ValueKind == JsonValueKind.String
+                                && TryParseGoogleDuration(retryDelay.GetString(), out delay))
+                            {
+                                return true;
+                            }
+                        }
+                    }
+
+                    if (error.TryGetProperty("message", out var message)
+                        && message.ValueKind == JsonValueKind.String
+                        && TryParseRetryDelayFromMessage(message.GetString(), out delay))
+                    {
+                        return true;
+                    }
+                }
+            }
+            catch (JsonException)
+            {
+                // Some proxies return text or HTML instead of Google's normal JSON body.
+            }
+
+            return TryParseRetryDelayFromMessage(responseBody, out delay);
+        }
+
+        private static bool TryParseGoogleDuration(string? value, out TimeSpan delay)
+        {
+            delay = TimeSpan.Zero;
+            if (string.IsNullOrWhiteSpace(value) || !value.EndsWith("s", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            if (!double.TryParse(
+                    value.Substring(0, value.Length - 1),
+                    NumberStyles.Float,
+                    CultureInfo.InvariantCulture,
+                    out var seconds)
+                || seconds <= 0)
+            {
+                return false;
+            }
+
+            delay = TimeSpan.FromSeconds(seconds);
+            return true;
+        }
+
+        private static bool TryParseRetryDelayFromMessage(string? value, out TimeSpan delay)
+        {
+            delay = TimeSpan.Zero;
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return false;
+            }
+
+            var match = Regex.Match(
+                value,
+                @"(?i)\bretry\s+in\s+(?<seconds>\d+(?:\.\d+)?)s\b",
+                RegexOptions.CultureInvariant);
+            if (!match.Success
+                || !double.TryParse(
+                    match.Groups["seconds"].Value,
+                    NumberStyles.Float,
+                    CultureInfo.InvariantCulture,
+                    out var seconds)
+                || seconds <= 0)
+            {
+                return false;
+            }
+
+            delay = TimeSpan.FromSeconds(seconds);
+            return true;
+        }
+
+        private static string TruncateForLog(string value, int maxLength = 1000)
+        {
+            if (string.IsNullOrEmpty(value) || value.Length <= maxLength)
+            {
+                return value;
+            }
+
+            return value.Substring(0, maxLength) + "...";
+        }
+
+        private sealed class GeminiApiException : Exception
+        {
+            public GeminiApiException(
+                HttpStatusCode? statusCode,
+                string responseBody,
+                int attempts,
+                bool isTransient,
+                Exception? innerException = null)
+                : base(TruncateForLog(responseBody), innerException)
+            {
+                StatusCode = statusCode;
+                Attempts = attempts;
+                IsTransient = isTransient;
+            }
+
+            public HttpStatusCode? StatusCode { get; }
+            public int Attempts { get; }
+            public bool IsTransient { get; }
         }
 
         private static string ExtractGeminiText(JsonElement root)

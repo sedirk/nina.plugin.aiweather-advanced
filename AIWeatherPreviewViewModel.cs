@@ -1,6 +1,8 @@
 using AIWeather.Equipment;
+using AIWeather.Localization;
 using AIWeather.Models;
 using AIWeather.Services;
+using AIWeather.Views;
 using NINA.Core.Utility;
 using NINA.Equipment.Interfaces;
 using NINA.Equipment.Interfaces.ViewModel;
@@ -34,12 +36,15 @@ namespace AIWeather
         private WeatherAnalysisResult? _currentAnalysis;
         private bool _isConnected;
         private bool _isRunning = false;
-        private string _statusMessage = "Ready";
-        private string _activityLog = "AI Weather Monitor initialized...\n";
+        private string _statusMessage = UiLocalization.Text("Runtime.Ready");
+        private string _activityLog = UiLocalization.Text("Runtime.Initialized") + "\n";
         private AIWeatherPreviewView? _view;
         private DispatcherTimer _refreshTimer;
         private readonly SemaphoreSlim _refreshGate = new SemaphoreSlim(1, 1);
         private CommunityToolkit.Mvvm.Input.RelayCommand? _saveImageCommand;
+        private CommunityToolkit.Mvvm.Input.AsyncRelayCommand? _keepDatasetSampleCommand;
+        private DatasetLabelReviewWindow? _datasetReviewWindow;
+        private bool _solarSuspensionShown;
 
         // Capture mode tracking
         public Models.CaptureMode CurrentCaptureMode
@@ -77,7 +82,7 @@ namespace AIWeather
             _sharedSafetyMonitor = AIWeatherSafetyMonitor.Instance;
             _safetyMonitor = _sharedSafetyMonitor;
             
-            this.Title = "AI Weather Monitor";
+            this.Title = UiLocalization.Text("Preview.Title");
             
             // Initialize refresh timer for live updates (every 2 seconds when streaming)
             var timerDispatcher = UiDispatcher ?? Dispatcher.CurrentDispatcher;
@@ -147,7 +152,7 @@ namespace AIWeather
                 }
             }
             
-            Logger.Info($"Initializing camera source - Mode: {captureMode}, Saved URL: '{savedUrl}' -> Protocol: '{protocol}', MediaUrl: '{mediaUrl}'");
+            Logger.Info($"Initializing camera source - Mode: {captureMode}, Saved URL: '{LogRedactor.RedactRtspUrl(savedUrl)}', Protocol: '{protocol}'");
             
             Sources = new ObservableCollection<CameraSource>
             {
@@ -173,6 +178,11 @@ namespace AIWeather
             SaveImageCommand = _saveImageCommand;
             ConnectCommand = new CommunityToolkit.Mvvm.Input.AsyncRelayCommand(async () => { await ToggleConnectionAsync(); });
             StartStopMonitoringCommand = new CommunityToolkit.Mvvm.Input.AsyncRelayCommand(async () => { await StartStopMonitoringAsync(); });
+            _keepDatasetSampleCommand = new CommunityToolkit.Mvvm.Input.AsyncRelayCommand(
+                KeepDatasetSampleAsync,
+                () => DatasetEnabled && _currentAnalysis != null);
+            KeepDatasetSampleCommand = _keepDatasetSampleCommand;
+            OpenDatasetReviewCommand = new CommunityToolkit.Mvvm.Input.RelayCommand(OpenDatasetReviewWindow);
             AddSourceCommand = new CommunityToolkit.Mvvm.Input.RelayCommand(AddSource);
             DeleteSourceCommand = new CommunityToolkit.Mvvm.Input.RelayCommand<CameraSource?>(source =>
             {
@@ -238,7 +248,7 @@ namespace AIWeather
                             _refreshTimer.Stop();
                             IsConnected = false;
                             IsRunning = false;
-                            StatusMessage = "Disconnected";
+                            StatusMessage = UiLocalization.Text("Runtime.Disconnected");
                             
                             if (Sources != null)
                             {
@@ -247,11 +257,14 @@ namespace AIWeather
                                     source.IsRunning = false;
                                 }
                             }
-                            AddLog("⏹ Monitoring stopped");
+                            AddLog(UiLocalization.Text("Log.MonitoringStopped"));
                         });
                     }
                 }
-                else if (e.PropertyName == nameof(AIWeatherSafetyMonitor.IsSafe))
+                else if (e.PropertyName == nameof(AIWeatherSafetyMonitor.IsSafe)
+                         || e.PropertyName == nameof(AIWeatherSafetyMonitor.IsSolarAltitudeSuspended)
+                         || e.PropertyName == nameof(AIWeatherSafetyMonitor.CurrentSunAltitude)
+                         || e.PropertyName == nameof(AIWeatherSafetyMonitor.SunAltitudeLimitDegrees))
                 {
                     // Weather check completed — update UI with latest results
                     if (_safetyMonitor.Connected)
@@ -269,6 +282,16 @@ namespace AIWeather
                         });
                     }
                 }
+                else if (e.PropertyName == nameof(AIWeatherSafetyMonitor.DatasetStatus)
+                         || e.PropertyName == nameof(AIWeatherSafetyMonitor.DatasetStatusText))
+                {
+                    RunOnUiThread(() =>
+                    {
+                        RaisePropertyChanged(nameof(DatasetStatusText));
+                        RaisePropertyChanged(nameof(DatasetEnabled));
+                        _keepDatasetSampleCommand?.NotifyCanExecuteChanged();
+                    });
+                }
             };
 
             Properties.Settings.Default.PropertyChanged += (s, e) =>
@@ -276,6 +299,8 @@ namespace AIWeather
                 if (e.PropertyName == nameof(Properties.Settings.Default.AnalysisProvider)
                     || e.PropertyName == nameof(Properties.Settings.Default.SelectedModel)
                     || e.PropertyName == nameof(Properties.Settings.Default.CheckIntervalMinutes)
+                    || e.PropertyName == nameof(Properties.Settings.Default.UseSunAltitudeLimit)
+                    || e.PropertyName == nameof(Properties.Settings.Default.SunAltitudeLimitDegrees)
                     || e.PropertyName == nameof(Properties.Settings.Default.CloudCoverageThreshold)
                     || e.PropertyName == nameof(Properties.Settings.Default.UseGitHubModels)
                     || e.PropertyName == nameof(Properties.Settings.Default.CaptureMode)
@@ -283,7 +308,9 @@ namespace AIWeather
                     || e.PropertyName == nameof(Properties.Settings.Default.INDIDeviceName)
                     || e.PropertyName == nameof(Properties.Settings.Default.FolderPath)
                     || e.PropertyName == nameof(Properties.Settings.Default.RtspUsername)
-                    || e.PropertyName == nameof(Properties.Settings.Default.RtspPassword))
+                    || e.PropertyName == nameof(Properties.Settings.Default.RtspPassword)
+                    || (!string.IsNullOrWhiteSpace(e.PropertyName)
+                        && e.PropertyName.StartsWith("Dataset", StringComparison.Ordinal)))
                 {
                     RunOnUiThread(() =>
                     {
@@ -315,6 +342,9 @@ namespace AIWeather
                         }
                         RaisePropertyChanged(nameof(AnalysisMethod));
                         RaisePropertyChanged(nameof(AiSettingsSummary));
+                        RaisePropertyChanged(nameof(DatasetStatusText));
+                        RaisePropertyChanged(nameof(DatasetEnabled));
+                        _keepDatasetSampleCommand?.NotifyCanExecuteChanged();
                     });
                 }
             };
@@ -493,6 +523,8 @@ namespace AIWeather
         public ICommand DeleteSourceCommand { get; }
         public ICommand StartStreamCommand { get; }
         public ICommand StartStopMonitoringCommand { get; }
+        public ICommand KeepDatasetSampleCommand { get; }
+        public ICommand OpenDatasetReviewCommand { get; }
 
         public string RtspUrl
         {
@@ -553,7 +585,9 @@ namespace AIWeather
             }
         }
 
-        public string ConnectionStatus => IsConnected ? "Connected" : "Disconnected";
+        public string ConnectionStatus => IsConnected
+            ? UiLocalization.Text("Runtime.Connected")
+            : UiLocalization.Text("Runtime.Disconnected");
 
         public string StatusMessage
         {
@@ -578,7 +612,9 @@ namespace AIWeather
         // Analysis properties
         // Safety state comes from the safety monitor (optionally ASCOM-backed).
         public bool IsSafe => _safetyMonitor?.IsSafe ?? (_currentAnalysis?.IsSafeForImaging ?? false);
-        public string SafetyStatus => IsSafe ? "✅ SAFE" : "⛔ UNSAFE";
+        public string SafetyStatus => IsSafe
+            ? "✅ " + UiLocalization.Text("Preview.Safe")
+            : "⛔ " + UiLocalization.Text("Preview.Unsafe");
 
         /// <summary>
         /// One line saying *why* the monitor reports what it reports - a cloudy sky, a
@@ -586,14 +622,42 @@ namespace AIWeather
         /// UNSAFE on a visibly clear night is indistinguishable from a broken pipeline.
         /// </summary>
         public string SafetyReason => _safetyMonitor?.SafetyStateReason ?? string.Empty;
-        public string WeatherCondition => _currentAnalysis?.Condition.ToString() ?? "Unknown";
+        public string WeatherCondition => _currentAnalysis == null
+            ? UiLocalization.Text("Common.Unknown")
+            : UiLocalization.Condition(_currentAnalysis.Condition);
         public double CloudCoverage => _currentAnalysis?.CloudCoverage ?? 0;
         public double Confidence => _currentAnalysis?.Confidence ?? 0;
         public double HighThreshold => Properties.Settings.Default.CloudCoverageThreshold;
         public double LowThreshold => Properties.Settings.Default.CloudCoverageSafeThreshold;
         public bool RainDetected => _currentAnalysis?.RainDetected ?? false;
         public bool FogDetected => _currentAnalysis?.FogDetected ?? false;
-        public string Description => _currentAnalysis?.Description ?? "No analysis available";
+        public string Description => _currentAnalysis == null
+            ? (_safetyMonitor.IsSolarAltitudeSuspended
+                ? _safetyMonitor.SafetyStateReason
+                : UiLocalization.Text("Runtime.NoAnalysis"))
+            : UiLocalization.AnalysisDescription(_currentAnalysis, Properties.Settings.Default.AnalysisProvider);
+        public string AnalysisSourceSummary
+        {
+            get
+            {
+                if (_currentAnalysis == null)
+                {
+                    return UiLocalization.Text(
+                        _safetyMonitor.IsSolarAltitudeSuspended
+                            ? "Runtime.SourceSolarSuspended"
+                            : "Runtime.SourceWaiting");
+                }
+
+                var provenance = _currentAnalysis.Provenance;
+                var fallback = provenance.IsFallback
+                    ? UiLocalization.Text("Runtime.Fallback", UiLocalization.FailureCategory(provenance.FailureCategory))
+                    : string.Empty;
+                return UiLocalization.Text("Runtime.Source", provenance.Provider, provenance.Model, fallback);
+            }
+        }
+
+        public bool DatasetEnabled => Properties.Settings.Default.DatasetEnabled;
+        public string DatasetStatusText => _safetyMonitor.DatasetStatusText;
         public DateTime? CaptureTimestamp { get; private set; }
         public DateTime? LastUpdate { get; private set; }
 
@@ -608,7 +672,7 @@ namespace AIWeather
                     return string.IsNullOrWhiteSpace(model) ? provider : $"{provider} - {model}";
                 }
 
-                return "Local Image Processing";
+                return UiLocalization.Text("Runtime.LocalProcessing");
             }
         }
 
@@ -631,7 +695,17 @@ namespace AIWeather
                     ? provider
                     : $"{provider} - {model}";
 
-                return $"AI: {aiLabel} | Check: {intervalMinutes}m | Cloud Limits: {highThreshold:F0}% / {lowThreshold:F0}%";
+                var summary = UiLocalization.Text(
+                    "Runtime.AiSettings",
+                    aiLabel,
+                    intervalMinutes,
+                    highThreshold,
+                    lowThreshold);
+                return Properties.Settings.Default.UseSunAltitudeLimit
+                    ? summary + UiLocalization.Text(
+                        "Runtime.SunLimitSummary",
+                        SolarAltitudeGuard.NormalizeLimit(Properties.Settings.Default.SunAltitudeLimitDegrees))
+                    : summary;
             }
         }
 
@@ -654,7 +728,7 @@ namespace AIWeather
             if (_safetyMonitor.Connected)
             {
                 Logger.Info("RestoreMonitoringState: SafetyMonitor is connected, restoring UI state");
-                AddLog("✓ Monitoring state restored - monitoring is active");
+                AddLog(UiLocalization.Text("Log.StateRestored"));
 
                 // Restore connection state
                 IsConnected = true;
@@ -676,13 +750,13 @@ namespace AIWeather
                 {
                     Logger.Info("RestoreMonitoringState: cached result available, updating display");
                     _ = UpdateFromLatestResultAsync(loadImage: true);
-                    StatusMessage = "Monitoring active";
+                    StatusMessage = UiLocalization.Text("Runtime.MonitoringActive");
                 }
                 else
                 {
                     Logger.Info("RestoreMonitoringState: no cached result yet — will update when first check completes");
-                    StatusMessage = "Waiting for first analysis...";
-                    AddLog("✓ Monitoring started — waiting for first weather check...");
+                    StatusMessage = UiLocalization.Text("Runtime.WaitingAnalysis");
+                    AddLog(UiLocalization.Text("Log.MonitoringFirst"));
                 }
             }
             else
@@ -698,32 +772,32 @@ namespace AIWeather
                 if (IsConnected)
                 {
                     // Disconnect
-                    AddLog("Disconnecting from RTSP stream...");
+                    AddLog(UiLocalization.Text("Log.DisconnectingRtsp"));
                     _safetyMonitor.Disconnect();
                     IsConnected = false;
-                    StatusMessage = "Disconnected";
+                    StatusMessage = UiLocalization.Text("Runtime.Disconnected");
                     CurrentImage = null;
-                    AddLog("✓ Disconnected successfully");
+                    AddLog(UiLocalization.Text("Log.Disconnected"));
                 }
                 else
                 {
                     // Connect
                     if (string.IsNullOrWhiteSpace(RtspUrl))
                     {
-                        AddLog("ERROR: RTSP URL is required");
-                        StatusMessage = "RTSP URL required";
+                        AddLog(UiLocalization.Text("Log.RtspRequired"));
+                        StatusMessage = UiLocalization.Text("Runtime.RtspRequired");
                         return false;
                     }
 
-                    AddLog($"Connecting to {RtspUrl}...");
-                    StatusMessage = "Connecting...";
+                    AddLog(UiLocalization.Text("Log.Connecting", RtspUrl));
+                    StatusMessage = UiLocalization.Text("Runtime.Connecting");
                     var connected = await _safetyMonitor.Connect(CancellationToken.None);
                     
                     if (connected)
                     {
                         IsConnected = true;
-                        StatusMessage = "Connected";
-                        AddLog("✓ Connected successfully - stream ready");
+                        StatusMessage = UiLocalization.Text("Runtime.Connected");
+                        AddLog(UiLocalization.Text("Log.Connected"));
 
                         // Do not force an immediate check here; the safety monitor already starts its periodic
                         // monitoring (with an initial check). We'll just sync UI from whatever is available.
@@ -731,8 +805,8 @@ namespace AIWeather
                     }
                     else
                     {
-                        AddLog("ERROR: Connection failed - check URL and credentials");
-                        StatusMessage = "Connection failed";
+                        AddLog(UiLocalization.Text("Log.ConnectionFailed"));
+                        StatusMessage = UiLocalization.Text("Runtime.ConnectionFailed");
                         return false;
                     }
                 }
@@ -742,10 +816,10 @@ namespace AIWeather
             }
             catch (Exception ex)
             {
-                AddLog($"ERROR: Connection error - {ex.Message}");
+                AddLog(UiLocalization.Text("Log.ConnectionError", ex.Message));
                 Logger.Error($"Connection error: {ex.Message}", ex);
                 IsConnected = false;
-                StatusMessage = "Connection error";
+                StatusMessage = UiLocalization.Text("Runtime.ConnectionError");
                 RaisePropertyChanged(nameof(ConnectButtonText));
                 return false;
             }
@@ -756,8 +830,36 @@ namespace AIWeather
             var result = _safetyMonitor.GetLatestResult();
             if (result == null)
             {
+                if (_safetyMonitor.IsSolarAltitudeSuspended)
+                {
+                    _currentAnalysis = null;
+                    LastUpdate = DateTime.Now;
+                    StatusMessage = UiLocalization.Text("Runtime.SolarSuspendedShort");
+                    if (!_solarSuspensionShown)
+                    {
+                        if (_safetyMonitor.CurrentSunAltitude is double sunAltitude)
+                        {
+                            AddLog(UiLocalization.Text(
+                                "Log.SolarSuspended",
+                                sunAltitude,
+                                _safetyMonitor.SunAltitudeLimitDegrees));
+                        }
+                        else
+                        {
+                            AddLog(UiLocalization.Text("Log.SolarUnavailable"));
+                        }
+                        _solarSuspensionShown = true;
+                    }
+                    RaiseAllAnalysisProperties();
+                }
                 Logger.Debug("UpdateFromLatestResultAsync: No result available from SafetyMonitor");
                 return;
+            }
+
+            if (_solarSuspensionShown)
+            {
+                AddLog(UiLocalization.Text("Log.SolarResumed"));
+                _solarSuspensionShown = false;
             }
 
             Logger.Debug($"UpdateFromLatestResultAsync: Displaying result - {result.Condition}, {result.CloudCoverage:F1}% clouds");
@@ -784,13 +886,13 @@ namespace AIWeather
             }
             try
             {
-                AddLog("Refreshing camera preview...");
-                StatusMessage = "Capturing frame...";
+                    AddLog(UiLocalization.Text("Log.RefreshingPreview"));
+                StatusMessage = UiLocalization.Text("Runtime.Capturing");
 
                 if (!_safetyMonitor.Connected)
                 {
-                    AddLog("ERROR: Not connected to camera");
-                    StatusMessage = "Not connected to camera";
+                    AddLog(UiLocalization.Text("Log.CameraNotConnected"));
+                    StatusMessage = UiLocalization.Text("Runtime.CameraNotConnected");
                     return false;
                 }
 
@@ -799,12 +901,17 @@ namespace AIWeather
                 
                 if (result == null)
                 {
-                    AddLog("ERROR: Failed to capture frame");
+                    if (_safetyMonitor.IsSolarAltitudeSuspended)
+                    {
+                        await UpdateFromLatestResultAsync(loadImage: false);
+                        return true;
+                    }
+                    AddLog(UiLocalization.Text("Log.CaptureFailed"));
                     if (CurrentCaptureMode == Models.CaptureMode.RTSPStream)
                     {
-                        AddLog("Tip: RTSP AI capture uses OpenCV/FFmpeg (not VLC). If your URL is just rtsp://IP it may show video but still return empty frames. Use the camera's full RTSP stream URL including the path (e.g. /stream, /live, /h264) and port if needed.");
+                        AddLog(UiLocalization.Text("Log.CaptureTip"));
                     }
-                    StatusMessage = "Failed to capture frame";
+                    StatusMessage = UiLocalization.Text("Runtime.CaptureFailed");
                     return false;
                 }
 
@@ -821,18 +928,25 @@ namespace AIWeather
                 if (!string.IsNullOrEmpty(imagePath) && File.Exists(imagePath))
                 {
                     await LoadImageAsync(imagePath);
-                    AddLog($"✓ Frame captured successfully");
-                    AddLog($"Analysis: {result.Condition} (Cloud: {result.CloudCoverage:F1}%)");
-                    if (result.RainDetected) AddLog("⚠ Rain detected");
-                    if (result.FogDetected) AddLog("⚠ Fog detected");
-                    AddLog($"Status: {(result.IsSafeForImaging ? "SAFE ✓" : "UNSAFE ⛔")}");
-                    StatusMessage = "Analysis complete";
+                    AddLog(UiLocalization.Text("Log.CaptureSuccess"));
+                    AddLog(UiLocalization.Text(
+                        "Log.Analysis",
+                        UiLocalization.Condition(result.Condition),
+                        result.CloudCoverage));
+                    if (result.RainDetected) AddLog(UiLocalization.Text("Log.Rain"));
+                    if (result.FogDetected) AddLog(UiLocalization.Text("Log.Fog"));
+                    AddLog(UiLocalization.Text(
+                        "Log.Status",
+                        result.IsSafeForImaging
+                            ? UiLocalization.Text("Preview.Safe") + " ✓"
+                            : UiLocalization.Text("Preview.Unsafe") + " ⛔"));
+                    StatusMessage = UiLocalization.Text("Runtime.AnalysisComplete");
                 }
                 else
                 {
                     Logger.Warning($"Image file not found. Looking in temp path, found: {imagePath ?? "null"}");
-                    AddLog("WARNING: Image captured but not found");
-                    StatusMessage = "Image captured but not found";
+                    AddLog(UiLocalization.Text("Log.ImageMissing"));
+                    StatusMessage = UiLocalization.Text("Runtime.ImageMissing");
                 }
 
                 // Refresh all analysis properties
@@ -842,9 +956,9 @@ namespace AIWeather
             }
             catch (Exception ex)
             {
-                AddLog($"ERROR: {ex.Message}");
+                AddLog(UiLocalization.Text("Log.Error", ex.Message));
                 Logger.Error($"Error refreshing preview: {ex.Message}", ex);
-                StatusMessage = $"Error: {ex.Message}";
+                StatusMessage = UiLocalization.Text("Runtime.Error", ex.Message);
                 return false;
             }
             finally
@@ -870,8 +984,8 @@ namespace AIWeather
                     source.IsRunning = false;
                 }
                 
-                AddLog("⏹ Monitoring stopped");
-                StatusMessage = "Monitoring stopped";
+                AddLog(UiLocalization.Text("Log.MonitoringStopped"));
+                StatusMessage = UiLocalization.Text("Runtime.MonitoringStopped");
             }
             else
             {
@@ -879,11 +993,11 @@ namespace AIWeather
                 var source = Sources.FirstOrDefault();
                 if (source == null)
                 {
-                    AddLog("ERROR: No camera source configured");
+                    AddLog(UiLocalization.Text("Log.NoSource"));
                     return;
                 }
                 
-                Logger.Info($"Starting monitoring - Total sources: {Sources.Count}, Source URL: {source.FullUrl}, Source IsRunning (before): {source.IsRunning}");
+                Logger.Info($"Starting monitoring - Total sources: {Sources.Count}, Source URL: {LogRedactor.RedactRtspUrl(source.FullUrl)}, Source IsRunning (before): {source.IsRunning}");
                 
                 // Save settings based on capture mode
                 var captureMode = CurrentCaptureMode;
@@ -903,8 +1017,8 @@ namespace AIWeather
                 CoreUtil.SaveSettings(Properties.Settings.Default);
                 
                 // Start monitoring
-                AddLog("▶ Starting periodic monitoring...");
-                StatusMessage = "Connecting...";
+                AddLog(UiLocalization.Text("Log.MonitoringStarting"));
+                StatusMessage = UiLocalization.Text("Runtime.Connecting");
                 
                 var connected = await _safetyMonitor.Connect(CancellationToken.None);
                 if (connected)
@@ -914,8 +1028,8 @@ namespace AIWeather
                     source.IsRunning = true;
                     
                     Logger.Info($"Monitoring started - IsRunning set to true for source. Mode: {captureMode}");
-                    AddLog($"✓ Monitoring started ({GetCheckIntervalMinutesClamped()} min intervals)");
-                    StatusMessage = "Capturing initial image...";
+                    AddLog(UiLocalization.Text("Log.MonitoringStarted", GetCheckIntervalMinutesClamped()));
+                    StatusMessage = UiLocalization.Text("Runtime.InitialCapture");
                     
                     // Do initial capture immediately
                     await RefreshAsync();
@@ -926,14 +1040,14 @@ namespace AIWeather
                     var intervalMinutes = GetCheckIntervalMinutesClamped();
                     Logger.Info($"Starting refresh timer with {intervalMinutes} minute interval");
                     _refreshTimer.Start();
-                    AddLog($"📊 Periodic monitoring active - next update in {intervalMinutes} minute(s)");
+                    AddLog(UiLocalization.Text("Log.MonitoringActive", intervalMinutes));
                     
-                    StatusMessage = "Monitoring active";
+                    StatusMessage = UiLocalization.Text("Runtime.MonitoringActive");
                 }
                 else
                 {
-                    AddLog("ERROR: Failed to connect");
-                    StatusMessage = "Connection failed";
+                    AddLog(UiLocalization.Text("Log.ConnectFailed"));
+                    StatusMessage = UiLocalization.Text("Runtime.ConnectionFailed");
                     IsRunning = false;
                     source.IsRunning = false;
                 }
@@ -1033,16 +1147,16 @@ namespace AIWeather
                     using var fileStream = new FileStream(dialog.FileName, FileMode.Create);
                     encoder.Save(fileStream);
 
-                    AddLog($"✓ Image saved to {Path.GetFileName(dialog.FileName)}");
-                    StatusMessage = $"Image saved to {dialog.FileName}";
+                    AddLog(UiLocalization.Text("Log.ImageSaved", Path.GetFileName(dialog.FileName)));
+                    StatusMessage = UiLocalization.Text("Runtime.ImageSaved", dialog.FileName);
                     Logger.Info($"Image saved to: {dialog.FileName}");
                 }
             }
             catch (Exception ex)
             {
-                AddLog($"ERROR: Failed to save image - {ex.Message}");
+                AddLog(UiLocalization.Text("Log.ImageSaveFailed", ex.Message));
                 Logger.Error($"Error saving image: {ex.Message}", ex);
-                StatusMessage = $"Error saving image: {ex.Message}";
+                StatusMessage = UiLocalization.Text("Runtime.ImageSaveError", ex.Message);
             }
         }
 
@@ -1059,10 +1173,59 @@ namespace AIWeather
             RaisePropertyChanged(nameof(RainDetected));
             RaisePropertyChanged(nameof(FogDetected));
             RaisePropertyChanged(nameof(Description));
+            RaisePropertyChanged(nameof(AnalysisSourceSummary));
+            RaisePropertyChanged(nameof(DatasetStatusText));
+            RaisePropertyChanged(nameof(DatasetEnabled));
             RaisePropertyChanged(nameof(CaptureTimestamp));
             RaisePropertyChanged(nameof(LastUpdate));
             RaisePropertyChanged(nameof(AnalysisMethod));
             RaisePropertyChanged(nameof(AiSettingsSummary));
+            _keepDatasetSampleCommand?.NotifyCanExecuteChanged();
+        }
+
+        private async Task KeepDatasetSampleAsync()
+        {
+            try
+            {
+                var queued = await _safetyMonitor.KeepLatestFrameForReviewAsync();
+                AddLog(UiLocalization.Text(queued ? "Log.FrameQueued" : "Log.FrameNotQueued"));
+                RaisePropertyChanged(nameof(DatasetStatusText));
+            }
+            catch (Exception ex)
+            {
+                AddLog(UiLocalization.Text("Log.QueueFailed", ex.Message));
+                Logger.Error($"Could not queue current dataset review sample: {ex.Message}", ex);
+            }
+        }
+
+        private void OpenDatasetReviewWindow()
+        {
+            try
+            {
+                if (_datasetReviewWindow?.IsLoaded == true)
+                {
+                    if (_datasetReviewWindow.WindowState == WindowState.Minimized)
+                    {
+                        _datasetReviewWindow.WindowState = WindowState.Normal;
+                    }
+                    _datasetReviewWindow.Activate();
+                    return;
+                }
+
+                var root = DatasetRecorderOptions.FromSettings().RootDirectory;
+                _datasetReviewWindow = new DatasetLabelReviewWindow(root)
+                {
+                    Owner = Application.Current?.MainWindow
+                };
+                _datasetReviewWindow.Closed += (_, _) => _datasetReviewWindow = null;
+                _datasetReviewWindow.Show();
+                AddLog(UiLocalization.Text("Log.ReviewerOpened"));
+            }
+            catch (Exception ex)
+            {
+                AddLog(UiLocalization.Text("Log.ReviewerOpenFailed", ex.Message));
+                Logger.Error($"Could not open dataset label reviewer: {ex.Message}", ex);
+            }
         }
 
         private void AddLog(string message)
@@ -1092,7 +1255,7 @@ namespace AIWeather
                 Password = ""
             };
             Sources.Add(newSource);
-            AddLog("➕ New camera source added");
+            AddLog(UiLocalization.Text("Log.NewSource"));
         }
 
         private void DeleteSource(CameraSource source)
@@ -1101,12 +1264,12 @@ namespace AIWeather
             {
                 if (source.IsRunning)
                 {
-                    AddLog($"⚠ Stop stream before deleting source {source.MediaUrl}");
+                    AddLog(UiLocalization.Text("Log.DeleteRunning", LogRedactor.RedactRtspUrl(source.FullUrl)));
                     return;
                 }
                 
                 Sources.Remove(source);
-                AddLog($"➖ Camera source removed: {source.MediaUrl}");
+                AddLog(UiLocalization.Text("Log.SourceRemoved", LogRedactor.RedactRtspUrl(source.FullUrl)));
             }
         }
 
@@ -1119,7 +1282,7 @@ namespace AIWeather
                 if (source.IsRunning)
                 {
                     // Stop stream
-                    AddLog($"⏹ Stopping stream from {source.FullUrl}...");
+                    AddLog(UiLocalization.Text("Log.StoppingStream", LogRedactor.RedactRtspUrl(source.FullUrl)));
                     source.IsLoading = true;
                     
                     // Stop live video stream
@@ -1138,8 +1301,8 @@ namespace AIWeather
                     
                     source.IsRunning = false;
                     source.IsLoading = false;
-                    AddLog($"✓ Stream stopped: {source.MediaUrl}");
-                    StatusMessage = "Stream stopped";
+                    AddLog(UiLocalization.Text("Log.StreamStopped", LogRedactor.RedactRtspUrl(source.FullUrl)));
+                    StatusMessage = UiLocalization.Text("Runtime.StreamStopped");
                     return true;
                 }
                 else
@@ -1147,14 +1310,14 @@ namespace AIWeather
                     // Start stream
                     if (string.IsNullOrWhiteSpace(source.MediaUrl))
                     {
-                        AddLog($"⚠ ERROR: Media URL is required for {source.Protocol}");
+                        AddLog(UiLocalization.Text("Log.MediaRequired", source.Protocol));
                         return false;
                     }
 
-                    Logger.Info($"Stream start - Protocol: '{source.Protocol}', MediaUrl: '{source.MediaUrl}', FullUrl: '{source.FullUrl}'");
-                    AddLog($"▶ Starting RTSP stream from {source.FullUrl}...");
+                    Logger.Info($"Stream start - Protocol: '{source.Protocol}', FullUrl: '{LogRedactor.RedactRtspUrl(source.FullUrl)}'");
+                    AddLog(UiLocalization.Text("Log.StartingStream", LogRedactor.RedactRtspUrl(source.FullUrl)));
                     source.IsLoading = true;
-                    StatusMessage = "Connecting to stream...";
+                    StatusMessage = UiLocalization.Text("Runtime.StreamConnecting");
 
                     // Update settings with this source's details
                     Properties.Settings.Default.RtspUrl = source.FullUrl;
@@ -1167,7 +1330,7 @@ namespace AIWeather
                         if (Uri.TryCreate(source.FullUrl, UriKind.Absolute, out var uri)
                             && (string.IsNullOrWhiteSpace(uri.AbsolutePath) || uri.AbsolutePath == "/"))
                         {
-                            AddLog("⚠ RTSP URL has no stream path. Live preview may still work, but AI frame capture often fails. Enter the full RTSP stream URL (include /stream or similar).");
+                            AddLog(UiLocalization.Text("Log.MissingPath"));
                         }
                     }
                     catch
@@ -1179,16 +1342,16 @@ namespace AIWeather
                     var view = GetVideoView();
                     if (view != null)
                     {
-                        Logger.Info($"Calling StartStream - URL: {source.FullUrl}, Username: '{source.Username}', Password length: {source.Password?.Length ?? 0}");
+                        Logger.Info($"Calling StartStream - URL: {LogRedactor.RedactRtspUrl(source.FullUrl)}, Authentication: {(string.IsNullOrWhiteSpace(source.Username) ? "embedded or not configured" : "configured separately")}");
                         await view.StartStreamAsync(source.FullUrl, source.Username, source.Password);
                         
                         source.IsRunning = true;
                         source.IsLoading = false;
-                        StatusMessage = "Live stream active";
-                        AddLog($"✓ Live RTSP stream started: {source.MediaUrl}");
+                        StatusMessage = UiLocalization.Text("Runtime.StreamActive");
+                        AddLog(UiLocalization.Text("Log.StreamStarted", LogRedactor.RedactRtspUrl(source.FullUrl)));
                         
                         // Also connect safety monitor for analysis
-                        AddLog($"📊 Connecting AI analysis for RTSP mode...");
+                        AddLog(UiLocalization.Text("Log.ConnectingAnalysis"));
                         Logger.Info($"Attempting to connect safety monitor for AI analysis. Current mode: {CurrentCaptureMode}");
                         var connected = await _safetyMonitor.Connect(CancellationToken.None);
                         Logger.Info($"Safety monitor Connect() returned: {connected}");
@@ -1196,33 +1359,14 @@ namespace AIWeather
                         {
                             IsConnected = true;
                             var intervalMinutes = GetCheckIntervalMinutesClamped();
-                            AddLog($"✓ AI analysis connected - automatic monitoring enabled");
-                            AddLog($"📊 Weather analysis will run automatically every {intervalMinutes} minute(s)");
+                            AddLog(UiLocalization.Text("Log.AnalysisConnected"));
+                            AddLog(UiLocalization.Text("Log.AnalysisSchedule", intervalMinutes));
 
-                            // Trigger immediate first analysis
-                            StatusMessage = "Running initial analysis...";
-                            _ = Task.Run(async () =>
-                            {
-                                try
-                                {
-                                    await Task.Delay(2000); // Give RTSP stream a moment to stabilize
-                                    Logger.Info("Triggering immediate first analysis for RTSP mode");
-                                    var result = await _safetyMonitor.ForceCheckAsync();
-                                    if (result != null)
-                                    {
-                                        RunOnUiThread(() =>
-                                        {
-                                            AddLog($"✓ First analysis complete: {result.Condition} (Cloud: {result.CloudCoverage:F0}%)");
-                                            StatusMessage = "Monitoring active";
-                                        });
-                                        await UpdateFromLatestResultAsync(loadImage: true);
-                                    }
-                                }
-                                catch (Exception ex)
-                                {
-                                    Logger.Error($"Error in initial analysis: {ex.Message}");
-                                }
-                            });
+                            // Connect() starts the periodic timer with an immediate first
+                            // check. Do not queue a second ForceCheckAsync here: live testing
+                            // showed two back-to-back Gemini calls on every RTSP start, wasting
+                            // quota and making rate-limit failures much more likely.
+                            StatusMessage = UiLocalization.Text("Runtime.WaitingAnalysis");
 
                             // Start UI refresh timer to display latest results
                             ApplyRefreshIntervalFromSettings();
@@ -1232,7 +1376,7 @@ namespace AIWeather
                         else
                         {
                             IsConnected = false;
-                            AddLog("⚠ AI analysis not connected (preview still running)");
+                            AddLog(UiLocalization.Text("Log.AnalysisNotConnected"));
                         }
                         
                         return true;
@@ -1240,8 +1384,8 @@ namespace AIWeather
                     else
                     {
                         source.IsLoading = false;
-                        AddLog($"❌ ERROR: Video view not initialized");
-                        StatusMessage = "Video view error";
+                        AddLog(UiLocalization.Text("Log.VideoNotInitialized"));
+                        StatusMessage = UiLocalization.Text("Runtime.VideoError");
                         return false;
                     }
                 }
@@ -1250,9 +1394,9 @@ namespace AIWeather
             {
                 source.IsLoading = false;
                 source.IsRunning = false;
-                AddLog($"❌ ERROR: Stream error - {ex.Message}");
-                Logger.Error($"Stream toggle error for {source.FullUrl}: {ex.Message}", ex);
-                StatusMessage = $"Error: {ex.Message}";
+                AddLog(UiLocalization.Text("Log.StreamError", ex.Message));
+                Logger.Error($"Stream toggle error for {LogRedactor.RedactRtspUrl(source.FullUrl)}: {ex.Message}", ex);
+                StatusMessage = UiLocalization.Text("Runtime.Error", ex.Message);
                 return false;
             }
         }
@@ -1265,7 +1409,7 @@ namespace AIWeather
         public void SetView(AIWeatherPreviewView view)
         {
             _view = view;
-            AddLog("✓ AI Weather Monitor view initialized");
+            AddLog(UiLocalization.Text("Log.ViewInitialized"));
 
             Logger.Info($"SetView called - IsRunning: {IsRunning}, Sources.Count: {Sources.Count}, CurrentCaptureMode: {CurrentCaptureMode}, IsNonRtspMode: {IsNonRtspMode}");
 
@@ -1273,18 +1417,18 @@ namespace AIWeather
             if (IsRunning && Sources.Count > 0)
             {
                 var source = Sources[0];
-                Logger.Info($"Source state - IsRunning: {source.IsRunning}, FullUrl: '{source.FullUrl}', CaptureMode: {source.CaptureMode}");
+                Logger.Info($"Source state - IsRunning: {source.IsRunning}, FullUrl: '{LogRedactor.RedactRtspUrl(source.FullUrl)}', CaptureMode: {source.CaptureMode}");
 
                 if (IsRtspMode && source.IsRunning && !string.IsNullOrWhiteSpace(source.FullUrl))
                 {
                     // RTSP mode: restart the video stream
-                    AddLog("✓ Restarting RTSP video stream...");
+                    AddLog(UiLocalization.Text("Log.RestartingStream"));
                     _view.StartStream(source.FullUrl, source.Username, source.Password);
                 }
                 else if (IsNonRtspMode)
                 {
                     // HTTP and Folder modes: restore last image and results
-                    AddLog($"✓ Restoring monitoring display for {CurrentCaptureMode} mode...");
+                    AddLog(UiLocalization.Text("Log.RestoringMode", CurrentCaptureMode));
                     Logger.Info($"Attempting to restore image for {CurrentCaptureMode} mode");
 
                     // Get and display the latest captured image

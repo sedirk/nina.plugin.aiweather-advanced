@@ -2,6 +2,7 @@
                     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
                     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
                     xmlns:local="clr-namespace:AIWeather"
+                    xmlns:i18n="clr-namespace:AIWeather.Localization"
                     xmlns:conv="clr-namespace:AIWeather.Converters">
 
     <conv:BoolToVisibilityConverter x:Key="BoolToVisibility"/>
@@ -12,13 +13,13 @@
         <StackPanel Orientation="Vertical" Margin="10" DataContext="{Binding}">
 
             <!-- Capture Mode -->
-            <TextBlock Text="Capture Mode:" Margin="0,0,0,2" FontWeight="Bold"/>
+            <TextBlock Text="{i18n:Loc Options.CaptureMode}" Margin="0,0,0,2" FontWeight="Bold"/>
             <ComboBox SelectedIndex="{Binding Options.CaptureModeIndex, Mode=TwoWay}"
                       Width="300" HorizontalAlignment="Left"
                       Margin="0,0,0,10">
-                <ComboBoxItem Content="RTSP Stream (continuous video)"/>
-                <ComboBoxItem Content="HTTP Image Download (from URL)"/>
-                <ComboBoxItem Content="Folder Watch (monitor latest image)"/>
+                <ComboBoxItem Content="{i18n:Loc Options.RtspMode}"/>
+                <ComboBoxItem Content="{i18n:Loc Options.HttpMode}"/>
+                <ComboBoxItem Content="{i18n:Loc Options.FolderMode}"/>
             </ComboBox>
 
             <!-- RTSP URL (visible when mode = 0) -->
@@ -26,10 +27,10 @@
                 <StackPanel.Visibility>
                     <Binding Path="Options.CaptureMode" Converter="{StaticResource EnumToVisibilityConverter}" ConverterParameter="0"/>
                 </StackPanel.Visibility>
-                <TextBlock Text="RTSP Stream URL:" Margin="0,0,0,2"/>
+                <TextBlock Text="{i18n:Loc Options.RtspUrl}" Margin="0,0,0,2"/>
                 <TextBox Text="{Binding Options.RtspUrl, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" 
                          Width="300" HorizontalAlignment="Left"/>
-                <TextBlock Text="Configure username/password in the AI Weather Monitor imaging tab" 
+                <TextBlock Text="{i18n:Loc Options.ConfigureCredentials}"
                            FontSize="10" Foreground="#AAAAAA" Margin="0,2,0,0"/>
             </StackPanel>
 
@@ -38,20 +39,20 @@
                 <StackPanel.Visibility>
                     <Binding Path="Options.CaptureMode" Converter="{StaticResource EnumToVisibilityConverter}" ConverterParameter="1"/>
                 </StackPanel.Visibility>
-                <TextBlock Text="Image URL:" Margin="0,0,0,2"/>
+                <TextBlock Text="{i18n:Loc Options.ImageUrl}" Margin="0,0,0,2"/>
                 <TextBox Text="{Binding Options.INDIDeviceName, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" 
                          Width="300" HorizontalAlignment="Left"/>
                 <TextBlock TextWrapping="Wrap" FontSize="10" Foreground="#AAAAAA" Margin="0,2,0,0" Width="300" HorizontalAlignment="Left">
-                    <Run Text="Enter full URL to latest image"/>
+                    <Run Text="{i18n:Loc Options.ImageUrlHint}"/>
                     <LineBreak/>
-                    <Run Text="Example: http://192.168.1.100/image.jpg"/>
+                    <Run Text="{i18n:Loc Options.ImageUrlExample}"/>
                     <LineBreak/>
-                    <Run Text="Perfect for indi-allsky, AllSky, or any web-hosted all-sky camera"/>
+                    <Run Text="{i18n:Loc Options.HttpBestFor}"/>
                 </TextBlock>
-                <TextBlock Text="Username (optional):" Margin="0,10,0,2"/>
+                <TextBlock Text="{i18n:Loc Options.UsernameOptional}" Margin="0,10,0,2"/>
                 <TextBox Text="{Binding Options.RtspUsername, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" 
                          Width="300" HorizontalAlignment="Left"/>
-                <TextBlock Text="Password (optional):" Margin="0,5,0,2"/>
+                <TextBlock Text="{i18n:Loc Options.PasswordOptional}" Margin="0,5,0,2"/>
                 <PasswordBox Width="300" HorizontalAlignment="Left"
                              Loaded="HttpPasswordBox_Loaded"
                              PasswordChanged="HttpPasswordBox_PasswordChanged"/>
@@ -62,19 +63,19 @@
                 <StackPanel.Visibility>
                     <Binding Path="Options.CaptureMode" Converter="{StaticResource EnumToVisibilityConverter}" ConverterParameter="2"/>
                 </StackPanel.Visibility>
-                <TextBlock Text="Folder Path:" Margin="0,0,0,2"/>
+                <TextBlock Text="{i18n:Loc Options.FolderPath}" Margin="0,0,0,2"/>
                 <StackPanel Orientation="Horizontal" HorizontalAlignment="Left">
                     <TextBox Text="{Binding Options.FolderPath, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
                              Width="360"
                              VerticalContentAlignment="Center"/>
-                    <Button Content="Browse..." Margin="8,0,0,0" Padding="10,2"
+                    <Button Content="{i18n:Loc Common.Browse}" Margin="8,0,0,0" Padding="10,2"
                             Click="BrowseFolder_Click"/>
                 </StackPanel>
-                <TextBlock Text="Folder containing latest all-sky images" FontSize="10" Foreground="#AAAAAA" Margin="0,2,0,0"/>
+                <TextBlock Text="{i18n:Loc Options.FolderHint}" FontSize="10" Foreground="#AAAAAA" Margin="0,2,0,0"/>
             </StackPanel>
 
             <!-- Analysis Provider -->
-            <TextBlock Text="Analysis Provider:" Margin="0,10,0,2" FontWeight="Bold"/>
+            <TextBlock Text="{i18n:Loc Options.Provider}" Margin="0,10,0,2" FontWeight="Bold"/>
             <ComboBox ItemsSource="{Binding ProviderOptions}"
                       DisplayMemberPath="Name"
                       SelectedValuePath="Id"
@@ -82,23 +83,44 @@
                       Width="300" HorizontalAlignment="Left"/>
             
             <!-- Check Interval -->
-            <TextBlock Text="Check Interval (minutes):" Margin="0,0,0,2"/>
+            <TextBlock Text="{i18n:Loc Options.Interval}" Margin="0,0,0,2"/>
             <TextBox Text="{Binding CheckIntervalMinutes, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" 
                      Width="100" HorizontalAlignment="Left"/>
+
+            <!-- Solar-altitude guard: evaluated before capture/model/API/dataset work -->
+            <TextBlock Text="{i18n:Loc Options.SolarGuard}" Margin="0,20,0,2" FontWeight="Bold"/>
+            <Grid Width="500" HorizontalAlignment="Left" Margin="0,2,0,6">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="64"/>
+                </Grid.ColumnDefinitions>
+                <TextBlock Grid.Column="0" Text="{i18n:Loc Options.UseSunAltitudeLimit}"
+                           VerticalAlignment="Center" TextWrapping="Wrap" Margin="0,0,8,0"/>
+                <CheckBox Grid.Column="1"
+                          IsChecked="{Binding Options.UseSunAltitudeLimit, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                          Width="64" HorizontalAlignment="Right"/>
+            </Grid>
+            <TextBlock Text="{i18n:Loc Options.SunAltitudeLimit}" Margin="0,0,0,2"/>
+            <TextBox Text="{Binding Options.SunAltitudeLimitDegrees, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
+                     IsEnabled="{Binding Options.UseSunAltitudeLimit}"
+                     Width="100" HorizontalAlignment="Left"/>
+            <TextBlock Text="{i18n:Loc Options.SunAltitudeHelp}"
+                       Margin="0,4,0,0" FontSize="10" Foreground="#AAAAAA"
+                       TextWrapping="Wrap" MaxWidth="440" HorizontalAlignment="Left"/>
             
             <!-- Cloud Coverage Threshold -->
-            <TextBlock Text="Cloud Coverage High Threshold (%):" Margin="0,10,0,2"/>
+            <TextBlock Text="{i18n:Loc Options.HighThreshold}" Margin="0,10,0,2"/>
             <TextBox Text="{Binding CloudCoverageThreshold, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" 
                      Width="100" HorizontalAlignment="Left"/>
 
             <!-- Cloud Coverage Safe Threshold -->
-            <TextBlock Text="Cloud Coverage Low Threshold (%):" Margin="0,10,0,2"/>
+            <TextBlock Text="{i18n:Loc Options.LowThreshold}" Margin="0,10,0,2"/>
             <TextBox Text="{Binding CloudCoverageSafeThreshold, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" 
                      Width="100" HorizontalAlignment="Left"/>
 
                     <!-- Generic File SafetyMonitor output file -->
-                    <TextBlock Text="Generic File SafetyMonitor" Margin="0,20,0,2" FontWeight="Bold"/>
-                    <TextBlock Text="Write Safe/Unsafe status file:" Margin="0,0,0,6"/>
+                    <TextBlock Text="{i18n:Loc Options.GenericFile}" Margin="0,20,0,2" FontWeight="Bold"/>
+                    <TextBlock Text="{i18n:Loc Options.WriteStatus}" Margin="0,0,0,6"/>
                     <StackPanel Orientation="Horizontal" Margin="0,0,0,10" HorizontalAlignment="Left">
                     <CheckBox IsChecked="{Binding Options.WriteSafetyStatusFile, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
                           VerticalAlignment="Center"
@@ -108,26 +130,26 @@
                          IsEnabled="{Binding Options.WriteSafetyStatusFile}"
                          Width="360"
                          VerticalContentAlignment="Center"/>
-                    <Button Content="Browse..."
+                    <Button Content="{i18n:Loc Common.Browse}"
                         Margin="8,0,0,0"
                         Padding="10,2"
                         IsEnabled="{Binding Options.WriteSafetyStatusFile}"
                         Click="BrowseSafetyStatusFile_Click"/>
                     </StackPanel>
-                    <TextBlock Text="Writes a single line: Safe or Unsafe" FontSize="10" Foreground="#AAAAAA" Margin="0,0,0,4"/>
-                    <TextBlock Text="Point your ASCOM Generic File SafetyMonitor to this file" FontSize="10" Foreground="#AAAAAA" Margin="0,0,0,8"/>
+                    <TextBlock Text="{i18n:Loc Options.StatusOneLine}" FontSize="10" Foreground="#AAAAAA" Margin="0,0,0,4"/>
+                    <TextBlock Text="{i18n:Loc Options.StatusPointDriver}" FontSize="10" Foreground="#AAAAAA" Margin="0,0,0,8"/>
 
             <!-- Maximum data age: the sky verdict expires instead of being trusted forever -->
-            <TextBlock Text="Fail-safe" Margin="0,20,0,2" FontWeight="Bold"/>
-            <TextBlock Text="Maximum data age (minutes, 0 = automatic):" Margin="0,0,0,2"/>
+            <TextBlock Text="{i18n:Loc Options.FailSafe}" Margin="0,20,0,2" FontWeight="Bold"/>
+            <TextBlock Text="{i18n:Loc Options.MaxDataAge}" Margin="0,0,0,2"/>
             <TextBox Text="{Binding Options.MaxDataAgeMinutes, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
                      Width="100" HorizontalAlignment="Left"/>
-            <TextBlock Text="If no sky analysis succeeds within this time — a dead camera, an unreachable stream — the monitor reports Unsafe instead of holding the last known state. Automatic means three check intervals, never less than 10 minutes."
+            <TextBlock Text="{i18n:Loc Options.MaxDataAgeHelp}"
                        Margin="0,4,0,0" FontSize="10" Foreground="#AAAAAA" TextWrapping="Wrap" MaxWidth="440" HorizontalAlignment="Left"/>
 
             <!-- External ASCOM safety monitor, ANDed with the sky verdict -->
-            <TextBlock Text="External ASCOM Safety Monitor" Margin="0,20,0,2" FontWeight="Bold"/>
-            <TextBlock Text="Combine with an external safety monitor:" Margin="0,0,0,6"/>
+            <TextBlock Text="{i18n:Loc Options.ExternalMonitor}" Margin="0,20,0,2" FontWeight="Bold"/>
+            <TextBlock Text="{i18n:Loc Options.CombineExternal}" Margin="0,0,0,6"/>
             <StackPanel Orientation="Horizontal" Margin="0,0,0,10" HorizontalAlignment="Left">
                 <CheckBox IsChecked="{Binding Options.UseAscomSafetyMonitor, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
                           VerticalAlignment="Center"
@@ -137,30 +159,30 @@
                          IsEnabled="{Binding Options.UseAscomSafetyMonitor}"
                          Width="360"
                          VerticalContentAlignment="Center"/>
-                <Button Content="Choose..."
+                <Button Content="{i18n:Loc Common.Choose}"
                         Margin="8,0,0,0"
                         Padding="10,2"
                         IsEnabled="{Binding Options.UseAscomSafetyMonitor}"
                         Click="ChooseAscomSafetyMonitor_Click"/>
             </StackPanel>
-            <TextBlock Text="The result is combined with AND: imaging is Safe only when both the sky analysis and the external device report Safe. Use it to pair all-sky cloud/rain/fog detection with an environmental monitor (humidity, dew point, rain sensor)."
+            <TextBlock Text="{i18n:Loc Options.ExternalHelp}"
                        Margin="0,0,0,4" FontSize="10" Foreground="#AAAAAA" TextWrapping="Wrap" MaxWidth="440" HorizontalAlignment="Left"/>
-            <TextBlock Text="If the external device cannot be connected or read, the monitor reports Unsafe."
+            <TextBlock Text="{i18n:Loc Options.ExternalFail}"
                        Margin="0,0,0,8" FontSize="10" Foreground="#AAAAAA" TextWrapping="Wrap" MaxWidth="440" HorizontalAlignment="Left"/>
 
 
             <!-- GitHub Models Token -->
             <StackPanel Margin="0,10,0,0"
                         Visibility="{Binding IsGitHubModelsProvider, Converter={StaticResource BoolToVisibility}}">
-                <TextBlock Text="GitHub retired this service on July 30, 2026 — it no longer works for anyone. Analyses fall back to the Local heuristic; switch to Ollama/Custom (local, free), Google Gemini or OpenAI."
+                <TextBlock Text="{i18n:Loc Options.GitHubRetired}"
                            FontSize="10" Foreground="Salmon" TextWrapping="Wrap" Margin="0,0,0,6"/>
-                <TextBlock Text="GitHub Personal Access Token:" Margin="0,0,0,2"/>
+                <TextBlock Text="{i18n:Loc Options.GitHubToken}" Margin="0,0,0,2"/>
                 <StackPanel Orientation="Horizontal" HorizontalAlignment="Left">
                     <PasswordBox Width="360"
                                  HorizontalAlignment="Left"
                                  Loaded="GitHubTokenBox_Loaded"
                                  PasswordChanged="GitHubTokenBox_PasswordChanged"/>
-                    <Button Content="Try"
+                    <Button Content="{i18n:Loc Common.Try}"
                             Margin="8,0,0,0"
                             Padding="10,2"
                             Click="TryToken_Click"/>
@@ -171,79 +193,79 @@
             <!-- OpenAI Key -->
             <StackPanel Margin="0,10,0,0"
                         Visibility="{Binding IsOpenAIProvider, Converter={StaticResource BoolToVisibility}}">
-                <TextBlock Text="OpenAI API Key:" Margin="0,0,0,2"/>
+                <TextBlock Text="{i18n:Loc Options.OpenAiKey}" Margin="0,0,0,2"/>
                 <StackPanel Orientation="Horizontal" HorizontalAlignment="Left">
                     <PasswordBox Width="360"
                                  HorizontalAlignment="Left"
                                  Loaded="OpenAIKeyBox_Loaded"
                                  PasswordChanged="OpenAIKeyBox_PasswordChanged"/>
-                    <Button Content="Try"
+                    <Button Content="{i18n:Loc Common.Try}"
                             Margin="8,0,0,0"
                             Padding="10,2"
                             Click="TryOpenAIKey_Click"/>
                 </StackPanel>
                 <TextBlock Text="{Binding OpenAIKeyStatus}" Margin="0,4,0,0" FontSize="10" Foreground="#AAAAAA"/>
-                <TextBlock Text="Used with https://api.openai.com" Margin="0,4,0,0" FontSize="10" Foreground="#AAAAAA"/>
+                <TextBlock Text="{i18n:Loc Options.UsedOpenAi}" Margin="0,4,0,0" FontSize="10" Foreground="#AAAAAA"/>
             </StackPanel>
 
             <!-- Gemini Key -->
             <StackPanel Margin="0,10,0,0"
                         Visibility="{Binding IsGeminiProvider, Converter={StaticResource BoolToVisibility}}">
-                <TextBlock Text="Google Gemini API Key:" Margin="0,0,0,2"/>
+                <TextBlock Text="{i18n:Loc Options.GeminiKey}" Margin="0,0,0,2"/>
                 <StackPanel Orientation="Horizontal" HorizontalAlignment="Left">
                     <PasswordBox Width="360"
                                  HorizontalAlignment="Left"
                                  Loaded="GeminiKeyBox_Loaded"
                                  PasswordChanged="GeminiKeyBox_PasswordChanged"/>
-                    <Button Content="Try"
+                    <Button Content="{i18n:Loc Common.Try}"
                             Margin="8,0,0,0"
                             Padding="10,2"
                             Click="TryGeminiKey_Click"/>
                 </StackPanel>
                 <TextBlock Text="{Binding GeminiKeyStatus}" Margin="0,4,0,0" FontSize="10" Foreground="#AAAAAA"/>
-                <TextBlock Text="Used with Generative Language API" Margin="0,4,0,0" FontSize="10" Foreground="#AAAAAA"/>
+                <TextBlock Text="{i18n:Loc Options.UsedGemini}" Margin="0,4,0,0" FontSize="10" Foreground="#AAAAAA"/>
             </StackPanel>
 
             <!-- Anthropic Key -->
             <StackPanel Margin="0,10,0,0"
                         Visibility="{Binding IsAnthropicProvider, Converter={StaticResource BoolToVisibility}}">
-                <TextBlock Text="Anthropic API Key:" Margin="0,0,0,2"/>
+                <TextBlock Text="{i18n:Loc Options.AnthropicKey}" Margin="0,0,0,2"/>
                 <StackPanel Orientation="Horizontal" HorizontalAlignment="Left">
                     <PasswordBox Width="360"
                                  HorizontalAlignment="Left"
                                  Loaded="AnthropicKeyBox_Loaded"
                                  PasswordChanged="AnthropicKeyBox_PasswordChanged"/>
-                    <Button Content="Try"
+                    <Button Content="{i18n:Loc Common.Try}"
                             Margin="8,0,0,0"
                             Padding="10,2"
                             Click="TryAnthropicKey_Click"/>
                 </StackPanel>
                 <TextBlock Text="{Binding AnthropicKeyStatus}" Margin="0,4,0,0" FontSize="10" Foreground="#AAAAAA"/>
-                <TextBlock Text="Used with https://api.anthropic.com" Margin="0,4,0,0" FontSize="10" Foreground="#AAAAAA"/>
+                <TextBlock Text="{i18n:Loc Options.UsedAnthropic}" Margin="0,4,0,0" FontSize="10" Foreground="#AAAAAA"/>
             </StackPanel>
 
             <!-- Ollama Base URL -->
             <StackPanel Margin="0,10,0,0"
                         Visibility="{Binding IsOllamaProvider, Converter={StaticResource BoolToVisibility}}">
-                <TextBlock Text="Ollama Base URL:" Margin="0,0,0,2"/>
+                <TextBlock Text="{i18n:Loc Options.OllamaUrl}" Margin="0,0,0,2"/>
                 <TextBox Text="{Binding OllamaBaseUrl, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
                          Width="360"
                          HorizontalAlignment="Left"/>
-                <TextBlock Text="Default: http://localhost:11434/v1" Margin="0,4,0,0" FontSize="10" Foreground="#AAAAAA"/>
-                <TextBlock Text="Also works with LM Studio, llama.cpp, and LocalAI endpoints" Margin="0,4,0,0" FontSize="10" Foreground="#AAAAAA"/>
-                <TextBlock Text="No API key required. Use a vision-capable model (e.g. llava, qwen2.5vl)" Margin="0,4,0,0" FontSize="10" Foreground="#AAAAAA"/>
-                <TextBlock Text="Disable model thinking (recommended):" Margin="0,10,0,2"/>
+                <TextBlock Text="{i18n:Loc Options.OllamaDefault}" Margin="0,4,0,0" FontSize="10" Foreground="#AAAAAA"/>
+                <TextBlock Text="{i18n:Loc Options.OllamaCompatible}" Margin="0,4,0,0" FontSize="10" Foreground="#AAAAAA"/>
+                <TextBlock Text="{i18n:Loc Options.OllamaNoKey}" Margin="0,4,0,0" FontSize="10" Foreground="#AAAAAA"/>
+                <TextBlock Text="{i18n:Loc Options.DisableThinking}" Margin="0,10,0,2"/>
                 <CheckBox IsChecked="{Binding OllamaDisableThinking, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
                           Width="64"
                           HorizontalAlignment="Left"
                           VerticalAlignment="Center"/>
-                <TextBlock Text="Thinking-capable models (Gemma 4, Qwen 3.x, DeepSeek) reason at length before answering, which can multiply response times. Turn off only on fast hardware." Margin="0,4,0,0" FontSize="10" Foreground="#AAAAAA" TextWrapping="Wrap" MaxWidth="360" HorizontalAlignment="Left"/>
+                <TextBlock Text="{i18n:Loc Options.ThinkingHelp}" Margin="0,4,0,0" FontSize="10" Foreground="#AAAAAA" TextWrapping="Wrap" MaxWidth="360" HorizontalAlignment="Left"/>
             </StackPanel>
             
                 <!-- Model Selection (non-local providers) -->
                 <StackPanel Margin="0,10,0,0"
                     Visibility="{Binding IsNonLocalProvider, Converter={StaticResource BoolToVisibility}}">
-                <TextBlock Text="AI Model:" Margin="0,0,0,2"/>
+                <TextBlock Text="{i18n:Loc Options.AiModel}" Margin="0,0,0,2"/>
                 <StackPanel Orientation="Horizontal" HorizontalAlignment="Left">
                     <ComboBox x:Name="ModelComboBox"
                           ItemsSource="{Binding AvailableModels}"
@@ -252,7 +274,7 @@
                           Width="300"
                           HorizontalAlignment="Left"
                           Loaded="ModelComboBox_Loaded"/>
-                    <Button Content="Refresh"
+                    <Button Content="{i18n:Loc Common.Refresh}"
                         Margin="8,0,0,0"
                         Padding="10,2"
                         Click="RefreshModels_Click"/>
@@ -267,7 +289,7 @@
             <!-- Site notes: local knowledge appended to the analysis prompt of every provider.
                  Saved on focus loss rather than per keystroke, so typing does not rewrite the
                  settings file on every character. -->
-            <TextBlock Text="Site notes (optional):" Margin="0,15,0,2" FontWeight="Bold"/>
+            <TextBlock Text="{i18n:Loc Options.SiteNotes}" Margin="0,15,0,2" FontWeight="Bold"/>
             <TextBox Text="{Binding SiteNotes, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
                      Width="360"
                      Height="80"
@@ -275,44 +297,156 @@
                      AcceptsReturn="True"
                      TextWrapping="Wrap"
                      VerticalScrollBarVisibility="Auto"/>
-            <TextBlock Text="Anything about your site or camera the AI cannot guess, in your own words. Example: &quot;Clouds toward the south are lit orange by the city and can look like overcast&quot; or &quot;In daylight the sun reflects off the dome and creates a hazy halo&quot;. Sent with every analysis, for all providers. Keep it short — a few sentences."
+            <TextBlock Text="{i18n:Loc Options.SiteNotesHelp}"
                        Margin="0,4,0,0" FontSize="10" Foreground="#AAAAAA" TextWrapping="Wrap" MaxWidth="360" HorizontalAlignment="Left"/>
 
+            <!-- Teacher/student dataset: off by default and completely independent from
+                 the safety path. All heavy work runs on the bounded background writer. -->
+            <TextBlock Text="{i18n:Loc Options.Dataset}" FontWeight="Bold" Margin="0,20,0,6"/>
+            <Grid Width="500" HorizontalAlignment="Left">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="64"/>
+                </Grid.ColumnDefinitions>
+                <TextBlock Grid.Column="0" Text="{i18n:Loc Options.DatasetCollect}"
+                           VerticalAlignment="Center" TextWrapping="Wrap" Margin="0,0,8,0"/>
+                <CheckBox Grid.Column="1"
+                          IsChecked="{Binding Options.DatasetEnabled, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                          Width="64" HorizontalAlignment="Right"/>
+            </Grid>
+            <Grid Width="500" HorizontalAlignment="Left" Margin="0,4,0,8"
+                  IsEnabled="{Binding Options.DatasetEnabled}">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="64"/>
+                </Grid.ColumnDefinitions>
+                <TextBlock Grid.Column="0" Text="{i18n:Loc Options.DatasetPause}"
+                           VerticalAlignment="Center" TextWrapping="Wrap" Margin="0,0,8,0"/>
+                <CheckBox Grid.Column="1"
+                          IsChecked="{Binding Options.DatasetPaused, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                          Width="64" HorizontalAlignment="Right"/>
+            </Grid>
+            <TextBlock Text="{i18n:Loc Options.DatasetHelp}"
+                       Margin="0,0,0,8" FontSize="10" Foreground="#AAAAAA"
+                       TextWrapping="Wrap" MaxWidth="500" HorizontalAlignment="Left"/>
+
+            <TextBlock Text="{i18n:Loc Options.DatasetDirectory}" Margin="0,2,0,2"/>
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Left">
+                <TextBox Text="{Binding Options.DatasetDirectory, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
+                         Width="360" VerticalContentAlignment="Center"/>
+                <Button Content="{i18n:Loc Common.Browse}" Margin="8,0,0,0" Padding="10,2"
+                        Click="BrowseDatasetFolder_Click"/>
+                <Button Content="{i18n:Loc Common.Open}" Margin="6,0,0,0" Padding="10,2"
+                        Click="OpenDatasetFolder_Click"/>
+            </StackPanel>
+
+            <Grid Margin="0,8,0,0" HorizontalAlignment="Left">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="220"/>
+                    <ColumnDefinition Width="100"/>
+                </Grid.ColumnDefinitions>
+                <Grid.RowDefinitions>
+                     <RowDefinition Height="Auto"/>
+                     <RowDefinition Height="Auto"/>
+                     <RowDefinition Height="Auto"/>
+                     <RowDefinition Height="Auto"/>
+                     <RowDefinition Height="Auto"/>
+                     <RowDefinition Height="Auto"/>
+                     <RowDefinition Height="Auto"/>
+                 </Grid.RowDefinitions>
+                 <TextBlock Grid.Row="0" Grid.Column="0" Text="{i18n:Loc Options.DatasetSampleEveryChecks}" Margin="0,2"/>
+                 <TextBox Grid.Row="0" Grid.Column="1" Text="{Binding Options.DatasetSampleEveryChecks, Mode=TwoWay, UpdateSourceTrigger=LostFocus}" Width="80"/>
+                 <TextBlock Grid.Row="1" Grid.Column="0" Text="{i18n:Loc Options.DatasetMaxSize}" Margin="0,2"/>
+                 <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding Options.DatasetMaxSizeGb, Mode=TwoWay, UpdateSourceTrigger=LostFocus}" Width="80"/>
+                 <TextBlock Grid.Row="2" Grid.Column="0" Text="{i18n:Loc Options.DatasetMinFree}" Margin="0,2"/>
+                 <TextBox Grid.Row="2" Grid.Column="1" Text="{Binding Options.DatasetMinFreeSpaceGb, Mode=TwoWay, UpdateSourceTrigger=LostFocus}" Width="80"/>
+                 <TextBlock Grid.Row="3" Grid.Column="0" Text="{i18n:Loc Options.DatasetScale}" Margin="0,2"/>
+                 <TextBox Grid.Row="3" Grid.Column="1" Text="{Binding Options.DatasetImageScalePercent, Mode=TwoWay, UpdateSourceTrigger=LostFocus, StringFormat=F2}" Width="80"/>
+                 <TextBlock Grid.Row="4" Grid.Column="0" Text="{i18n:Loc Options.DatasetJpeg}" Margin="0,2"/>
+                 <TextBox Grid.Row="4" Grid.Column="1" Text="{Binding Options.DatasetJpegQuality, Mode=TwoWay, UpdateSourceTrigger=LostFocus}" Width="80"/>
+                 <TextBlock Grid.Row="5" Grid.Column="0" Text="{i18n:Loc Options.DatasetDisagreement}" Margin="0,2"/>
+                 <TextBox Grid.Row="5" Grid.Column="1" Text="{Binding Options.DatasetDisagreementThreshold, Mode=TwoWay, UpdateSourceTrigger=LostFocus}" Width="80"/>
+                 <TextBlock Grid.Row="6" Grid.Column="0" Text="{i18n:Loc Options.DatasetHamming}" Margin="0,2"/>
+                 <TextBox Grid.Row="6" Grid.Column="1" Text="{Binding Options.DatasetNearDuplicateHammingDistance, Mode=TwoWay, UpdateSourceTrigger=LostFocus}" Width="80"/>
+             </Grid>
+
+             <TextBlock Text="{i18n:Loc Options.DatasetSampleEveryChecksHelp}"
+                        Margin="0,5,0,0" FontSize="10" Foreground="#AAAAAA"
+                        TextWrapping="Wrap" MaxWidth="500" HorizontalAlignment="Left"/>
+             <TextBlock Text="{i18n:Loc Options.DatasetScaleHelp}"
+                        Margin="0,2,0,0" FontSize="10" Foreground="#AAAAAA"
+                        TextWrapping="Wrap" MaxWidth="500" HorizontalAlignment="Left"/>
+             <TextBlock Text="{i18n:Loc Options.DatasetHammingHelp}"
+                        Margin="0,2,0,0" FontSize="10" Foreground="#AAAAAA"
+                        TextWrapping="Wrap" MaxWidth="500" HorizontalAlignment="Left"/>
+
+             <Grid Width="500" HorizontalAlignment="Left" Margin="0,8,0,0">
+                 <Grid.ColumnDefinitions>
+                     <ColumnDefinition Width="*"/>
+                     <ColumnDefinition Width="64"/>
+                 </Grid.ColumnDefinitions>
+                 <TextBlock Grid.Column="0" Text="{i18n:Loc Options.DatasetRaw}"
+                            VerticalAlignment="Center" TextWrapping="Wrap" Margin="0,0,8,0"/>
+                 <CheckBox Grid.Column="1"
+                           IsChecked="{Binding Options.DatasetSaveTeacherRaw, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                           Width="64" HorizontalAlignment="Right"/>
+             </Grid>
+             <TextBlock Text="{i18n:Loc Options.DatasetRawHelp}"
+                        Margin="0,2,0,0" FontSize="10" Foreground="#AAAAAA"
+                        TextWrapping="Wrap" MaxWidth="500" HorizontalAlignment="Left"/>
+             <Grid Width="500" HorizontalAlignment="Left" Margin="0,6,0,0">
+                 <Grid.ColumnDefinitions>
+                     <ColumnDefinition Width="*"/>
+                     <ColumnDefinition Width="64"/>
+                 </Grid.ColumnDefinitions>
+                 <TextBlock Grid.Column="0" Text="{i18n:Loc Options.DatasetQuarantine}"
+                            VerticalAlignment="Center" TextWrapping="Wrap" Margin="0,0,8,0"/>
+                 <CheckBox Grid.Column="1"
+                           IsChecked="{Binding Options.DatasetRecordQuarantine, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                           Width="64" HorizontalAlignment="Right"/>
+             </Grid>
+             <TextBlock Text="{i18n:Loc Options.DatasetQuarantineHelp}"
+                        Margin="0,2,0,0" FontSize="10" Foreground="#AAAAAA"
+                        TextWrapping="Wrap" MaxWidth="500" HorizontalAlignment="Left"/>
+             <TextBlock Text="{i18n:Loc Options.DatasetPrivacy}"
+                       Margin="0,5,0,0" FontSize="10" Foreground="#AAAAAA"
+                       TextWrapping="Wrap" MaxWidth="500" HorizontalAlignment="Left"/>
+
             <!-- Description Section -->
-            <TextBlock Text="About AI Weather" FontWeight="Bold" Margin="0,20,0,10"/>
-            <TextBlock Text="AI Weather analyzes all-sky camera images using artificial intelligence to determine real-time weather conditions and protect your equipment during unattended imaging sessions."
+            <TextBlock Text="{i18n:Loc Options.About}" FontWeight="Bold" Margin="0,20,0,10"/>
+            <TextBlock Text="{i18n:Loc Options.AboutText}"
                        Margin="0,0,0,10" TextWrapping="Wrap" Width="500" HorizontalAlignment="Left"/>
 
-            <TextBlock Text="How It Works" FontWeight="Bold" Margin="0,5,0,5"/>
-            <TextBlock Text="The plugin periodically captures an image from your all-sky camera, sends it to a vision-capable AI model, and receives a structured weather assessment including cloud coverage percentage, weather condition, and rain/fog detection. Based on configurable thresholds, it reports a Safe or Unsafe status to NINA's safety monitor, which can automatically pause or abort an imaging sequence."
+            <TextBlock Text="{i18n:Loc Options.HowItWorks}" FontWeight="Bold" Margin="0,5,0,5"/>
+            <TextBlock Text="{i18n:Loc Options.HowItWorksText}"
                        Margin="0,0,0,10" TextWrapping="Wrap" Width="500" HorizontalAlignment="Left"/>
 
-            <TextBlock Text="Capture Modes" FontWeight="Bold" Margin="0,5,0,5"/>
+            <TextBlock Text="{i18n:Loc Options.CaptureModes}" FontWeight="Bold" Margin="0,5,0,5"/>
             <StackPanel Margin="15,0,0,10">
-                <TextBlock Text="○   RTSP Stream - live video from network IP cameras with real-time preview" Margin="0,3"/>
-                <TextBlock Text="○   HTTP Image - periodic download from a URL (indi-allsky, AllSky, web cameras)" Margin="0,3"/>
-                <TextBlock Text="○   Folder Watch - monitors a local folder for the latest image saved by any camera software" Margin="0,3"/>
+                <TextBlock Text="{i18n:Loc Options.CaptureRtspInfo}" Margin="0,3"/>
+                <TextBlock Text="{i18n:Loc Options.CaptureHttpInfo}" Margin="0,3"/>
+                <TextBlock Text="{i18n:Loc Options.CaptureFolderInfo}" Margin="0,3"/>
             </StackPanel>
 
-            <TextBlock Text="AI Providers" FontWeight="Bold" Margin="0,5,0,5"/>
+            <TextBlock Text="{i18n:Loc Options.Providers}" FontWeight="Bold" Margin="0,5,0,5"/>
             <StackPanel Margin="15,0,0,10">
-                <TextBlock Text="○   Local - offline heuristic analysis using brightness, color, and pattern detection" Margin="0,3"/>
-                <TextBlock Text="○   GitHub Models - RETIRED by GitHub on July 30, 2026; analyses fall back to Local" Margin="0,3"/>
-                <TextBlock Text="○   OpenAI - GPT-4o, GPT-4.1, o1, o3, o4-mini (models fetched live)" Margin="0,3"/>
-                <TextBlock Text="○   Google Gemini - free API tier, Flash/Pro vision models (fetched live)" Margin="0,3"/>
-                <TextBlock Text="○   Anthropic Claude - Claude Sonnet 4.5, Sonnet 4, Haiku 4.5, 3.5 series (models fetched live)" Margin="0,3"/>
-                <TextBlock Text="○   Ollama - local OpenAI-compatible server, no API key (LM Studio, llama.cpp, LocalAI also work)" Margin="0,3"/>
+                <TextBlock Text="{i18n:Loc Options.ProviderLocal}" Margin="0,3"/>
+                <TextBlock Text="{i18n:Loc Options.ProviderGitHub}" Margin="0,3"/>
+                <TextBlock Text="{i18n:Loc Options.ProviderOpenAi}" Margin="0,3"/>
+                <TextBlock Text="{i18n:Loc Options.ProviderGemini}" Margin="0,3"/>
+                <TextBlock Text="{i18n:Loc Options.ProviderAnthropic}" Margin="0,3"/>
+                <TextBlock Text="{i18n:Loc Options.ProviderOllama}" Margin="0,3"/>
             </StackPanel>
 
-            <TextBlock Text="Safety Features" FontWeight="Bold" Margin="0,5,0,5"/>
+            <TextBlock Text="{i18n:Loc Options.SafetyFeatures}" FontWeight="Bold" Margin="0,5,0,5"/>
             <StackPanel Margin="15,0,0,10">
-                <TextBlock Text="○   Detects cloud coverage, rain (including lens droplets), and fog" Margin="0,3"/>
-                <TextBlock Text="○   Rain and fog trigger Unsafe regardless of cloud threshold" Margin="0,3"/>
-                <TextBlock Text="○   Automatic fallback to local analysis if the AI provider fails or times out" Margin="0,3"/>
-                <TextBlock Text="○   Optional status file output for ASCOM Generic File SafetyMonitor integration" Margin="0,3"/>
+                <TextBlock Text="{i18n:Loc Options.SafetyDetect}" Margin="0,3"/>
+                <TextBlock Text="{i18n:Loc Options.SafetyRainFog}" Margin="0,3"/>
+                <TextBlock Text="{i18n:Loc Options.SafetyFallback}" Margin="0,3"/>
+                <TextBlock Text="{i18n:Loc Options.SafetyFile}" Margin="0,3"/>
             </StackPanel>
 
-            <TextBlock Text="Connect the safety monitor under Equipment > Safety Monitor > All Sky Camera Safety Monitor to start protecting your imaging sessions."
+            <TextBlock Text="{i18n:Loc Options.ConnectHelp}"
                        Margin="0,0,0,0" TextWrapping="Wrap" Width="500" HorizontalAlignment="Left" FontSize="11" Foreground="#AAAAAA"/>
         </StackPanel>
     </DataTemplate>

@@ -4,6 +4,12 @@ namespace AIWeather.Services
 {
     public static class WeatherAnalysisPrompts
     {
+        /// <summary>
+        /// Bump whenever the stable output contract or interpretation rules change. Dataset
+        /// samples store this value so labels from different prompts can be filtered later.
+        /// </summary>
+        public const string PromptVersion = "weather-json-v1.1-20260822";
+
         public const string DetailedSystemPrompt = @"You are an expert meteorologist analyzing all-sky camera images for astronomical observation safety.
 
 IMPORTANT CONTEXT - ALL-SKY CAMERA:
@@ -140,7 +146,7 @@ They do not change the classification thresholds, the safety rules, or the JSON 
         /// any). Kept in one place so every provider sends the same thing, and so the notes
         /// still reach the model when no astronomical context could be computed.
         /// </summary>
-        public static string BuildPromptPrefix(AstroContext ctx)
+        public static string BuildPromptPrefix(AstroContext? ctx)
         {
             var context = ctx != null ? BuildContextBlock(ctx) : string.Empty;
             return context + BuildSiteNotesBlock(Properties.Settings.Default.SiteNotes);

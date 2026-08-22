@@ -1,4 +1,5 @@
 using AIWeather.Equipment;
+using AIWeather.Localization;
 using NINA.Core.Model;
 using NINA.Core.Utility;
 using NINA.Sequencer.SequenceItem;
@@ -27,14 +28,14 @@ namespace AIWeather.SequenceItems {
                 if (monitor.Connected) {
                     Logger.Info("AI Weather monitoring is already running");
                     progress?.Report(new ApplicationStatus() {
-                        Status = "AI Weather: Already monitoring"
+                        Status = UiLocalization.Text("Sequencer.Already")
                     });
                     return;
                 }
 
                 Logger.Info("AI Weather: Starting monitoring from sequencer instruction");
                 progress?.Report(new ApplicationStatus() {
-                    Status = "AI Weather: Starting monitoring..."
+                    Status = UiLocalization.Text("Sequencer.Starting")
                 });
 
                 var success = await monitor.Connect(token);
@@ -42,12 +43,12 @@ namespace AIWeather.SequenceItems {
                 if (success) {
                     Logger.Info("AI Weather: Monitoring started successfully from sequencer");
                     progress?.Report(new ApplicationStatus() {
-                        Status = "AI Weather: Monitoring active"
+                        Status = UiLocalization.Text("Sequencer.Active")
                     });
                 } else {
                     Logger.Warning("AI Weather: Failed to start monitoring from sequencer");
                     progress?.Report(new ApplicationStatus() {
-                        Status = "AI Weather: Failed to start monitoring"
+                        Status = UiLocalization.Text("Sequencer.StartFailed")
                     });
                 }
             } catch (Exception ex) {
@@ -60,7 +61,7 @@ namespace AIWeather.SequenceItems {
         }
 
         public override string ToString() {
-            return "AI Weather - Start Monitoring";
+            return UiLocalization.Text("Sequencer.Start");
         }
     }
 }

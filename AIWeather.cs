@@ -1,4 +1,5 @@
 using NINA.Core.Utility;
+using AIWeather.Localization;
 using NINA.Plugin;
 using NINA.Plugin.Interfaces;
 using NINA.Profile;
@@ -7,6 +8,7 @@ using System;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.ComponentModel.Composition;
+using System.Globalization;
 using System.Linq;
 using System.Net.Http;
 using System.Net.Http.Headers;
@@ -57,15 +59,20 @@ namespace AIWeather
             public string Name { get; }
         }
 
-        public ObservableCollection<ProviderOption> ProviderOptions { get; } = new ObservableCollection<ProviderOption>
+        public ObservableCollection<ProviderOption> ProviderOptions { get; } = CreateProviderOptions();
+
+        private static ObservableCollection<ProviderOption> CreateProviderOptions()
         {
-            new ProviderOption("Local", "Local (offline heuristic)"),
-            new ProviderOption("GitHubModels", "GitHub Models (RETIRED)"),
-            new ProviderOption("OpenAI", "OpenAI"),
-            new ProviderOption("Gemini", "Google Gemini"),
-            new ProviderOption("Anthropic", "Anthropic Claude"),
-            new ProviderOption("Ollama", "Ollama / Custom (local server)")
-        };
+            return new ObservableCollection<ProviderOption>
+            {
+                new("Local", UiLocalization.Text("Options.ProviderNameLocal")),
+                new("GitHubModels", UiLocalization.Text("Options.ProviderNameGitHub")),
+                new("OpenAI", "OpenAI"),
+                new("Gemini", "Google Gemini"),
+                new("Anthropic", "Anthropic Claude"),
+                new("Ollama", UiLocalization.Text("Options.ProviderNameOllama"))
+            };
+        }
 
         // Vision-capable model prefixes known to work with image analysis via ChatCompletions.
         // Used as a prefix filter when querying the GitHub Models catalog (which contains many
@@ -227,7 +234,7 @@ namespace AIWeather
             }
         }
 
-        private string _modelsStatus = "Using built-in model list";
+        private string _modelsStatus = UiLocalization.Text("Runtime.ModelsBuiltIn");
         public string ModelsStatus
         {
             get => _modelsStatus;
@@ -241,6 +248,10 @@ namespace AIWeather
         [ImportingConstructor]
         public AIWeather(IProfileService profileService)
         {
+            Logger.Info(
+                $"AI Weather UI culture: {CultureInfo.CurrentUICulture.Name} " +
+                $"({(UiLocalization.IsChineseCulture() ? "Chinese" : "English fallback")})");
+
             if (Properties.Settings.Default.UpdateSettings)
             {
                 Properties.Settings.Default.Upgrade();
@@ -323,6 +334,41 @@ namespace AIWeather
                 changed = true;
             }
 
+            var normalizedSampleEveryChecks = Math.Clamp(
+                Properties.Settings.Default.DatasetSampleEveryChecks, 1, 10000);
+            if (Properties.Settings.Default.DatasetSampleEveryChecks != normalizedSampleEveryChecks)
+            {
+                Properties.Settings.Default.DatasetSampleEveryChecks = normalizedSampleEveryChecks;
+                changed = true;
+            }
+
+            var configuredImageScale = Properties.Settings.Default.DatasetImageScalePercent;
+            var normalizedImageScale = double.IsFinite(configuredImageScale)
+                ? Math.Clamp(configuredImageScale, 5, 100)
+                : 50;
+            if (Math.Abs(configuredImageScale - normalizedImageScale) > 0.0001
+                || !double.IsFinite(configuredImageScale))
+            {
+                Properties.Settings.Default.DatasetImageScalePercent = normalizedImageScale;
+                changed = true;
+            }
+
+            var normalizedHammingLimit = Math.Clamp(
+                Properties.Settings.Default.DatasetNearDuplicateHammingDistance, 0, 64);
+            if (Properties.Settings.Default.DatasetNearDuplicateHammingDistance != normalizedHammingLimit)
+            {
+                Properties.Settings.Default.DatasetNearDuplicateHammingDistance = normalizedHammingLimit;
+                changed = true;
+            }
+
+            var normalizedSunLimit = Services.SolarAltitudeGuard.NormalizeLimit(
+                Properties.Settings.Default.SunAltitudeLimitDegrees);
+            if (Math.Abs(Properties.Settings.Default.SunAltitudeLimitDegrees - normalizedSunLimit) > 0.0001)
+            {
+                Properties.Settings.Default.SunAltitudeLimitDegrees = normalizedSunLimit;
+                changed = true;
+            }
+
             if (Properties.Settings.Default.CloudCoverageThreshold <= 0)
             {
                 Properties.Settings.Default.CloudCoverageThreshold = 70.0;
@@ -359,7 +405,7 @@ namespace AIWeather
                 RunOnUiThread(() =>
                 {
                     AvailableModels.Clear();
-                    ModelsStatus = "Local analysis — no model selection needed";
+                    ModelsStatus = UiLocalization.Text("Runtime.ModelsLocal");
                 });
                 return;
             }
@@ -376,7 +422,7 @@ namespace AIWeather
                     RunOnUiThread(() =>
                     {
                         SyncModelsCollection(cached.models);
-                        ModelsStatus = $"Loaded {cached.models.Length} models (cached)";
+                        ModelsStatus = UiLocalization.Text("Runtime.ModelsCached", cached.models.Length);
                         EnsureSelectedModelIsValid();
                     });
                     return;
@@ -388,7 +434,7 @@ namespace AIWeather
                     _modelCache.Remove(currentProvider);
                 }
 
-                RunOnUiThread(() => { ModelsStatus = $"Fetching models from {currentProvider}..."; });
+                RunOnUiThread(() => { ModelsStatus = UiLocalization.Text("Runtime.ModelsFetching", currentProvider); });
 
                 // ── Fetch live model list per provider ──────────────────────────
                 string[]? liveModels = null;
@@ -446,8 +492,8 @@ namespace AIWeather
                 }
 
                 var statusMsg = liveModels != null && liveModels.Length > 0
-                    ? $"Loaded {finalModels.Count} vision-capable models from {currentProvider}"
-                    : $"Using built-in {currentProvider} model list ({finalModels.Count} models)";
+                    ? UiLocalization.Text("Runtime.ModelsLoaded", finalModels.Count, currentProvider)
+                    : UiLocalization.Text("Runtime.ModelsFallback", currentProvider, finalModels.Count);
 
                 RunOnUiThread(() =>
                 {
@@ -461,7 +507,7 @@ namespace AIWeather
             {
                 RunOnUiThread(() =>
                 {
-                    ModelsStatus = $"Model fetch failed; using built-in list ({ex.Message})";
+                    ModelsStatus = UiLocalization.Text("Runtime.ModelsFailed", ex.Message);
                     EnsureSelectedModelIsValid();
                 });
                 Logger.Warning($"Failed to refresh model list: {ex.Message}");
@@ -760,7 +806,7 @@ namespace AIWeather
         {
             // Retired by GitHub on 2026-07-30 for every customer, valid token or not:
             // testing against the dead endpoint would only produce a confusing 404.
-            GitHubTokenStatus = Services.GitHubModelsAnalysisService.RetirementMessage;
+            GitHubTokenStatus = UiLocalization.Text("Options.GitHubRetired");
             return Task.CompletedTask;
         }
 
@@ -771,11 +817,11 @@ namespace AIWeather
                 var key = Properties.Settings.Default.OpenAIKey;
                 if (string.IsNullOrWhiteSpace(key))
                 {
-                    OpenAIKeyStatus = "Key is empty";
+                    OpenAIKeyStatus = UiLocalization.Text("Runtime.KeyEmpty");
                     return;
                 }
 
-                OpenAIKeyStatus = "Testing key...";
+                OpenAIKeyStatus = UiLocalization.Text("Runtime.KeyTesting");
 
                 using var http = new HttpClient();
                 http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", key.Trim());
@@ -786,7 +832,7 @@ namespace AIWeather
 
                 if (!response.IsSuccessStatusCode)
                 {
-                    OpenAIKeyStatus = $"Key test failed: HTTP {(int)response.StatusCode} {response.StatusCode}";
+                    OpenAIKeyStatus = UiLocalization.Text("Runtime.KeyHttpFailed", (int)response.StatusCode, response.StatusCode);
                     return;
                 }
 
@@ -804,7 +850,9 @@ namespace AIWeather
                     // ignore parse issues; success is enough
                 }
 
-                OpenAIKeyStatus = count > 0 ? $"Key OK (models: {count})" : "Key OK";
+                OpenAIKeyStatus = count > 0
+                    ? UiLocalization.Text("Runtime.KeyOkModels", count)
+                    : UiLocalization.Text("Runtime.KeyOk");
 
                 // Invalidate cache so next refresh fetches fresh models.
                 _modelCache.Remove("OpenAI");
@@ -812,7 +860,7 @@ namespace AIWeather
             }
             catch (Exception ex)
             {
-                OpenAIKeyStatus = $"Key test failed: {ex.Message}";
+                OpenAIKeyStatus = UiLocalization.Text("Runtime.KeyFailed", ex.Message);
             }
         }
 
@@ -823,11 +871,11 @@ namespace AIWeather
                 var key = Properties.Settings.Default.GeminiKey;
                 if (string.IsNullOrWhiteSpace(key))
                 {
-                    GeminiKeyStatus = "Key is empty";
+                    GeminiKeyStatus = UiLocalization.Text("Runtime.KeyEmpty");
                     return;
                 }
 
-                GeminiKeyStatus = "Testing key...";
+                GeminiKeyStatus = UiLocalization.Text("Runtime.KeyTesting");
 
                 using var http = new HttpClient();
                 http.DefaultRequestHeaders.UserAgent.ParseAdd("NINA-AIWeather/1.0");
@@ -838,7 +886,7 @@ namespace AIWeather
 
                 if (!response.IsSuccessStatusCode)
                 {
-                    GeminiKeyStatus = $"Key test failed: HTTP {(int)response.StatusCode} {response.StatusCode}";
+                    GeminiKeyStatus = UiLocalization.Text("Runtime.KeyHttpFailed", (int)response.StatusCode, response.StatusCode);
                     return;
                 }
 
@@ -856,7 +904,9 @@ namespace AIWeather
                     // ignore parse issues; success is enough
                 }
 
-                GeminiKeyStatus = count > 0 ? $"Key OK (models: {count})" : "Key OK";
+                GeminiKeyStatus = count > 0
+                    ? UiLocalization.Text("Runtime.KeyOkModels", count)
+                    : UiLocalization.Text("Runtime.KeyOk");
 
                 // Invalidate cache so next refresh fetches fresh models.
                 _modelCache.Remove("Gemini");
@@ -864,7 +914,7 @@ namespace AIWeather
             }
             catch (Exception ex)
             {
-                GeminiKeyStatus = $"Key test failed: {ex.Message}";
+                GeminiKeyStatus = UiLocalization.Text("Runtime.KeyFailed", ex.Message);
             }
         }
 
@@ -875,11 +925,11 @@ namespace AIWeather
                 var key = Properties.Settings.Default.AnthropicKey;
                 if (string.IsNullOrWhiteSpace(key))
                 {
-                    AnthropicKeyStatus = "Key is empty";
+                    AnthropicKeyStatus = UiLocalization.Text("Runtime.KeyEmpty");
                     return;
                 }
 
-                AnthropicKeyStatus = "Testing key...";
+                AnthropicKeyStatus = UiLocalization.Text("Runtime.KeyTesting");
 
                 using var http = new HttpClient();
                 http.DefaultRequestHeaders.UserAgent.ParseAdd("NINA-AIWeather/1.0");
@@ -892,7 +942,7 @@ namespace AIWeather
 
                 if (response.IsSuccessStatusCode)
                 {
-                    AnthropicKeyStatus = "Key OK";
+                    AnthropicKeyStatus = UiLocalization.Text("Runtime.KeyOk");
 
                     // Invalidate cache so next refresh fetches fresh models.
                     _modelCache.Remove("Anthropic");
@@ -927,8 +977,8 @@ namespace AIWeather
                     _ = await postResp.Content.ReadAsStringAsync();
 
                     AnthropicKeyStatus = postResp.IsSuccessStatusCode
-                        ? "Key OK"
-                        : $"Key test failed: HTTP {(int)postResp.StatusCode} {postResp.StatusCode}";
+                        ? UiLocalization.Text("Runtime.KeyOk")
+                        : UiLocalization.Text("Runtime.KeyHttpFailed", (int)postResp.StatusCode, postResp.StatusCode);
 
                     if (postResp.IsSuccessStatusCode)
                     {
@@ -939,11 +989,11 @@ namespace AIWeather
                     return;
                 }
 
-                AnthropicKeyStatus = $"Key test failed: HTTP {(int)response.StatusCode} {response.StatusCode}";
+                AnthropicKeyStatus = UiLocalization.Text("Runtime.KeyHttpFailed", (int)response.StatusCode, response.StatusCode);
             }
             catch (Exception ex)
             {
-                AnthropicKeyStatus = $"Key test failed: {ex.Message}";
+                AnthropicKeyStatus = UiLocalization.Text("Runtime.KeyFailed", ex.Message);
             }
         }
 
@@ -1226,10 +1276,12 @@ namespace AIWeather
 
         #endregion
 
-        public override Task Teardown()
+        public override async Task Teardown()
         {
-            // Clean up resources when plugin is unloaded
-            return base.Teardown();
+            // Give the bounded dataset writer a short chance to atomically finish queued
+            // labels before N.I.N.A. unloads the plugin.
+            await Equipment.AIWeatherSafetyMonitor.Instance.ShutdownAsync();
+            await base.Teardown();
         }
 
         public event PropertyChangedEventHandler? PropertyChanged;

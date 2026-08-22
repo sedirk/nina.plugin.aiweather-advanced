@@ -4,6 +4,7 @@
              xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" 
              xmlns:d="http://schemas.microsoft.com/expression/blend/2008" 
              xmlns:local="clr-namespace:AIWeather"
+             xmlns:i18n="clr-namespace:AIWeather.Localization"
              xmlns:vlc="clr-namespace:LibVLCSharp.WPF;assembly=LibVLCSharp.WPF"
              mc:Ignorable="d" 
              d:DesignHeight="800" d:DesignWidth="1200">
@@ -152,6 +153,9 @@
                                 <RowDefinition Height="Auto"/>
                                 <RowDefinition Height="Auto"/>
                                 <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
                             </Grid.RowDefinitions>
 
                             <TextBlock Grid.Row="0" Text="{Binding SafetyStatus, Mode=OneWay}" FontSize="16" FontWeight="Bold" Foreground="{DynamicResource PrimaryBrush}" HorizontalAlignment="Center" Margin="0,0,0,5"/>
@@ -163,20 +167,41 @@
 
                             <TextBlock Grid.Row="2" Text="{Binding WeatherCondition, Mode=OneWay}" FontSize="12" Foreground="{DynamicResource PrimaryBrush}" HorizontalAlignment="Center" Margin="0,0,0,5"/>
                             <TextBlock Grid.Row="3" FontSize="10" Foreground="{DynamicResource PrimaryBrush}" HorizontalAlignment="Center">
-                                <Run Text="Cloud: "/>
+                                <Run Text="{i18n:Loc Preview.Cloud}"/>
                                 <Run Text="{Binding CloudCoverage, Mode=OneWay, StringFormat={}{0:F0}%}"/>
-                                <Run Text=" | Confidence: "/>
+                                <Run Text="{i18n:Loc Preview.Confidence}"/>
                                 <Run Text="{Binding Confidence, Mode=OneWay, StringFormat={}{0:F0}%}"/>
                             </TextBlock>
 
                             <TextBlock Grid.Row="4" FontSize="9" Foreground="{DynamicResource PrimaryBrush}" HorizontalAlignment="Center" Margin="0,2,0,0">
-                                <Run Text="Limits (High/Low): "/>
+                                <Run Text="{i18n:Loc Preview.Limits}"/>
                                 <Run Text="{Binding HighThreshold, Mode=OneWay, StringFormat={}{0:F0}%}"/>
                                 <Run Text=" / "/>
                                 <Run Text="{Binding LowThreshold, Mode=OneWay, StringFormat={}{0:F0}%}"/>
                             </TextBlock>
 
                             <TextBlock Grid.Row="5" Text="{Binding AiSettingsSummary, Mode=OneWay}" FontSize="9" Foreground="{DynamicResource PrimaryBrush}" TextWrapping="Wrap" HorizontalAlignment="Center" Margin="0,6,0,0"/>
+
+                            <TextBlock Grid.Row="6" Text="{Binding AnalysisSourceSummary, Mode=OneWay}"
+                                       FontSize="9" Foreground="{DynamicResource PrimaryBrush}"
+                                       TextWrapping="Wrap" HorizontalAlignment="Center"
+                                       TextAlignment="Center" Margin="0,4,0,0"/>
+
+                            <TextBlock Grid.Row="7" Text="{Binding DatasetStatusText, Mode=OneWay}"
+                                       FontSize="9" Foreground="{DynamicResource PrimaryBrush}"
+                                       TextWrapping="Wrap" HorizontalAlignment="Center"
+                                       TextAlignment="Center" Margin="0,4,0,0"/>
+
+                            <StackPanel Grid.Row="8" Orientation="Horizontal" HorizontalAlignment="Center"
+                                        Margin="0,5,0,0">
+                                <Button Content="{i18n:Loc Preview.KeepFrame}"
+                                        Command="{Binding KeepDatasetSampleCommand}"
+                                        IsEnabled="{Binding DatasetEnabled}"
+                                        Padding="8,2" Margin="2,0"/>
+                                <Button Content="{i18n:Loc Preview.ReviewLabels}"
+                                        Command="{Binding OpenDatasetReviewCommand}"
+                                        Padding="8,2" Margin="2,0"/>
+                            </StackPanel>
                         </Grid>
                     </Border>
                     
@@ -188,7 +213,7 @@
                                 <RowDefinition Height="*"/>
                             </Grid.RowDefinitions>
                             
-                            <TextBlock Grid.Row="0" Text="Activity Log" FontWeight="Bold" FontSize="12" Foreground="{DynamicResource PrimaryBrush}" Margin="0,0,0,5"/>
+                            <TextBlock Grid.Row="0" Text="{i18n:Loc Preview.ActivityLog}" FontWeight="Bold" FontSize="12" Foreground="{DynamicResource PrimaryBrush}" Margin="0,0,0,5"/>
                             
                             <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
                                 <TextBox Text="{Binding ActivityLog, Mode=OneWay}" 
@@ -208,7 +233,7 @@
                         <StackPanel>
                             <TextBlock Text="{Binding Description, Mode=OneWay}" FontSize="10" Foreground="{DynamicResource PrimaryBrush}" TextWrapping="Wrap" Margin="0,0,0,5"/>
                             <TextBlock FontSize="9" Foreground="{DynamicResource PrimaryBrush}">
-                                <Run Text="Last update: "/>
+                                <Run Text="{i18n:Loc Preview.LastUpdate}"/>
                                 <Run Text="{Binding LastUpdate, Mode=OneWay, StringFormat={}{0:HH:mm:ss}}"/>
                             </TextBlock>
                         </StackPanel>
@@ -226,7 +251,7 @@
                     <RowDefinition Height="Auto"/>
                 </Grid.RowDefinitions>
                 
-                <TextBlock Grid.Row="0" Text="Camera sources" FontWeight="Bold" FontSize="13" Margin="10,8,10,5" Foreground="{DynamicResource PrimaryBrush}"/>
+                <TextBlock Grid.Row="0" Text="{i18n:Loc Preview.CameraSources}" FontWeight="Bold" FontSize="13" Margin="10,8,10,5" Foreground="{DynamicResource PrimaryBrush}"/>
                 
                 <!-- DataGrid for URL modes (RTSP and HTTP) -->
                 <DataGrid Grid.Row="1" 
@@ -255,7 +280,7 @@
                         <!-- Username - hidden in FolderWatch mode -->
                         <DataGridTextColumn Binding="{Binding Username, UpdateSourceTrigger=PropertyChanged}">
                             <DataGridTextColumn.Header>
-                                <TextBlock Text="Username" Visibility="{Binding DataContext.IsUrlMode, RelativeSource={RelativeSource AncestorType=UserControl}, Converter={StaticResource BoolToVisibility}}"/>
+                                <TextBlock Text="{i18n:Loc Preview.Username}" Visibility="{Binding DataContext.IsUrlMode, RelativeSource={RelativeSource AncestorType=UserControl}, Converter={StaticResource BoolToVisibility}}"/>
                             </DataGridTextColumn.Header>
                             <DataGridTextColumn.Width>
                                 <Binding Path="DataContext.IsUrlMode" RelativeSource="{RelativeSource AncestorType=UserControl}">
@@ -278,7 +303,7 @@
                         <!-- Password - hidden in FolderWatch mode -->
                         <DataGridTemplateColumn>
                             <DataGridTemplateColumn.Header>
-                                <TextBlock Text="Password" Visibility="{Binding DataContext.IsUrlMode, RelativeSource={RelativeSource AncestorType=UserControl}, Converter={StaticResource BoolToVisibility}}"/>
+                                <TextBlock Text="{i18n:Loc Preview.Password}" Visibility="{Binding DataContext.IsUrlMode, RelativeSource={RelativeSource AncestorType=UserControl}, Converter={StaticResource BoolToVisibility}}"/>
                             </DataGridTemplateColumn.Header>
                             <DataGridTemplateColumn.Width>
                                 <Binding Path="DataContext.IsUrlMode" RelativeSource="{RelativeSource AncestorType=UserControl}">
@@ -305,7 +330,7 @@
                         <!-- Protocol - only visible in RTSP/HTTP modes, hidden in FolderWatch -->
                         <DataGridComboBoxColumn>
                             <DataGridComboBoxColumn.Header>
-                                <TextBlock Text="Protocol" Visibility="{Binding DataContext.IsUrlMode, RelativeSource={RelativeSource AncestorType=UserControl}, Converter={StaticResource BoolToVisibility}}"/>
+                                <TextBlock Text="{i18n:Loc Preview.Protocol}" Visibility="{Binding DataContext.IsUrlMode, RelativeSource={RelativeSource AncestorType=UserControl}, Converter={StaticResource BoolToVisibility}}"/>
                             </DataGridComboBoxColumn.Header>
                             <DataGridComboBoxColumn.Width>
                                 <Binding Path="DataContext.IsUrlMode" RelativeSource="{RelativeSource AncestorType=UserControl}">
@@ -332,10 +357,10 @@
                                 <TextBlock>
                                     <TextBlock.Style>
                                         <Style TargetType="TextBlock">
-                                            <Setter Property="Text" Value="Media URL"/>
+                                            <Setter Property="Text" Value="{i18n:Loc Preview.MediaUrl}"/>
                                             <Style.Triggers>
                                                 <DataTrigger Binding="{Binding DataContext.IsRtspMode, RelativeSource={RelativeSource AncestorType=UserControl}}" Value="False">
-                                                    <Setter Property="Text" Value="Image URL"/>
+                                                    <Setter Property="Text" Value="{i18n:Loc Preview.ImageUrl}"/>
                                                 </DataTrigger>
                                             </Style.Triggers>
                                         </Style>
@@ -462,7 +487,7 @@
                           MaxHeight="150"
                           Style="{StaticResource CompactDataGridStyle}">
                     <DataGrid.Columns>
-                        <DataGridTextColumn Header="Folder Path" Binding="{Binding MediaUrl}" Width="*" IsReadOnly="False">
+                        <DataGridTextColumn Header="{i18n:Loc Preview.FolderPath}" Binding="{Binding MediaUrl}" Width="*" IsReadOnly="False">
                             <DataGridTextColumn.ElementStyle>
                                 <Style TargetType="TextBlock">
                                     <Setter Property="VerticalAlignment" Value="Center"/>
@@ -513,8 +538,8 @@
                 </DataGrid>
                 
                 <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="10,5,10,8">
-                    <Button Content="+" Command="{Binding AddSourceCommand}" Width="30" Height="24" Margin="0,0,5,0" FontWeight="Bold" ToolTip="Add new camera source"/>
-                    <Button Content="−" Command="{Binding DeleteSourceCommand}" Width="30" Height="24" FontWeight="Bold" ToolTip="Delete selected source">
+                    <Button Content="+" Command="{Binding AddSourceCommand}" Width="30" Height="24" Margin="0,0,5,0" FontWeight="Bold" ToolTip="{i18n:Loc Preview.AddSource}"/>
+                    <Button Content="−" Command="{Binding DeleteSourceCommand}" Width="30" Height="24" FontWeight="Bold" ToolTip="{i18n:Loc Preview.DeleteSource}">
                         <Button.CommandParameter>
                             <MultiBinding Converter="{StaticResource FirstNonNullConverter}">
                                 <Binding ElementName="SourcesDataGridUrl" Path="SelectedItem"/>

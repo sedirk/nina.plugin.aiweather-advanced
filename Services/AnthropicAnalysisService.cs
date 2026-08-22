@@ -3,6 +3,7 @@ using NINA.Core.Utility;
 using System;
 using System.Drawing;
 using System.Drawing.Imaging;
+using System.Diagnostics;
 using System.IO;
 using System.Net.Http;
 using System.Text;
@@ -46,11 +47,17 @@ namespace AIWeather.Services
 
         public async Task<WeatherAnalysisResult> AnalyzeImageAsync(Bitmap image, AstroContext? astroContext = null, CancellationToken cancellationToken = default)
         {
+            var stopwatch = Stopwatch.StartNew();
+            var failureCategory = AnalysisFailureCategory.Unknown;
+            int? failureHttpStatus = null;
             if (!_isInitialized)
             {
                 Logger.Warning("Anthropic service not initialized, falling back to local analysis");
                 var fallback = new LocalWeatherAnalysisService();
-                return await fallback.AnalyzeImageAsync(image, astroContext, cancellationToken);
+                var local = await fallback.AnalyzeImageAsync(image, astroContext, cancellationToken);
+                local.Provenance.IsFallback = true;
+                local.Provenance.FailureCategory = AnalysisFailureCategory.Authentication;
+                return local;
             }
 
             try
@@ -113,6 +120,8 @@ namespace AIWeather.Services
 
                 if (!response.IsSuccessStatusCode)
                 {
+                    failureHttpStatus = (int)response.StatusCode;
+                    failureCategory = AnalysisMetadata.FromHttpStatus(response.StatusCode);
                     Logger.Error($"Anthropic API error: HTTP {(int)response.StatusCode}: {json}");
                     throw new InvalidOperationException($"HTTP {(int)response.StatusCode}: {json}");
                 }
@@ -123,14 +132,28 @@ namespace AIWeather.Services
                 var text = ExtractAnthropicText(doc.RootElement);
 
                 var result = PromptText.ParseAIResponse(text);
+                if (!WeatherAnalysisValidator.IsValidTeacherResult(result, out var validationReason))
+                {
+                    failureCategory = AnalysisFailureCategory.SchemaRejected;
+                    throw new InvalidDataException($"Anthropic response rejected by weather schema: {validationReason}");
+                }
+                result.Provenance = AnalysisMetadata.Online(
+                    AnalysisOrigin.Anthropic, "Anthropic", _modelName, 1,
+                    stopwatch.ElapsedMilliseconds, (int)response.StatusCode);
                 Logger.Info($"Anthropic analysis complete: {result.Condition}, Cloud Coverage: {result.CloudCoverage:F1}%");
                 return result;
             }
             catch (OperationCanceledException ex)
             {
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    throw;
+                }
                 Logger.Warning($"Anthropic API call timed out or was cancelled, falling back to local analysis: {ex.Message}");
                 var fallback = new LocalWeatherAnalysisService();
                 var result = await fallback.AnalyzeImageAsync(image, astroContext, cancellationToken);
+                result.Provenance.IsFallback = true;
+                result.Provenance.FailureCategory = AnalysisFailureCategory.Timeout;
                 result.Description = $"[Fallback: Local] Anthropic timed out. {result.Description}";
                 return result;
             }
@@ -139,6 +162,15 @@ namespace AIWeather.Services
                 Logger.Error($"Error in Anthropic analysis, falling back to local analysis: {ex.Message}", ex);
                 var fallback = new LocalWeatherAnalysisService();
                 var result = await fallback.AnalyzeImageAsync(image, astroContext, cancellationToken);
+                result.Provenance.IsFallback = true;
+                result.Provenance.FailureCategory = failureCategory != AnalysisFailureCategory.Unknown
+                    ? failureCategory
+                    : ex is HttpRequestException
+                        ? AnalysisFailureCategory.Network
+                        : ex is InvalidDataException
+                            ? AnalysisFailureCategory.SchemaRejected
+                            : AnalysisFailureCategory.Unknown;
+                result.Provenance.HttpStatus = failureHttpStatus;
                 result.Description = $"[Fallback: Local] Anthropic error. {result.Description}";
                 return result;
             }

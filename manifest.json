@@ -1,7 +1,7 @@
 {
   "Identifier": "AI Weather",
   "Name": "AI Weather - All Sky Camera Monitor",
-  "Version": "1.15.0.0",
+  "Version": "1.20.0.0",
   "MinimumApplicationVersion": "3.0.0.0",
   "Author": "Michele Bergo",
   "Homepage": "https://github.com/michelebergo/nina.plugin.aiweather",
@@ -24,6 +24,58 @@
     }
   },
   "ChangeLog": [
+    {
+      "Version": "1.20.0.0",
+      "Date": "2026-08-22",
+      "Changes": [
+        "Replaced the independent dataset sampling time with a ratio that records one periodic sample every N successful online weather checks, while retaining meaningful event samples independently",
+        "Replaced fixed training-image width and height with a 5-100 percent aspect-ratio-preserving downscale and recorded the actual scale in sample metadata",
+        "Documented the 64-bit average-hash Hamming near-duplicate threshold directly in the bilingual options UI",
+        "Fixed blank N.I.N.A. toggle labels by separating localized text from the switch template and added explanations for raw teacher JSON and quarantine retention"
+      ]
+    },
+    {
+      "Version": "1.19.0.0",
+      "Date": "2026-08-22",
+      "Changes": [
+        "Added an optional Sun-altitude operating guard with a configurable threshold; -6 degrees is the recommended default for civil-twilight operation",
+        "When the Sun is at or above the limit, the safety monitor reports Unsafe before camera capture, skips local and online models, spends no API request, and writes no dataset or debug-capture frame",
+        "The daylight suspension fails closed when N.I.N.A. observer coordinates are unavailable, clears the previous observing window's verdict and review frame, writes Unsafe to the optional status file, and publishes Safe=false to sequencer symbols",
+        "Added complete English and Simplified Chinese settings, safety reasons, activity-log messages and source summaries for Sun-altitude suspension and automatic nighttime resumption"
+      ]
+    },
+    {
+      "Version": "1.18.0.0",
+      "Date": "2026-08-22",
+      "Changes": [
+        "Added complete Simplified Chinese UI localization for the active monitor, options, dataset label reviewer, safety reasons, dataset state, camera controls, equipment descriptions and sequencer runtime status",
+        "The plugin now follows N.I.N.A.'s CurrentUICulture: every Chinese locale uses Chinese, while English remains the invariant fallback for all other languages; no separate plugin language setting is stored",
+        "Stable machine values remain unchanged in dataset JSON and review sidecars, while review statuses, weather conditions, sampling reasons and common astronomy terms are translated only at display time",
+        "Localized model discovery, API-key testing, folder/file dialogs and activity-log messages without translating provider/model identifiers or modifying teacher output"
+      ]
+    },
+    {
+      "Version": "1.17.0.0",
+      "Date": "2026-08-22",
+      "Changes": [
+        "Added a built-in flat label reviewer: search and filter every sharded dataset label from one table, inspect the full image with fit-to-window scaling, compare teacher/student/provenance metadata, and navigate without opening nested folders",
+        "Added human review actions for accepting the teacher label, saving a corrected visual label, rejecting a sample, or returning it to unreviewed; safety policy is intentionally excluded from the visual correction form",
+        "Human reviews are atomic sidecars keyed by sample id with monotonically increasing revisions and an append-only monthly audit trail; immutable teacher labels are never overwritten and their SHA-256 is checked when reviews are loaded",
+        "Review notes and free text now redact plain-text token/password/secret assignments in addition to JSON, query-string and authenticated RTSP credentials",
+        "Fixed startup dataset indexing and the 'today' counter: existing labels are now counted immediately after restart, and capturedUtc is converted to the local date across the relevant UTC shards instead of assuming the storage shard uses the local calendar date"
+      ]
+    },
+    {
+      "Version": "1.16.0.0",
+      "Date": "2026-08-22",
+      "Changes": [
+        "Added an opt-in, versioned teacher-student dataset recorder: successful online analyses can now be retained with the same-frame local baseline, decision context and explicit provenance for future site-specific model training",
+        "Online Gemini failures are no longer disguised as successful Gemini labels: provider, exact model, prompt version, latency, fallback state and categorized failure details are recorded separately, and only validated online results are trainable teacher labels",
+        "Dataset collection runs through a bounded single-writer background queue with event-aware sampling, SHA-256 content addressing, perceptual near-duplicate filtering, atomic writes, JSONL recovery, quarantine, disk quota and minimum-free-space guards",
+        "Dataset records exclude site coordinates and redact credentials, API tokens and authenticated RTSP URLs; optional raw teacher responses are disabled by default and sanitized when enabled",
+        "The preview and options panels now expose dataset controls, writer status, analysis source, teacher/student disagreement and a manual review-sample action; the local baseline remains shadow-only and does not replace the configured safety policy"
+      ]
+    },
     {
       "Version": "1.15.0.0",
       "Date": "2026-08-16",

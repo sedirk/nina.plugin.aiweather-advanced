@@ -12,6 +12,7 @@ namespace AIWeather.Services
     /// <summary>
     /// Unified image capture service that handles RTSP, INDI camera, and folder watch modes
     /// </summary>
+    [System.Runtime.Versioning.SupportedOSPlatform("windows")]
     public class UnifiedCaptureService
     {
         private readonly RtspCaptureService _rtspService;
@@ -21,6 +22,9 @@ namespace AIWeather.Services
         private string _rtspUrl = "";
         private string _rtspUsername = "";
         private string _rtspPassword = "";
+        private int _consecutiveRtspCaptureFailures;
+
+        private const int RtspFailuresBeforeReconnect = 2;
 
         public UnifiedCaptureService(ICameraMediator? cameraMediator = null)
         {
@@ -40,9 +44,21 @@ namespace AIWeather.Services
         /// </summary>
         public void ConfigureRTSP(string url, string? username = null, string? password = null)
         {
+            var nextUsername = username ?? "";
+            var nextPassword = password ?? "";
+            var settingsChanged = !string.Equals(_rtspUrl, url, StringComparison.Ordinal)
+                || !string.Equals(_rtspUsername, nextUsername, StringComparison.Ordinal)
+                || !string.Equals(_rtspPassword, nextPassword, StringComparison.Ordinal);
+
+            if (settingsChanged)
+            {
+                _rtspService.Reset();
+                _consecutiveRtspCaptureFailures = 0;
+            }
+
             _rtspUrl = url;
-            _rtspUsername = username ?? "";
-            _rtspPassword = password ?? "";
+            _rtspUsername = nextUsername;
+            _rtspPassword = nextPassword;
         }
 
         /// <summary>
@@ -74,7 +90,7 @@ namespace AIWeather.Services
         /// <summary>
         /// Captures an image using the currently configured mode
         /// </summary>
-        public async Task<Bitmap> CaptureImageAsync(CancellationToken ct = default)
+        public async Task<Bitmap?> CaptureImageAsync(CancellationToken ct = default)
         {
             switch (_currentMode)
             {
@@ -93,7 +109,7 @@ namespace AIWeather.Services
             }
         }
 
-        private async Task<Bitmap> CaptureFromRTSPAsync(CancellationToken ct)
+        private async Task<Bitmap?> CaptureFromRTSPAsync(CancellationToken ct)
         {
             try
             {
@@ -116,7 +132,42 @@ namespace AIWeather.Services
                     }
                 }
 
-                return await _rtspService.CaptureFrameAsync(ct);
+                var frame = await _rtspService.CaptureFrameAsync(ct);
+                if (frame != null)
+                {
+                    _consecutiveRtspCaptureFailures = 0;
+                    return frame;
+                }
+
+                _consecutiveRtspCaptureFailures++;
+                if (_consecutiveRtspCaptureFailures < RtspFailuresBeforeReconnect)
+                {
+                    return null;
+                }
+
+                // VideoCapture can stay "open" after the decoder or TCP session has died.
+                // IsOpened alone therefore cannot be used as a health check. Rebuild the
+                // pipeline after consecutive empty captures and make one bounded retry.
+                Logger.Warning(
+                    $"UnifiedCaptureService - RTSP returned no frame " +
+                    $"{_consecutiveRtspCaptureFailures} times; rebuilding the analysis connection");
+                _rtspService.Reset();
+
+                var recovered = await _rtspService.InitializeAsync(authenticatedUrl, ct);
+                if (!recovered)
+                {
+                    Logger.Error("UnifiedCaptureService - RTSP recovery initialization failed");
+                    return null;
+                }
+
+                frame = await _rtspService.CaptureFrameAsync(ct);
+                if (frame != null)
+                {
+                    _consecutiveRtspCaptureFailures = 0;
+                    Logger.Info("UnifiedCaptureService - RTSP analysis capture recovered after reconnect");
+                }
+
+                return frame;
             }
             catch (Exception ex)
             {
@@ -151,34 +202,10 @@ namespace AIWeather.Services
 
         private static string RedactRtspUrl(string url)
         {
-            if (string.IsNullOrWhiteSpace(url))
-            {
-                return url;
-            }
-
-            try
-            {
-                if (Uri.TryCreate(url, UriKind.Absolute, out var uri) && !string.IsNullOrEmpty(uri.UserInfo))
-                {
-                    var parts = uri.UserInfo.Split(new[] { ':' }, 2);
-                    var user = parts.Length > 0 ? parts[0] : string.Empty;
-                    var builder = new UriBuilder(uri)
-                    {
-                        UserName = user,
-                        Password = "***"
-                    };
-                    return builder.Uri.ToString();
-                }
-            }
-            catch
-            {
-                // best-effort
-            }
-
-            return url;
+            return LogRedactor.RedactRtspUrl(url);
         }
 
-        private async Task<Bitmap> CaptureFromINDIAsync(CancellationToken ct)
+        private async Task<Bitmap?> CaptureFromINDIAsync(CancellationToken ct)
         {
             try
             {
@@ -197,7 +224,7 @@ namespace AIWeather.Services
             }
         }
 
-        private async Task<Bitmap> CaptureFromFolderAsync()
+        private async Task<Bitmap?> CaptureFromFolderAsync()
         {
             try
             {
@@ -247,7 +274,17 @@ namespace AIWeather.Services
         }
 
         /// <summary>
-        /// Disposes resources used by the capture services
+        /// Closes active capture resources while keeping the service reusable after a NINA
+        /// disconnect/reconnect cycle.
+        /// </summary>
+        public void Reset()
+        {
+            _consecutiveRtspCaptureFailures = 0;
+            _rtspService.Reset();
+        }
+
+        /// <summary>
+        /// Permanently disposes resources used by the capture services.
         /// </summary>
         public void Dispose()
         {
