@@ -8,5 +8,9 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\AIWeather.csproj" />
+    <!-- The plugin excludes NINA host assemblies at runtime, correctly.  This standalone
+         executable calls services that log through NINA.Core, so the test host needs its
+         own runtime copy.  This reference never enters the shipped plugin. -->
+    <PackageReference Include="NINA.Core" Version="3.0.0.9001" />
   </ItemGroup>
 </Project>

@@ -21,9 +21,19 @@ namespace AIWeather.Services
     {
         private VideoCapture? _capture;
         private readonly object _captureLock = new object();
+        private readonly LatestRtspFrameBuffer _latestFrames = new LatestRtspFrameBuffer();
+        private CancellationTokenSource? _readerCancellation;
+        private Task? _readerTask;
+        private bool _readerIsRunning;
         private bool _isDisposed = false;
 
         private string _lastInitializedRtspUrl = string.Empty;
+        private string _captureSessionId = string.Empty;
+
+        private static readonly TimeSpan FirstFrameTimeout = TimeSpan.FromSeconds(15);
+        private static readonly TimeSpan FreshFrameTimeout = TimeSpan.FromSeconds(5);
+        private static readonly TimeSpan MaximumFrameAge = TimeSpan.FromSeconds(10);
+        private static readonly TimeSpan PublishInterval = TimeSpan.FromMilliseconds(500);
 
         public bool IsInitialized
         {
@@ -31,7 +41,9 @@ namespace AIWeather.Services
             {
                 lock (_captureLock)
                 {
-                    return !_isDisposed && _capture != null && _capture.IsOpened;
+                    return !_isDisposed
+                        && _capture != null
+                        && _readerIsRunning;
                 }
             }
         }
@@ -47,7 +59,7 @@ namespace AIWeather.Services
             {
                 return !_isDisposed
                     && _capture != null
-                    && _capture.IsOpened
+                    && _readerIsRunning
                     && string.Equals(_lastInitializedRtspUrl, rtspUrl, StringComparison.Ordinal);
             }
         }
@@ -64,7 +76,15 @@ namespace AIWeather.Services
             {
                 Logger.Info($"RtspCaptureService - Initializing RTSP connection to: {RedactRtspUrl(rtspUrl)}");
 
-                _lastInitializedRtspUrl = rtspUrl;
+                Reset();
+
+                lock (_captureLock)
+                {
+                    if (_isDisposed)
+                    {
+                        throw new ObjectDisposedException(nameof(RtspCaptureService));
+                    }
+                }
 
                 try
                 {
@@ -86,49 +106,200 @@ namespace AIWeather.Services
                     // best-effort
                 }
 
-                await Task.Run(() =>
+                var capture = await Task.Run(() =>
                 {
-                    lock (_captureLock)
+                    Logger.Debug($"RtspCaptureService - Creating VideoCapture with URL: {RedactRtspUrl(rtspUrl)}");
+                    try
                     {
-                        if (_isDisposed)
-                        {
-                            throw new ObjectDisposedException(nameof(RtspCaptureService));
-                        }
-
-                        _capture?.Dispose();
-                        Logger.Debug($"RtspCaptureService - Creating VideoCapture with URL: {RedactRtspUrl(rtspUrl)}");
-                        // Prefer FFmpeg backend for RTSP stability.
-                        try
-                        {
-                            _capture = new VideoCapture(rtspUrl, VideoCapture.API.Ffmpeg);
-                        }
-                        catch
-                        {
-                            // Fallback to default backend if FFmpeg preference isn't available.
-                            _capture = new VideoCapture(rtspUrl);
-                        }
-                        Logger.Debug($"RtspCaptureService - VideoCapture created, IsOpened: {_capture?.IsOpened}");
-
-                        // Buffer tuning is backend/version dependent; keep best-effort minimal here.
+                        return new VideoCapture(rtspUrl, VideoCapture.API.Ffmpeg);
+                    }
+                    catch
+                    {
+                        // Fallback to default backend if FFmpeg preference isn't available.
+                        return new VideoCapture(rtspUrl);
                     }
                 }, cancellationToken);
 
-                if (_capture == null || !_capture.IsOpened)
+                Logger.Debug($"RtspCaptureService - VideoCapture created, IsOpened: {capture.IsOpened}");
+                if (!capture.IsOpened)
                 {
-                    var error = $"Failed to open RTSP stream: {RedactRtspUrl(rtspUrl)}. IsOpened = {_capture?.IsOpened}, _capture is null = {_capture == null}";
+                    var error = $"Failed to open RTSP stream: {RedactRtspUrl(rtspUrl)}. IsOpened = {capture.IsOpened}";
                     Logger.Error(error);
                     ErrorOccurred?.Invoke(this, error);
+                    capture.Dispose();
                     return false;
                 }
 
-                Logger.Info($"RtspCaptureService - RTSP connection established successfully to {RedactRtspUrl(rtspUrl)}");
+                var firstFrame = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                var readerCancellation = new CancellationTokenSource();
+
+                lock (_captureLock)
+                {
+                    if (_isDisposed)
+                    {
+                        readerCancellation.Dispose();
+                        capture.Dispose();
+                        throw new ObjectDisposedException(nameof(RtspCaptureService));
+                    }
+
+                    _capture = capture;
+                    _lastInitializedRtspUrl = rtspUrl;
+                    _captureSessionId = Guid.NewGuid().ToString("N")[..8];
+                    _readerCancellation = readerCancellation;
+                    _readerIsRunning = true;
+                    _readerTask = Task.Factory.StartNew(
+                        () => ReaderLoop(capture, readerCancellation.Token, firstFrame),
+                        CancellationToken.None,
+                        TaskCreationOptions.LongRunning,
+                        TaskScheduler.Default);
+                }
+
+                bool receivedFirstFrame;
+                using (var startupTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
+                {
+                    startupTimeout.CancelAfter(FirstFrameTimeout);
+                    try
+                    {
+                        receivedFirstFrame = await firstFrame.Task.WaitAsync(startupTimeout.Token);
+                    }
+                    catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+                    {
+                        receivedFirstFrame = false;
+                    }
+                }
+
+                if (!receivedFirstFrame)
+                {
+                    var error = $"RTSP stream opened but no decodable frame arrived within {FirstFrameTimeout.TotalSeconds:0} seconds: {RedactRtspUrl(rtspUrl)}";
+                    Logger.Warning(error);
+                    ErrorOccurred?.Invoke(this, error);
+                    Reset();
+                    return false;
+                }
+
+                Logger.Info($"RtspCaptureService - RTSP connection established with continuous latest-frame reader: {RedactRtspUrl(rtspUrl)}");
                 return true;
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                Reset();
+                return false;
             }
             catch (Exception ex)
             {
+                Reset();
                 Logger.Error($"RtspCaptureService - Error initializing RTSP stream: {ex.Message}", ex);
                 ErrorOccurred?.Invoke(this, ex.Message);
                 return false;
+            }
+        }
+
+        private void ReaderLoop(
+            VideoCapture capture,
+            CancellationToken cancellationToken,
+            TaskCompletionSource<bool> firstFrame)
+        {
+            var consecutiveFailures = 0;
+            var lastPublishedUtc = DateTime.MinValue;
+
+            try
+            {
+                using var frame = new Mat();
+                while (!cancellationToken.IsCancellationRequested)
+                {
+                    bool ok;
+                    try
+                    {
+                        ok = capture.Read(frame);
+                    }
+                    catch (Exception ex) when (cancellationToken.IsCancellationRequested)
+                    {
+                        Logger.Debug($"RtspCaptureService - Reader stopped during reset: {ex.Message}");
+                        break;
+                    }
+                    catch (Exception ex)
+                    {
+                        Logger.Warning($"RtspCaptureService - Continuous RTSP read failed: {ex.Message}");
+                        ok = false;
+                    }
+
+                    if (!ok || frame.IsEmpty)
+                    {
+                        consecutiveFailures++;
+                        if (consecutiveFailures >= 25)
+                        {
+                            Logger.Warning("RtspCaptureService - Continuous reader stopped after 25 empty/failed frames");
+                            break;
+                        }
+
+                        Thread.Sleep(40);
+                        continue;
+                    }
+
+                    consecutiveFailures = 0;
+                    var receivedUtc = DateTime.UtcNow;
+                    if (receivedUtc - lastPublishedUtc < PublishInterval)
+                    {
+                        continue;
+                    }
+
+                    Bitmap? bitmap = null;
+                    try
+                    {
+                        bitmap = ConvertMatToBgr24Bitmap(frame);
+                        var accepted = false;
+                        lock (_captureLock)
+                        {
+                            if (!_isDisposed
+                                && ReferenceEquals(_capture, capture)
+                                && !cancellationToken.IsCancellationRequested)
+                            {
+                                _latestFrames.Publish(bitmap, receivedUtc);
+                                accepted = true;
+                                bitmap = null; // ownership transferred to the latest-frame buffer
+                            }
+                        }
+
+                        if (!accepted)
+                        {
+                            break;
+                        }
+
+                        lastPublishedUtc = receivedUtc;
+                        firstFrame.TrySetResult(true);
+                    }
+                    catch (Exception ex)
+                    {
+                        Logger.Warning($"RtspCaptureService - Could not publish decoded RTSP frame: {ex.Message}");
+                    }
+                    finally
+                    {
+                        bitmap?.Dispose();
+                    }
+                }
+            }
+            finally
+            {
+                firstFrame.TrySetResult(false);
+                lock (_captureLock)
+                {
+                    if (ReferenceEquals(_capture, capture))
+                    {
+                        _readerIsRunning = false;
+                    }
+                }
+
+                // VideoCapture is a native object.  Only the reader thread may dispose it:
+                // disposing from Reset while Read() is in progress can crash the whole NINA
+                // process with an AccessViolationException rather than a managed exception.
+                try
+                {
+                    capture.Dispose();
+                }
+                catch (Exception ex)
+                {
+                    Logger.Debug($"RtspCaptureService - Decoder dispose after reader exit: {ex.Message}");
+                }
             }
         }
 
@@ -142,81 +313,96 @@ namespace AIWeather.Services
         /// </summary>
         public async Task<Bitmap?> CaptureFrameAsync(CancellationToken cancellationToken = default)
         {
+            long minimumSequence;
+            string fallbackUrl;
+            string captureSessionId;
+            lock (_captureLock)
+            {
+                if (_isDisposed || _capture == null || !_readerIsRunning)
+                {
+                    Logger.Warning("RTSP capture is not initialized");
+                    return null;
+                }
+
+                minimumSequence = _latestFrames.Sequence;
+                fallbackUrl = _lastInitializedRtspUrl;
+                captureSessionId = _captureSessionId;
+            }
+
             try
             {
-                return await Task.Run(() =>
+                var deadlineUtc = DateTime.UtcNow + FreshFrameTimeout;
+                while (DateTime.UtcNow < deadlineUtc)
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
+
+                    if (_latestFrames.TryCloneNewerThan(
+                        minimumSequence,
+                        DateTime.UtcNow,
+                        MaximumFrameAge,
+                        out var bitmap,
+                        out var sequence,
+                        out _,
+                        out var age))
+                    {
+                        Logger.Debug(
+                            $"RtspCaptureService - Session {captureSessionId} delivered latest RTSP frame sequence {sequence}, " +
+                            $"receive age {age.TotalMilliseconds:0} ms");
+                        FrameCaptured?.Invoke(this, bitmap!);
+                        return bitmap;
+                    }
+
+                    bool readerStillRunning;
                     lock (_captureLock)
                     {
-                        if (_isDisposed || _capture == null || !_capture.IsOpened)
-                        {
-                            Logger.Warning("RTSP capture is not initialized");
-                            return null;
-                        }
-
-                        // RTSP sources can return a few empty frames initially.
-                        // Retry briefly to avoid reporting capture failure while video is actually playing.
-                        for (var attempt = 0; attempt < 25; attempt++)
-                        {
-                            using var frame = new Mat();
-
-                            bool ok;
-                            try
-                            {
-                                ok = _capture.Read(frame);
-                            }
-                            catch (Exception ex)
-                            {
-                                Logger.Warning($"RTSP read failed (attempt {attempt + 1}/25): {ex.Message}");
-                                ok = false;
-                            }
-
-                            if (!ok || frame.IsEmpty)
-                            {
-                                Thread.Sleep(40);
-                                continue;
-                            }
-
-                            try
-                            {
-                                var bitmap = ConvertMatToBgr24Bitmap(frame);
-                                FrameCaptured?.Invoke(this, bitmap);
-                                return bitmap;
-                            }
-                            catch (Exception ex)
-                            {
-                                Logger.Error($"Error converting RTSP frame to bitmap: {ex.Message}");
-                                return null;
-                            }
-                        }
-
-                        Logger.Warning("RTSP capture returned empty frames after retries");
-
-                        // Fallback: if OpenCV/FFmpeg can't decode frames but VLC can play the stream,
-                        // take a LibVLC snapshot (headless) and use that for analysis.
-                        if (!string.IsNullOrWhiteSpace(_lastInitializedRtspUrl))
-                        {
-                            try
-                            {
-                                Logger.Info($"RtspCaptureService - Falling back to LibVLC snapshot for analysis: {RedactRtspUrl(_lastInitializedRtspUrl)}");
-                                return CaptureFrameViaVlcSnapshot(_lastInitializedRtspUrl, cancellationToken);
-                            }
-                            catch (Exception ex)
-                            {
-                                Logger.Warning($"RtspCaptureService - LibVLC snapshot fallback failed: {ex.Message}");
-                            }
-                        }
-
-                        return null;
+                        readerStillRunning = _readerIsRunning;
                     }
-                }, cancellationToken);
+
+                    if (!readerStillRunning)
+                    {
+                        break;
+                    }
+
+                    await Task.Delay(25, cancellationToken);
+                }
+
+                Logger.Warning(
+                    $"RtspCaptureService - No new frame arrived within {FreshFrameTimeout.TotalSeconds:0} seconds; " +
+                    "the previous buffered frame will not be reused");
+
+                // This fallback creates a new playback session and snapshot, so it cannot reuse
+                // the stale OpenCV decoder queue. It remains bounded by its own timeouts.
+                if (!string.IsNullOrWhiteSpace(fallbackUrl))
+                {
+                    try
+                    {
+                        Logger.Info($"RtspCaptureService - Falling back to LibVLC snapshot for analysis: {RedactRtspUrl(fallbackUrl)}");
+                        var fallback = await Task.Run(
+                            () => CaptureFrameViaVlcSnapshot(fallbackUrl, cancellationToken),
+                            cancellationToken);
+                        if (fallback != null)
+                        {
+                            FrameCaptured?.Invoke(this, fallback);
+                        }
+                        return fallback;
+                    }
+                    catch (Exception ex)
+                    {
+                        Logger.Warning($"RtspCaptureService - LibVLC snapshot fallback failed: {ex.Message}");
+                    }
+                }
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                return null;
             }
             catch (Exception ex)
             {
                 Logger.Error($"Error capturing frame: {ex.Message}", ex);
                 ErrorOccurred?.Invoke(this, ex.Message);
-                return null;
             }
+
+            return null;
         }
 
         private static Bitmap? CaptureFrameViaVlcSnapshot(string rtspUrl, CancellationToken cancellationToken)
@@ -578,12 +764,59 @@ namespace AIWeather.Services
         /// </summary>
         public void Reset()
         {
+            VideoCapture? capture;
+            CancellationTokenSource? readerCancellation;
+            Task? readerTask;
+
             lock (_captureLock)
             {
-                _capture?.Dispose();
+                capture = _capture;
+                readerCancellation = _readerCancellation;
+                readerTask = _readerTask;
+
                 _capture = null;
+                _readerCancellation = null;
+                _readerTask = null;
+                _readerIsRunning = false;
                 _lastInitializedRtspUrl = string.Empty;
+                _captureSessionId = string.Empty;
+                _latestFrames.Clear();
             }
+
+            try
+            {
+                readerCancellation?.Cancel();
+            }
+            catch
+            {
+                // best-effort
+            }
+
+            if (readerTask != null && Task.CurrentId != readerTask.Id)
+            {
+                try
+                {
+                    if (!readerTask.Wait(TimeSpan.FromSeconds(5)))
+                    {
+                        // Do not dispose a native VideoCapture concurrently with Read().  The
+                        // detached reader owns it and will release it as soon as Read returns.
+                        Logger.Warning(
+                            "RtspCaptureService - Reader did not stop within 5 seconds; " +
+                            "native decoder disposal is deferred to the reader thread");
+                    }
+                }
+                catch
+                {
+                    // The session has already been detached; a late reader cannot publish to it.
+                }
+            }
+            else if (readerTask == null)
+            {
+                // Initialization can create a decoder before its reader task is installed.
+                capture?.Dispose();
+            }
+
+            readerCancellation?.Dispose();
         }
 
         public void Dispose()
@@ -595,11 +828,11 @@ namespace AIWeather.Services
                     return;
                 }
 
-                _capture?.Dispose();
-                _capture = null;
-                _lastInitializedRtspUrl = string.Empty;
                 _isDisposed = true;
             }
+
+            Reset();
+            _latestFrames.Dispose();
 
             GC.SuppressFinalize(this);
         }

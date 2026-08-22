@@ -17,8 +17,13 @@ namespace AIWeather.DatasetSmoke;
 internal static class Program
 {
     [System.Runtime.Versioning.SupportedOSPlatform("windows")]
-    private static async Task<int> Main()
+    private static async Task<int> Main(string[] args)
     {
+        if (args.Contains("--rtsp-live", StringComparer.OrdinalIgnoreCase))
+        {
+            return await RunLiveRtspFreshnessCheckAsync();
+        }
+
         var runRoot = Path.Combine(
             Path.GetTempPath(),
             "AIWeatherDatasetSmoke",
@@ -30,6 +35,7 @@ internal static class Program
             VerifyLocalizationSelection();
             VerifySolarAltitudeGuard();
             VerifyDatasetDefaults();
+            VerifyLatestRtspFrameBuffer();
             VerifyGeminiQuotaPolicy();
             await VerifyGeminiRequestPacingAsync();
             await VerifyGeminiServiceSuppressesQuotaRetriesAsync();
@@ -50,6 +56,140 @@ internal static class Program
             Console.Error.WriteLine($"Artifacts retained at: {runRoot}");
             return 1;
         }
+    }
+
+    private static void VerifyLatestRtspFrameBuffer()
+    {
+        using var buffer = new LatestRtspFrameBuffer();
+        var now = DateTime.UtcNow;
+
+        buffer.Publish(CreateSolidBitmap(Color.Red), now);
+        Assert(buffer.TryCloneNewerThan(
+                0,
+                now.AddMilliseconds(100),
+                TimeSpan.FromSeconds(10),
+                out var first,
+                out var firstSequence,
+                out var firstReceivedUtc,
+                out var firstAge),
+            "The first fresh RTSP frame was not returned");
+        using (first)
+        {
+            Assert(first!.GetPixel(0, 0).ToArgb() == Color.Red.ToArgb(),
+                "The RTSP latest-frame buffer returned the wrong first frame");
+        }
+        Assert(firstSequence == 1 && firstReceivedUtc == now && firstAge == TimeSpan.FromMilliseconds(100),
+            "RTSP frame metadata did not match the published frame");
+
+        Assert(!buffer.TryCloneNewerThan(
+                firstSequence,
+                now.AddMilliseconds(200),
+                TimeSpan.FromSeconds(10),
+                out var repeated,
+                out _,
+                out _,
+                out _),
+            "The same buffered RTSP frame was delivered twice");
+        repeated?.Dispose();
+
+        buffer.Publish(CreateSolidBitmap(Color.Blue), now.AddSeconds(1));
+        Assert(buffer.TryCloneNewerThan(
+                firstSequence,
+                now.AddSeconds(1.1),
+                TimeSpan.FromSeconds(10),
+                out var second,
+                out var secondSequence,
+                out _,
+                out _),
+            "A newer RTSP frame did not replace the previous frame");
+        using (second)
+        {
+            Assert(second!.GetPixel(0, 0).ToArgb() == Color.Blue.ToArgb(),
+                "The RTSP latest-frame buffer did not retain the newest frame");
+        }
+
+        buffer.Publish(CreateSolidBitmap(Color.Green), now.AddSeconds(2));
+        Assert(!buffer.TryCloneNewerThan(
+                secondSequence,
+                now.AddSeconds(13),
+                TimeSpan.FromSeconds(10),
+                out var stale,
+                out _,
+                out _,
+                out _),
+            "An expired RTSP frame was incorrectly returned as fresh");
+        stale?.Dispose();
+
+        buffer.Clear();
+        Assert(!buffer.TryCloneNewerThan(
+                0,
+                now,
+                TimeSpan.FromSeconds(10),
+                out var cleared,
+                out _,
+                out _,
+                out _),
+            "Clearing the RTSP latest-frame buffer left a frame available");
+        cleared?.Dispose();
+    }
+
+    private static Bitmap CreateSolidBitmap(Color color)
+    {
+        var bitmap = new Bitmap(2, 2);
+        using var graphics = Graphics.FromImage(bitmap);
+        graphics.Clear(color);
+        return bitmap;
+    }
+
+    private static async Task<int> RunLiveRtspFreshnessCheckAsync()
+    {
+        var rtspUrl = Environment.GetEnvironmentVariable("AIWEATHER_RTSP_TEST_URL");
+        if (string.IsNullOrWhiteSpace(rtspUrl))
+        {
+            Console.Error.WriteLine("AIWEATHER_RTSP_TEST_URL is required for --rtsp-live.");
+            return 2;
+        }
+
+        var outputRoot = Environment.GetEnvironmentVariable("AIWEATHER_RTSP_TEST_OUTPUT");
+        if (string.IsNullOrWhiteSpace(outputRoot))
+        {
+            outputRoot = Path.Combine(Path.GetTempPath(), "AIWeatherRtspFreshness");
+        }
+        Directory.CreateDirectory(outputRoot);
+
+        using var service = new RtspCaptureService();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+        if (!await service.InitializeAsync(rtspUrl, timeout.Token))
+        {
+            Console.Error.WriteLine("FAIL live RTSP freshness: initialization failed (URL redacted).");
+            return 1;
+        }
+
+        using var first = await service.CaptureFrameAsync(timeout.Token);
+        if (first == null)
+        {
+            Console.Error.WriteLine("FAIL live RTSP freshness: first fresh frame was unavailable.");
+            return 1;
+        }
+
+        var firstPath = Path.Combine(outputRoot, $"freshness_1_{DateTime.Now:yyyyMMdd_HHmmss}.jpg");
+        first.Save(firstPath, System.Drawing.Imaging.ImageFormat.Jpeg);
+
+        await Task.Delay(TimeSpan.FromSeconds(12), timeout.Token);
+        using var second = await service.CaptureFrameAsync(timeout.Token);
+        if (second == null)
+        {
+            Console.Error.WriteLine("FAIL live RTSP freshness: second fresh frame was unavailable.");
+            return 1;
+        }
+
+        var secondPath = Path.Combine(outputRoot, $"freshness_2_{DateTime.Now:yyyyMMdd_HHmmss}.jpg");
+        second.Save(secondPath, System.Drawing.Imaging.ImageFormat.Jpeg);
+
+        Console.WriteLine("PASS live RTSP freshness: two newly received frames were captured 12 seconds apart.");
+        Console.WriteLine(firstPath);
+        Console.WriteLine(secondPath);
+        return 0;
     }
 
     private static void VerifySolarAltitudeGuard()

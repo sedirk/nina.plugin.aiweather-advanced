@@ -1,7 +1,7 @@
 {
   "Identifier": "AI Weather",
   "Name": "AI Weather - All Sky Camera Monitor",
-  "Version": "1.21.0.0",
+  "Version": "1.22.0.0",
   "MinimumApplicationVersion": "3.0.0.0",
   "Author": "Michele Bergo",
   "Homepage": "https://github.com/michelebergo/nina.plugin.aiweather",
@@ -24,6 +24,16 @@
     }
   },
   "ChangeLog": [
+    {
+      "Version": "1.22.0.0",
+      "Date": "2026-08-23",
+      "Changes": [
+        "Fixed a safety-critical RTSP stale-frame defect inherited from upstream: the analysis decoder is now drained continuously and weather checks receive a newly decoded latest frame instead of advancing an old FFmpeg queue by one frame every few minutes",
+        "Added monotonically increasing frame sequences, receive timestamps, a 10-second freshness limit and a five-second new-frame deadline; a missing fresh frame fails capture instead of refreshing the safety verdict with historical video",
+        "Made the background reader the sole owner of the native OpenCV VideoCapture lifetime so reconnect, shutdown and cancellation cannot dispose a decoder concurrently with a native Read call",
+        "Added deterministic regression tests plus an opt-in live RTSP freshness harness, and documented the incident evidence, upstream provenance, safety impact, repair design and real-camera acceptance results"
+      ]
+    },
     {
       "Version": "1.21.0.0",
       "Date": "2026-08-22",
