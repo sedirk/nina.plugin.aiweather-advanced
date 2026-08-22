@@ -231,6 +231,8 @@ namespace AIWeather.Localization
                 ["Runtime.FallbackQuotaNoTime"] = new(" | API quota temporarily unavailable", "｜API 配额暂不可用"),
                 ["Runtime.FallbackQuotaDescription"] = new("[Fallback: Local] {0} API quota is temporarily unavailable; next online attempt after {1}. {2}", "[回退：本地] {0} API 配额暂不可用；下次在线尝试时间为 {1}。{2}"),
                 ["Runtime.FallbackQuotaDescriptionNoTime"] = new("[Fallback: Local] {0} API quota is temporarily unavailable. {1}", "[回退：本地] {0} API 配额暂不可用。{1}"),
+                ["Runtime.FallbackDailyQuota"] = new(" | daily API quota exhausted; reset expected at {0}", "｜每日 API 配额已用尽；预计于 {0} 重置"),
+                ["Runtime.FallbackDailyQuotaDescription"] = new("[Fallback: Local] {0} daily API quota is exhausted; Google resets RPD at Pacific midnight, expected at {1}. {2}", "[回退：本地] {0} 每日 API 配额已用尽；Google 按太平洋时间午夜重置 RPD，预计恢复时间为 {1}。{2}"),
                 ["Runtime.ScheduledLocal"] = new(" | scheduled local check (Gemini every {0} checks)", "｜按计划使用本地检查（Gemini 每 {0} 次调用一次）"),
                 ["Runtime.ScheduledLocalDescription"] = new("[Scheduled: Local] {0} is configured to run once every {1} weather checks; this check used local analysis. {2}", "[计划：本地] {0} 已设为每 {1} 次天气检查在线调用一次；本次使用本地分析。{2}"),
                 ["Runtime.LocalRainDescription"] = new("Rain detected - unsafe for imaging", "检测到降雨——不适合拍摄"),
@@ -421,6 +423,16 @@ namespace AIWeather.Localization
 
                 if (result.Provenance.FailureCategory == AnalysisFailureCategory.QuotaExhausted)
                 {
+                    if (IsDailyQuota(result.Provenance)
+                        && result.Provenance.RetryAfterUtc is DateTime dailyRetryAfterUtc)
+                    {
+                        return Text(
+                            "Runtime.FallbackDailyQuotaDescription",
+                            provider,
+                            FormatRetryAfter(dailyRetryAfterUtc),
+                            localDescription);
+                    }
+
                     return result.Provenance.RetryAfterUtc is DateTime retryAfterUtc
                         ? Text(
                             "Runtime.FallbackQuotaDescription",
@@ -458,6 +470,12 @@ namespace AIWeather.Localization
         {
             if (provenance.FailureCategory == AnalysisFailureCategory.QuotaExhausted)
             {
+                if (IsDailyQuota(provenance)
+                    && provenance.RetryAfterUtc is DateTime dailyRetryAfterUtc)
+                {
+                    return Text("Runtime.FallbackDailyQuota", FormatRetryAfter(dailyRetryAfterUtc));
+                }
+
                 return provenance.RetryAfterUtc is DateTime retryAfterUtc
                     ? Text("Runtime.FallbackQuota", FormatRetryAfter(retryAfterUtc))
                     : Text("Runtime.FallbackQuotaNoTime");
@@ -512,7 +530,21 @@ namespace AIWeather.Localization
             var format = local.Date == DateTime.Now.Date
                 ? "HH:mm:ss"
                 : "yyyy-MM-dd HH:mm:ss";
-            return local.ToString(format, CultureInfo.CurrentCulture);
+            var localText = local.ToString(format, CultureInfo.CurrentCulture);
+            var utcOffset = TimeZoneInfo.Local.GetUtcOffset(local);
+            var offsetText = utcOffset < TimeSpan.Zero
+                ? $"-{utcOffset.Duration():hh\\:mm}"
+                : $"+{utcOffset:hh\\:mm}";
+            return IsChineseCulture()
+                ? $"{localText}（本地时间 UTC{offsetText}）"
+                : $"{localText} local time (UTC{offsetText})";
+        }
+
+        private static bool IsDailyQuota(AnalysisProvenance provenance)
+        {
+            return !string.IsNullOrWhiteSpace(provenance.QuotaId)
+                   && (provenance.QuotaId.Contains("PerDay", StringComparison.OrdinalIgnoreCase)
+                       || provenance.QuotaId.Contains("RequestsPerDay", StringComparison.OrdinalIgnoreCase));
         }
 
         public static string Boolean(bool value) => Text(value ? "Common.True" : "Common.False");

@@ -1,7 +1,7 @@
 {
   "Identifier": "AI Weather",
   "Name": "AI Weather - All Sky Camera Monitor",
-  "Version": "1.22.0.0",
+  "Version": "1.22.1.0",
   "MinimumApplicationVersion": "3.0.0.0",
   "Author": "Michele Bergo",
   "Homepage": "https://github.com/michelebergo/nina.plugin.aiweather",
@@ -24,6 +24,15 @@
     }
   },
   "ChangeLog": [
+    {
+      "Version": "1.22.1.0",
+      "Date": "2026-08-23",
+      "Changes": [
+        "Replaced the native RTSP preview host's default white letterbox/pillarbox background with N.I.N.A.'s active SecondaryBackgroundBrush, including the Win32 HwndHost airspace that cannot inherit WPF transparency",
+        "Daily Gemini RPD exhaustion is now distinguished from short rate limiting in the bilingual status and fallback explanation; the UI names Pacific-midnight reset semantics and shows the retry time explicitly as local time with its UTC offset",
+        "Kept the provider-aligned daily-quota circuit: explicit GenerateRequestsPerDay...FreeTier responses pause until Pacific midnight plus the existing two-minute propagation margin, while per-minute RetryInfo behavior remains unchanged"
+      ]
+    },
     {
       "Version": "1.22.0.0",
       "Date": "2026-08-23",

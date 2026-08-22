@@ -270,6 +270,16 @@ internal static class Program
             Assert(UiLocalization.FallbackStatus(fallback.Provenance).Contains("API 配额暂停至", StringComparison.Ordinal),
                 "Gemini quota source summary was not localized for zh-CN");
 
+            fallback.Provenance.QuotaId = "GenerateRequestsPerDayPerProjectPerModel-FreeTier";
+            var dailyQuotaDescription = UiLocalization.AnalysisDescription(fallback, "Gemini");
+            Assert(dailyQuotaDescription.Contains("每日 API 配额已用尽", StringComparison.Ordinal)
+                   && dailyQuotaDescription.Contains("太平洋时间午夜", StringComparison.Ordinal)
+                   && dailyQuotaDescription.Contains("本地时间 UTC", StringComparison.Ordinal),
+                "Gemini daily-quota reset and time zone were not explained in zh-CN");
+            Assert(UiLocalization.FallbackStatus(fallback.Provenance).Contains("预计于", StringComparison.Ordinal),
+                "Gemini daily-quota source summary was not localized for zh-CN");
+            fallback.Provenance.QuotaId = null;
+
             fallback.Provenance.FailureCategory = AnalysisFailureCategory.ScheduledLocal;
             fallback.Provenance.RequestEveryChecks = 12;
             var scheduledDescription = UiLocalization.AnalysisDescription(fallback, "Gemini");

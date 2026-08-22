@@ -111,12 +111,12 @@
             </Grid.ColumnDefinitions>
             
             <!-- Main Image Display - Left Side (like RTSP video player) -->
-            <Border Grid.Column="0" Background="{x:Null}" Margin="5">
-                <Grid x:Name="VideoContainer" Background="Transparent" ClipToBounds="True">
+            <Border Grid.Column="0" Background="{DynamicResource SecondaryBackgroundBrush}" Margin="5">
+                <Grid x:Name="VideoContainer" Background="{DynamicResource SecondaryBackgroundBrush}" ClipToBounds="True">
                     <!-- Video Panel for HwndHost (RTSP mode only) -->
                     <Grid x:Name="VideoPanel"
                             Visibility="{Binding IsRtspMode, Converter={StaticResource BoolToVisibility}}"
-                            Background="Transparent"
+                            Background="{DynamicResource SecondaryBackgroundBrush}"
                             ClipToBounds="True"
                             SizeChanged="VideoPanel_SizeChanged"
                             HorizontalAlignment="Stretch"

@@ -3,6 +3,7 @@ using System;
 using System.ComponentModel;
 using System.Runtime.InteropServices;
 using System.Windows.Interop;
+using MediaColor = System.Windows.Media.Color;
 
 namespace AIWeather.Views
 {
@@ -10,20 +11,24 @@ namespace AIWeather.Views
     {
         private IntPtr _hwnd;
         private IntPtr _parentHwnd;
-
-        private const int WS_EX_LAYERED = 0x00080000;
-        private const int LWA_COLORKEY = 0x00000001;
+        private IntPtr _backgroundBrush;
+        private readonly uint _backgroundColorRef;
 
         private const int WS_CHILD = 0x40000000;
         private const int WS_VISIBLE = 0x10000000;
+        private const int WM_ERASEBKGND = 0x0014;
 
         public IntPtr Hwnd => _hwnd;
 
         public MediaPlayer Player { get; }
 
-        public VideoHwndHost(MediaPlayer player)
+        public VideoHwndHost(MediaPlayer player, MediaColor backgroundColor)
         {
             Player = player;
+            _backgroundColorRef = (uint)(
+                backgroundColor.R
+                | (backgroundColor.G << 8)
+                | (backgroundColor.B << 16));
         }
 
         public void ResizeTo(double width, double height)
@@ -36,6 +41,7 @@ namespace AIWeather.Views
             var targetWidth = Math.Max(1, (int)Math.Round(width));
             var targetHeight = Math.Max(1, (int)Math.Round(height));
             SetWindowPos(_hwnd, IntPtr.Zero, 0, 0, targetWidth, targetHeight, SWP_NOZORDER | SWP_NOACTIVATE);
+            InvalidateRect(_hwnd, IntPtr.Zero, true);
         }
 
         protected override HandleRef BuildWindowCore(HandleRef hwndParent)
@@ -47,10 +53,12 @@ namespace AIWeather.Views
             const int width = 1;
             const int height = 1;
 
-            // Create a transparent, layered child window to host the video output.
-            // This matches the RTSP Client plugin approach and avoids visible backplates.
+            // HwndHost is a native airspace and cannot be transparently composed with the
+            // WPF tree. Give the native child the exact active N.I.N.A. theme color instead
+            // of leaving the Win32 Static control's default white background visible.
+            _backgroundBrush = CreateSolidBrush(_backgroundColorRef);
             _hwnd = CreateWindowEx(
-                WS_EX_LAYERED,
+                0,
                 "Static",
                 "",
                 WS_CHILD | WS_VISIBLE,
@@ -66,9 +74,7 @@ namespace AIWeather.Views
                 throw new Win32Exception(Marshal.GetLastWin32Error(), "CreateWindowEx failed for video host window");
             }
 
-            // Make the background fully transparent via color key (black).
-            // LibVLC will render the video content over this window.
-            SetLayeredWindowAttributes(_hwnd, 0, 0, LWA_COLORKEY);
+            InvalidateRect(_hwnd, IntPtr.Zero, true);
 
             return new HandleRef(this, _hwnd);
         }
@@ -92,10 +98,27 @@ namespace AIWeather.Views
                 DestroyWindow(_hwnd);
                 _hwnd = IntPtr.Zero;
             }
+
+            if (_backgroundBrush != IntPtr.Zero)
+            {
+                DeleteObject(_backgroundBrush);
+                _backgroundBrush = IntPtr.Zero;
+            }
         }
 
         protected override IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
         {
+            if (msg == WM_ERASEBKGND && _backgroundBrush != IntPtr.Zero)
+            {
+                if (GetClientRect(hwnd, out var bounds))
+                {
+                    FillRect(wParam, ref bounds, _backgroundBrush);
+                }
+
+                handled = true;
+                return new IntPtr(1);
+            }
+
             return base.WndProc(hwnd, msg, wParam, lParam, ref handled);
         }
 
@@ -116,14 +139,6 @@ namespace AIWeather.Views
 
         [DllImport("user32.dll", SetLastError = true)]
         [return: MarshalAs(UnmanagedType.Bool)]
-        private static extern bool SetLayeredWindowAttributes(
-            IntPtr hwnd,
-            uint crKey,
-            byte bAlpha,
-            uint dwFlags);
-
-        [DllImport("user32.dll", SetLastError = true)]
-        [return: MarshalAs(UnmanagedType.Bool)]
         private static extern bool DestroyWindow(IntPtr hWnd);
 
         private const int SWP_NOZORDER = 0x0004;
@@ -138,6 +153,33 @@ namespace AIWeather.Views
             int cx,
             int cy,
             int uFlags);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool GetClientRect(IntPtr hWnd, out NativeRect lpRect);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern int FillRect(IntPtr hDC, ref NativeRect lprc, IntPtr hbr);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool InvalidateRect(IntPtr hWnd, IntPtr lpRect, bool bErase);
+
+        [DllImport("gdi32.dll")]
+        private static extern IntPtr CreateSolidBrush(uint colorRef);
+
+        [DllImport("gdi32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool DeleteObject(IntPtr hObject);
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct NativeRect
+        {
+            public int Left;
+            public int Top;
+            public int Right;
+            public int Bottom;
+        }
 
     }
 }

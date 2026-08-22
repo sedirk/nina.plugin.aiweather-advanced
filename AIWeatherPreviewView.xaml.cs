@@ -12,6 +12,8 @@ using AIWeather.Views;
 using AIWeather.Models;
 using AIWeather.Services;
 using System.Windows.Controls.Primitives;
+using MediaColor = System.Windows.Media.Color;
+using SolidColorBrush = System.Windows.Media.SolidColorBrush;
 
 namespace AIWeather
 {
@@ -276,7 +278,7 @@ namespace AIWeather
                 CameraImage.Visibility = Visibility.Collapsed;
 
                 Logger.Debug("Creating VideoHwndHost...");
-                _videoHost = new VideoHwndHost(player)
+                _videoHost = new VideoHwndHost(player, ResolveVideoBackgroundColor())
                 {
                     HorizontalAlignment = HorizontalAlignment.Left,
                     VerticalAlignment = VerticalAlignment.Top
@@ -619,6 +621,24 @@ namespace AIWeather
         private static string RedactRtspCredentials(string? input)
         {
             return LogRedactor.RedactRtspUrl(input);
+        }
+
+        private MediaColor ResolveVideoBackgroundColor()
+        {
+            // HwndHost is a native airspace and cannot inherit a transparent WPF
+            // background. Mirror N.I.N.A.'s active secondary background into the native
+            // child window so letterbox/pillarbox regions follow light and dark themes.
+            if (TryFindResource("SecondaryBackgroundBrush") is SolidColorBrush localBrush)
+            {
+                return localBrush.Color;
+            }
+
+            if (Application.Current?.TryFindResource("SecondaryBackgroundBrush") is SolidColorBrush appBrush)
+            {
+                return appBrush.Color;
+            }
+
+            return MediaColor.FromRgb(32, 43, 48);
         }
 
         private void PasswordBox_Loaded(object sender, RoutedEventArgs e)
