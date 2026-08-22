@@ -1,7 +1,7 @@
 {
   "Identifier": "AI Weather",
   "Name": "AI Weather - All Sky Camera Monitor",
-  "Version": "1.22.2.0",
+  "Version": "1.22.4.0",
   "MinimumApplicationVersion": "3.0.0.0",
   "Author": "Michele Bergo",
   "Homepage": "https://github.com/michelebergo/nina.plugin.aiweather",
@@ -24,6 +24,24 @@
     }
   },
   "ChangeLog": [
+    {
+      "Version": "1.22.4.0",
+      "Date": "2026-08-23",
+      "Changes": [
+        "Fixed the 1.22.3 regression where weather analysis continued but the preview stayed blank: LibVLC now initializes in a normally sized visible target, avoiding both hidden-child inheritance and the Direct3D deadlock caused by shrinking or hiding the target itself",
+        "The native HwndHost now occupies only a centered video-shaped viewport from startup onward, so the surrounding bars are genuine N.I.N.A. WPF theme pixels that native VLC repaint cycles cannot overwrite",
+        "During decoder startup the normal-size HwndHost is clipped to one native pixel, exposing the real N.I.N.A. theme without starving LibVLC; the clip is removed only after decoded dimensions and a short first-frame warm-up"
+      ]
+    },
+    {
+      "Version": "1.22.3.0",
+      "Date": "2026-08-23",
+      "Changes": [
+        "Fixed the root cause of intermittent white RTSP preview backgrounds: LibVLC is no longer attached to the full-panel HwndHost, because its generated VLC video main child can repaint that entire native surface white at startup and during later Direct3D refreshes",
+        "Added a nested native-window architecture: the full-size outer HWND is owned and theme-painted by the plugin, while a centered aspect-fitted inner HWND is the only surface handed to LibVLC, so VLC cannot touch the surrounding letterbox area",
+        "The inner VLC surface remains 1x1 until video dimensions are available, then expands after a short first-frame warm-up to avoid the previous full-panel white startup flash"
+      ]
+    },
     {
       "Version": "1.22.2.0",
       "Date": "2026-08-23",

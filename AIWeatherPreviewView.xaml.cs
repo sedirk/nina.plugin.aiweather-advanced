@@ -31,6 +31,8 @@ namespace AIWeather
         private CancellationTokenSource? _startCts;
         private Media? _currentMedia;
         private string? _activePlaybackUrl;
+        private VideoHostLayout? _lastLoggedVideoLayout;
+        private bool _videoSurfaceReady;
 
         public AIWeatherPreviewView()
         {
@@ -278,11 +280,25 @@ namespace AIWeather
                 CameraImage.Visibility = Visibility.Collapsed;
 
                 Logger.Debug("Creating VideoHwndHost...");
+                // Give the native host a conventional video-shaped viewport from the outset.
+                // HwndHost pixels cannot be transparently composed with WPF, so allowing the
+                // native host to fill a tall panel would expose its white unused area before
+                // dimensions arrive. The surrounding VideoPanel remains genuine N.I.N.A. WPF.
+                var initialViewport = VideoFitCalculator.FitInside(
+                    VideoPanel.ActualWidth,
+                    VideoPanel.ActualHeight,
+                    16,
+                    9);
                 _videoHost = new VideoHwndHost(player, ResolveVideoBackgroundColor())
                 {
-                    HorizontalAlignment = HorizontalAlignment.Left,
-                    VerticalAlignment = VerticalAlignment.Top
+                    HorizontalAlignment = HorizontalAlignment.Center,
+                    VerticalAlignment = VerticalAlignment.Center,
+                    Width = initialViewport.Width,
+                    Height = initialViewport.Height
                 };
+                _videoSurfaceReady = false;
+                _lastLoggedVideoLayout = null;
+                player.Vout += Player_Vout;
                 Logger.Info($"VideoHost created (Panel: {VideoPanel.ActualWidth}x{VideoPanel.ActualHeight})");
 
                 Logger.Info("Adding VideoHost to VideoPanel...");
@@ -295,7 +311,7 @@ namespace AIWeather
                 for (int attempt = 0; attempt < 100; attempt++)
                 {
                     startToken.ThrowIfCancellationRequested();
-                    hwnd = _videoHost.Handle;
+                    hwnd = _videoHost.VideoHwnd;
                     if (hwnd != IntPtr.Zero)
                     {
                         break;
@@ -312,7 +328,7 @@ namespace AIWeather
                 }
 
                 player.Hwnd = hwnd;
-                Logger.Info($"Player Hwnd set to: {player.Hwnd}, Volume: {player.Volume}, HW decode: {player.EnableHardwareDecoding}");
+                Logger.Info($"Player dedicated video-target Hwnd set to: {player.Hwnd}, Volume: {player.Volume}, HW decode: {player.EnableHardwareDecoding}");
 
                 try
                 {
@@ -360,7 +376,11 @@ namespace AIWeather
                         Logger.Info("RTSP stream playing successfully!");
                         try
                         {
-                            UpdateVideoHostLayoutToFit();
+                            await RefreshVideoHostLayoutAfterVoutAsync(player, startToken);
+                        }
+                        catch (OperationCanceledException) when (startToken.IsCancellationRequested)
+                        {
+                            throw;
                         }
                         catch (Exception ex)
                         {
@@ -477,6 +497,7 @@ namespace AIWeather
                         // Detach the native render target first to reduce odds of a blocking stop.
                         if (player != null)
                         {
+                            player.Vout -= Player_Vout;
                             player.Hwnd = IntPtr.Zero;
                         }
                     }
@@ -504,6 +525,8 @@ namespace AIWeather
                     }
 
                     _videoHost = null;
+                    _lastLoggedVideoLayout = null;
+                    _videoSurfaceReady = false;
 
                     // Stop/Dispose can sometimes block. Do it off-UI with a timeout.
                     await StopAndDisposePlayerBestEffortAsync(player, TimeSpan.FromSeconds(2));
@@ -628,17 +651,109 @@ namespace AIWeather
             // HwndHost is a native airspace and cannot inherit a transparent WPF
             // background. Mirror N.I.N.A.'s active secondary background into the native
             // child window so letterbox/pillarbox regions follow light and dark themes.
+            if (VideoPanel?.Background is SolidColorBrush renderedPanelBrush)
+            {
+                Logger.Info($"RTSP native host background resolved from rendered VideoPanel: {renderedPanelBrush.Color}");
+                return renderedPanelBrush.Color;
+            }
+
             if (TryFindResource("SecondaryBackgroundBrush") is SolidColorBrush localBrush)
             {
+                Logger.Info($"RTSP native host background resolved from local theme resource: {localBrush.Color}");
                 return localBrush.Color;
             }
 
             if (Application.Current?.TryFindResource("SecondaryBackgroundBrush") is SolidColorBrush appBrush)
             {
+                Logger.Info($"RTSP native host background resolved from application theme resource: {appBrush.Color}");
                 return appBrush.Color;
             }
 
+            Logger.Warning("RTSP native host background resource was unavailable; using dark fallback #202B30");
             return MediaColor.FromRgb(32, 43, 48);
+        }
+
+        private void Player_Vout(object? sender, MediaPlayerVoutEventArgs e)
+        {
+            if (sender is not MediaPlayer player)
+            {
+                return;
+            }
+
+            Dispatcher.BeginInvoke(new Action(async () =>
+            {
+                try
+                {
+                    var token = _startCts?.Token ?? CancellationToken.None;
+                    await RefreshVideoHostLayoutAfterVoutAsync(player, token);
+                }
+                catch (OperationCanceledException)
+                {
+                    // Stream teardown cancels any pending first-frame layout work.
+                }
+                catch (Exception ex)
+                {
+                    Logger.Debug($"Deferred RTSP video layout failed: {ex.Message}");
+                }
+            }), DispatcherPriority.Background);
+        }
+
+        private async Task<bool> RefreshVideoHostLayoutAfterVoutAsync(
+            MediaPlayer player,
+            CancellationToken cancellationToken)
+        {
+            // Vout/Playing can be raised just before libvlc_video_get_size starts returning
+            // dimensions. The dedicated target is full-sized under a native theme cover while
+            // polling, so VLC can initialize without exposing its white startup surface.
+            // This camera/LibVLC combination can create its visible output child several
+            // seconds after the first Vout notification. Keep probing long enough to catch it;
+            // the theme cover remains in place throughout, so the wait cannot expose white.
+            for (var attempt = 0; attempt < 600; attempt++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (_videoHost == null || !ReferenceEquals(_videoHost.Player, player))
+                {
+                    return false;
+                }
+
+                // Multiple Vout/Playing notifications may schedule overlapping probes. Once
+                // one probe has revealed a ready surface, later probes must never reapply the
+                // startup clip and blank an already playing preview.
+                if (_videoSurfaceReady)
+                {
+                    if (TryUpdateVideoHostLayoutToFit(allowBeforeReady: true))
+                    {
+                        _videoHost.ShowVideoSurface();
+                        return true;
+                    }
+                }
+
+                // LibVLC can reorder its native child hierarchy while vout is being created.
+                // Reassert the solid startup cover until a real output surface is measurable,
+                // otherwise the future 16:9 viewport briefly becomes a white rectangle.
+                _videoHost.ShowStartupCover();
+
+                if (TryGetCurrentVideoSize(player, out _, out _))
+                {
+                    // Keep the native target under the theme cover while Direct3D prepares the
+                    // first frame. Raising it only after this warm-up avoids a white flash.
+                    await Task.Delay(250, cancellationToken);
+                    if (_videoHost != null && ReferenceEquals(_videoHost.Player, player))
+                    {
+                        _videoSurfaceReady = true;
+                        if (TryUpdateVideoHostLayoutToFit(allowBeforeReady: true))
+                        {
+                            _videoHost.ShowVideoSurface();
+                            return true;
+                        }
+                    }
+                }
+
+                await Task.Delay(100, cancellationToken);
+            }
+
+            Logger.Warning("RTSP video dimensions were unavailable 60 seconds after Vout; preview surface remains behind the theme cover instead of showing a white native window");
+            return false;
         }
 
         private void PasswordBox_Loaded(object sender, RoutedEventArgs e)
@@ -653,7 +768,7 @@ namespace AIWeather
         {
             try
             {
-                UpdateVideoHostLayoutToFit();
+                TryUpdateVideoHostLayoutToFit();
             }
             catch (Exception ex)
             {
@@ -665,81 +780,70 @@ namespace AIWeather
         // Any aspect-ratio mismatch is shown as letterboxing/pillarboxing instead of cropping.
         private void UpdateVideoHostLayoutToFit()
         {
+            TryUpdateVideoHostLayoutToFit();
+        }
+
+        private bool TryUpdateVideoHostLayoutToFit(bool allowBeforeReady = false)
+        {
             if (!Dispatcher.CheckAccess())
             {
-                Dispatcher.Invoke(UpdateVideoHostLayoutToFit);
-                return;
+                return Dispatcher.Invoke(() => TryUpdateVideoHostLayoutToFit(allowBeforeReady));
             }
 
             if (_videoHost == null || VideoPanel == null)
             {
-                return;
+                return false;
+            }
+
+            if (!_videoSurfaceReady && !allowBeforeReady)
+            {
+                return false;
             }
 
             var panelWidth = VideoPanel.ActualWidth;
             var panelHeight = VideoPanel.ActualHeight;
             if (panelWidth <= 1 || panelHeight <= 1)
             {
-                return;
+                return false;
             }
 
-            // Try to detect video dimensions from VLC.
-            double videoWidth = 0;
-            double videoHeight = 0;
-            try
+            if (!TryGetCurrentVideoSize(_videoHost.Player, out var videoWidth, out var videoHeight))
             {
-                uint vw = 0;
-                uint vh = 0;
-                _videoHost.Player.Size(0, ref vw, ref vh);
-                videoWidth = vw;
-                videoHeight = vh;
-            }
-            catch
-            {
-                // best-effort
+                // The dedicated VLC target stays behind the native theme cover until dimensions
+                // exist. Exposing the target here caused the startup white flash.
+                return false;
             }
 
-            if (videoWidth <= 0 || videoHeight <= 0)
-            {
-                // Fallback: fill the panel without cropping until we know video size.
-                _videoHost.Width = panelWidth;
-                _videoHost.Height = panelHeight;
-                _videoHost.Margin = new Thickness(0);
-                _videoHost.ResizeTo(panelWidth, panelHeight);
-
-                try
-                {
-                    // Let VLC pick default scaling when we don't know the video size yet.
-                    _videoHost.Player.Scale = 0;
-                }
-                catch
-                {
-                    // best-effort
-                }
-                return;
-            }
-
-            // Keep VLC's native viewport at the video's fitted aspect ratio instead of making
-            // it fill the panel. VLC owns every pixel inside its HWND and can repaint its own
-            // letterbox area white, bypassing both WPF and our host's WM_ERASEBKGND handling.
-            // With an aspect-matched HWND there is no native letterbox area; the surrounding
-            // N.I.N.A.-themed WPF panel remains visible around the centered video instead.
-            var fitted = VideoFitCalculator.FitInside(
+            // Resize the entire native airspace to the video aspect. The surrounding pixels are
+            // then genuine WPF VideoPanel pixels, so neither the system host nor LibVLC can ever
+            // repaint the letterbox area white.
+            var fittedViewport = VideoFitCalculator.FitInside(
                 panelWidth,
                 panelHeight,
                 videoWidth,
                 videoHeight);
-
             _videoHost.HorizontalAlignment = HorizontalAlignment.Center;
             _videoHost.VerticalAlignment = VerticalAlignment.Center;
-            _videoHost.Margin = new Thickness(0);
-            _videoHost.Width = fitted.Width;
-            _videoHost.Height = fitted.Height;
-            _videoHost.ResizeTo(fitted.Width, fitted.Height);
-            Logger.Info(
-                $"RTSP preview fit: panel {panelWidth:0.#}x{panelHeight:0.#}, " +
-                $"video {videoWidth:0}x{videoHeight:0}, " +
-                $"native viewport {fitted.Width:0.#}x{fitted.Height:0.#}");
+            _videoHost.Width = fittedViewport.Width;
+            _videoHost.Height = fittedViewport.Height;
+            VideoPanel.UpdateLayout();
+            _videoHost.UpdateLayout();
+
+            // VLC still receives a dedicated inner child rather than the HwndHost itself. That
+            // keeps its generated native hierarchy isolated from the WPF layout lifecycle.
+            if (!_videoHost.TrySetVideoContentSize(videoWidth, videoHeight, out var layout))
+            {
+                return false;
+            }
+
+            if (_lastLoggedVideoLayout != layout)
+            {
+                Logger.Info(
+                    $"RTSP preview nested fit: themed host {layout.ContainerWidth}x{layout.ContainerHeight}, " +
+                    $"video {videoWidth:0}x{videoHeight:0}, dedicated VLC target " +
+                    $"{layout.VideoWidth}x{layout.VideoHeight} at ({layout.X},{layout.Y})");
+                _lastLoggedVideoLayout = layout;
+            }
 
             try
             {
@@ -755,6 +859,37 @@ namespace AIWeather
             // Force layout update
             _videoHost.UpdateLayout();
             VideoPanel.UpdateLayout();
+            return true;
+        }
+
+        private bool TryGetCurrentVideoSize(
+            MediaPlayer player,
+            out double videoWidth,
+            out double videoHeight)
+        {
+            videoWidth = 0;
+            videoHeight = 0;
+            try
+            {
+                uint width = 0;
+                uint height = 0;
+                player.Size(0, ref width, ref height);
+                videoWidth = width;
+                videoHeight = height;
+                if (width > 0 && height > 0)
+                {
+                    return true;
+                }
+            }
+            catch
+            {
+                // Fall through to the native VLC output-window probe below. Some LibVLC builds
+                // render correctly but keep video_get_size at 0 for an HWND target.
+            }
+
+            return _videoHost != null
+                && ReferenceEquals(_videoHost.Player, player)
+                && _videoHost.TryGetRenderedVideoSize(out videoWidth, out videoHeight);
         }
     }
 }
