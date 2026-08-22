@@ -36,6 +36,7 @@ internal static class Program
             VerifySolarAltitudeGuard();
             VerifyDatasetDefaults();
             VerifyLatestRtspFrameBuffer();
+            VerifyRtspPreviewFit();
             VerifyGeminiQuotaPolicy();
             await VerifyGeminiRequestPacingAsync();
             await VerifyGeminiServiceSuppressesQuotaRetriesAsync();
@@ -139,6 +140,25 @@ internal static class Program
         using var graphics = Graphics.FromImage(bitmap);
         graphics.Clear(color);
         return bitmap;
+    }
+
+    private static void VerifyRtspPreviewFit()
+    {
+        var landscape = VideoFitCalculator.FitInside(676, 733, 3840, 2160);
+        Assert(Math.Abs(landscape.Width - 676) < 0.001,
+            "A landscape RTSP preview did not use the available width");
+        Assert(Math.Abs(landscape.Height - 380.25) < 0.001,
+            "A landscape RTSP preview did not preserve its aspect ratio");
+
+        var portrait = VideoFitCalculator.FitInside(800, 600, 1080, 1920);
+        Assert(Math.Abs(portrait.Width - 337.5) < 0.001,
+            "A portrait RTSP preview did not preserve its aspect ratio");
+        Assert(Math.Abs(portrait.Height - 600) < 0.001,
+            "A portrait RTSP preview did not use the available height");
+
+        var invalid = VideoFitCalculator.FitInside(0, 600, 1920, 1080);
+        Assert(invalid.Width == 1 && invalid.Height == 1,
+            "Invalid RTSP preview dimensions did not use the safe fallback size");
     }
 
     private static async Task<int> RunLiveRtspFreshnessCheckAsync()

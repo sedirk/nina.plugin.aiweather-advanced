@@ -1,7 +1,7 @@
 {
   "Identifier": "AI Weather",
   "Name": "AI Weather - All Sky Camera Monitor",
-  "Version": "1.22.1.0",
+  "Version": "1.22.2.0",
   "MinimumApplicationVersion": "3.0.0.0",
   "Author": "Michele Bergo",
   "Homepage": "https://github.com/michelebergo/nina.plugin.aiweather",
@@ -24,6 +24,14 @@
     }
   },
   "ChangeLog": [
+    {
+      "Version": "1.22.2.0",
+      "Date": "2026-08-23",
+      "Changes": [
+        "Fixed the remaining white RTSP preview bars: the native LibVLC HWND is now sized to the fitted video aspect ratio and centered, leaving N.I.N.A.'s themed WPF panel visible around it instead of asking VLC to paint the letterbox area",
+        "Added deterministic landscape, portrait and invalid-dimension coverage for the RTSP preview fit calculation"
+      ]
+    },
     {
       "Version": "1.22.1.0",
       "Date": "2026-08-23",

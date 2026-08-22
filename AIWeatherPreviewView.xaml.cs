@@ -719,25 +719,33 @@ namespace AIWeather
                 return;
             }
 
-            // Keep the HWND viewport exactly the size of the panel and ask VLC to scale the
-            // picture to the largest size that still fits inside it. This avoids relying on WPF
-            // clipping (HwndHost isn't reliably clipped) while preserving the complete frame.
-            _videoHost.HorizontalAlignment = HorizontalAlignment.Left;
-            _videoHost.VerticalAlignment = VerticalAlignment.Top;
-            _videoHost.Margin = new Thickness(0);
-            _videoHost.Width = panelWidth;
-            _videoHost.Height = panelHeight;
-            _videoHost.ResizeTo(panelWidth, panelHeight);
+            // Keep VLC's native viewport at the video's fitted aspect ratio instead of making
+            // it fill the panel. VLC owns every pixel inside its HWND and can repaint its own
+            // letterbox area white, bypassing both WPF and our host's WM_ERASEBKGND handling.
+            // With an aspect-matched HWND there is no native letterbox area; the surrounding
+            // N.I.N.A.-themed WPF panel remains visible around the centered video instead.
+            var fitted = VideoFitCalculator.FitInside(
+                panelWidth,
+                panelHeight,
+                videoWidth,
+                videoHeight);
 
-            var scaleToFit = Math.Min(panelWidth / videoWidth, panelHeight / videoHeight);
-            if (double.IsNaN(scaleToFit) || double.IsInfinity(scaleToFit) || scaleToFit <= 0.001)
-            {
-                scaleToFit = 1.0;
-            }
+            _videoHost.HorizontalAlignment = HorizontalAlignment.Center;
+            _videoHost.VerticalAlignment = VerticalAlignment.Center;
+            _videoHost.Margin = new Thickness(0);
+            _videoHost.Width = fitted.Width;
+            _videoHost.Height = fitted.Height;
+            _videoHost.ResizeTo(fitted.Width, fitted.Height);
+            Logger.Info(
+                $"RTSP preview fit: panel {panelWidth:0.#}x{panelHeight:0.#}, " +
+                $"video {videoWidth:0}x{videoHeight:0}, " +
+                $"native viewport {fitted.Width:0.#}x{fitted.Height:0.#}");
 
             try
             {
-                _videoHost.Player.Scale = (float)scaleToFit;
+                // Zero means VLC automatically fits the picture to the HWND. Because the HWND
+                // now has the same aspect ratio, the picture fills it without native bars.
+                _videoHost.Player.Scale = 0;
             }
             catch
             {

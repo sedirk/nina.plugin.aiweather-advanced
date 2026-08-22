@@ -33,8 +33,8 @@ using System.Runtime.InteropServices;
 [assembly: AssemblyMetadata("Repository", "https://github.com/michelebergo/nina.plugin.aiweather")]
 
 // Version information
-[assembly: AssemblyVersion("1.22.1.0")]
-[assembly: AssemblyFileVersion("1.22.1.0")]
+[assembly: AssemblyVersion("1.22.2.0")]
+[assembly: AssemblyFileVersion("1.22.2.0")]
 
 // The license your plugin code is using
 [assembly: AssemblyMetadata("License", "MIT")]
