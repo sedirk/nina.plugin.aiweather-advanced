@@ -1,7 +1,7 @@
 {
   "Identifier": "AI Weather",
   "Name": "AI Weather - All Sky Camera Monitor",
-  "Version": "1.22.4.0",
+  "Version": "1.22.5.0",
   "MinimumApplicationVersion": "3.0.0.0",
   "Author": "Michele Bergo",
   "Homepage": "https://github.com/michelebergo/nina.plugin.aiweather",
@@ -24,6 +24,15 @@
     }
   },
   "ChangeLog": [
+    {
+      "Version": "1.22.5.0",
+      "Date": "2026-08-23",
+      "Changes": [
+        "Fixed long-running RTSP preview freezes caused by camera timestamp drift in LibVLC: the silent real-time preview now disables input-clock synchronization and jitter compensation while keeping the independent OpenCV analysis pipeline unchanged",
+        "Added a preview-only health watchdog that aggregates sustained late-frame diagnostics and rebuilds only the LibVLC player after a confirmed 15-second burst, with a one-minute cooldown to prevent restart loops",
+        "Throttled LibVLC late-frame log storms into periodic summaries so a frozen preview can no longer add tens of thousands of repetitive warning lines to the N.I.N.A. log"
+      ]
+    },
     {
       "Version": "1.22.4.0",
       "Date": "2026-08-23",

@@ -33,6 +33,9 @@ namespace AIWeather
         private string? _activePlaybackUrl;
         private VideoHostLayout? _lastLoggedVideoLayout;
         private bool _videoSurfaceReady;
+        private readonly RtspPreviewHealthMonitor _previewHealthMonitor = new RtspPreviewHealthMonitor();
+        private int _previewRecoveryScheduled;
+        private int _previewUnhealthy;
 
         public AIWeatherPreviewView()
         {
@@ -170,6 +173,30 @@ namespace AIWeather
                 {
                     var message = RedactRtspCredentials(e.Message);
 
+                    // Some IP-camera streams slowly drift away from LibVLC's input clock. VLC
+                    // then reports every decoded picture as late and drops every new frame,
+                    // leaving the preview frozen on its last good frame even though the RTSP
+                    // source and the independent OpenCV analysis path are still healthy. Do not
+                    // write thousands of identical lines per minute; aggregate the burst and
+                    // rebuild only the preview player if it remains unhealthy.
+                    if (RtspPreviewHealthMonitor.IsLateFrameMessage(message))
+                    {
+                        var observation = _previewHealthMonitor.Observe(message, DateTime.UtcNow);
+                        if (observation.ShouldLogSummary)
+                        {
+                            Logger.Warning(
+                                $"VLC preview timing is late: {observation.LateMessageCount} messages over " +
+                                $"{observation.LateDuration.TotalSeconds:0.0}s; latest: {message}");
+                        }
+
+                        if (observation.ShouldRecover)
+                        {
+                            SchedulePreviewRecovery(observation);
+                        }
+
+                        return;
+                    }
+
                     // LibVLC can be noisy with benign messages; don't surface these as warnings/errors.
                     if (message.Contains("unsupported control query", StringComparison.OrdinalIgnoreCase)
                         || message.Contains("surface dimensions", StringComparison.OrdinalIgnoreCase)
@@ -203,17 +230,77 @@ namespace AIWeather
             }
         }
 
+        private void SchedulePreviewRecovery(RtspPreviewHealthObservation observation)
+        {
+            Volatile.Write(ref _previewUnhealthy, 1);
+            if (Interlocked.CompareExchange(ref _previewRecoveryScheduled, 1, 0) != 0)
+            {
+                return;
+            }
+
+            Logger.Warning(
+                $"RTSP preview watchdog detected sustained late-frame dropping " +
+                $"({observation.LateMessageCount} messages over {observation.LateDuration.TotalSeconds:0.0}s); " +
+                "scheduling a preview-only restart. Weather analysis and safety state are not restarted.");
+
+            if (Dispatcher.HasShutdownStarted || Dispatcher.HasShutdownFinished)
+            {
+                Interlocked.Exchange(ref _previewRecoveryScheduled, 0);
+                return;
+            }
+
+            Dispatcher.BeginInvoke(new Action(async () =>
+            {
+                try
+                {
+                    var playbackUrl = _activePlaybackUrl;
+                    if (string.IsNullOrWhiteSpace(playbackUrl) || _videoHost == null)
+                    {
+                        Logger.Debug("RTSP preview watchdog recovery skipped because no preview player is active");
+                        return;
+                    }
+
+                    if (!IsLoaded || !IsVisible)
+                    {
+                        // Keep _previewUnhealthy set. The normal Loaded handler will see it and
+                        // rebuild the player instead of accepting IsPlaying from a frozen vout.
+                        Logger.Info("RTSP preview watchdog deferred recovery until the preview view is visible");
+                        return;
+                    }
+
+                    Logger.Warning($"RTSP preview watchdog is rebuilding {RedactRtspCredentials(playbackUrl)}");
+                    await StartStreamAsync(
+                        playbackUrl,
+                        cancellationToken: CancellationToken.None,
+                        forceRestart: true);
+                }
+                catch (Exception ex)
+                {
+                    Logger.Error($"RTSP preview watchdog restart failed: {ex.Message}", ex);
+                }
+                finally
+                {
+                    Interlocked.Exchange(ref _previewRecoveryScheduled, 0);
+                }
+            }), DispatcherPriority.Background);
+        }
+
         public void StartStream(string rtspUrl, string? username = null, string? password = null)
         {
             // Backward-compatible fire-and-forget entrypoint used by the ViewModel.
             _ = StartStreamAsync(rtspUrl, username, password);
         }
 
-        public async Task StartStreamAsync(string rtspUrl, string? username = null, string? password = null, CancellationToken cancellationToken = default)
+        public async Task StartStreamAsync(
+            string rtspUrl,
+            string? username = null,
+            string? password = null,
+            CancellationToken cancellationToken = default,
+            bool forceRestart = false)
         {
             if (!Dispatcher.CheckAccess())
             {
-                await Dispatcher.InvokeAsync(() => StartStreamAsync(rtspUrl, username, password, cancellationToken)).Task.Unwrap();
+                await Dispatcher.InvokeAsync(() => StartStreamAsync(rtspUrl, username, password, cancellationToken, forceRestart)).Task.Unwrap();
                 return;
             }
 
@@ -246,7 +333,9 @@ namespace AIWeather
                 Logger.Info($"VideoPanel found. Size: {VideoPanel.ActualWidth}x{VideoPanel.ActualHeight}");
 
                 var playbackUrl = BuildAuthenticatedUrl(rtspUrl, username, password);
-                if (_videoHost?.Player?.IsPlaying == true
+                if (!forceRestart
+                    && Volatile.Read(ref _previewUnhealthy) == 0
+                    && _videoHost?.Player?.IsPlaying == true
                     && string.Equals(_activePlaybackUrl, playbackUrl, StringComparison.Ordinal))
                 {
                     Logger.Debug("RTSP preview is already playing this source; skipping duplicate restart");
@@ -298,6 +387,8 @@ namespace AIWeather
                 };
                 _videoSurfaceReady = false;
                 _lastLoggedVideoLayout = null;
+                _previewHealthMonitor.ResetBurst();
+                Volatile.Write(ref _previewUnhealthy, 0);
                 player.Vout += Player_Vout;
                 Logger.Info($"VideoHost created (Panel: {VideoPanel.ActualWidth}x{VideoPanel.ActualHeight})");
 
@@ -346,7 +437,14 @@ namespace AIWeather
                 _currentMedia.AddOption(":network-caching=1000");
                 _currentMedia.AddOption(":rtsp-tcp");
                 _currentMedia.AddOption(":no-audio");
-                Logger.Info("Media created with options: network-caching=1000, rtsp-tcp, no-audio");
+                // This preview is a silent real-time safety-camera view, not synchronized A/V.
+                // Disabling the input-clock correction prevents camera timestamp drift from
+                // growing into a permanent late-frame drop loop after several hours.
+                _currentMedia.AddOption(":clock-synchro=0");
+                _currentMedia.AddOption(":clock-jitter=0");
+                _currentMedia.AddOption(":drop-late-frames");
+                _currentMedia.AddOption(":skip-frames");
+                Logger.Info("Media created with options: network-caching=1000, rtsp-tcp, no-audio, clock-synchro=0, clock-jitter=0, drop-late-frames, skip-frames");
 
                 Logger.Info("Starting playback...");
                 var playResult = player.Play(_currentMedia);
@@ -418,6 +516,8 @@ namespace AIWeather
                 else
                 {
                     _activePlaybackUrl = playbackUrl;
+                    _previewHealthMonitor.ResetBurst();
+                    Volatile.Write(ref _previewUnhealthy, 0);
                 }
 
                 Logger.Info($"Started RTSP stream: {RedactRtspCredentials(playbackUrl)}");
@@ -465,6 +565,8 @@ namespace AIWeather
             try
             {
                 await StopStreamCoreAsync();
+                _previewHealthMonitor.ResetAll();
+                Volatile.Write(ref _previewUnhealthy, 0);
             }
             catch (Exception ex)
             {
@@ -483,6 +585,7 @@ namespace AIWeather
             try
             {
                 _activePlaybackUrl = null;
+                _previewHealthMonitor.ResetBurst();
                 _startCts?.Cancel();
                 _startCts?.Dispose();
                 _startCts = null;

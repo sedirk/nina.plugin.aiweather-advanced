@@ -37,6 +37,7 @@ internal static class Program
             VerifyDatasetDefaults();
             VerifyLatestRtspFrameBuffer();
             VerifyRtspPreviewFit();
+            VerifyRtspPreviewHealthWatchdog();
             VerifyGeminiQuotaPolicy();
             await VerifyGeminiRequestPacingAsync();
             await VerifyGeminiServiceSuppressesQuotaRetriesAsync();
@@ -159,6 +160,57 @@ internal static class Program
         var invalid = VideoFitCalculator.FitInside(0, 600, 1920, 1080);
         Assert(invalid.Width == 1 && invalid.Height == 1,
             "Invalid RTSP preview dimensions did not use the safe fallback size");
+    }
+
+    private static void VerifyRtspPreviewHealthWatchdog()
+    {
+        Assert(RtspPreviewHealthMonitor.IsLateFrameMessage("More than 11 late frames, dropping frame"),
+            "The RTSP preview watchdog did not recognize VLC's late-frame warning");
+        Assert(RtspPreviewHealthMonitor.IsLateFrameMessage("more than 5 seconds of late video -> dropping frame"),
+            "The RTSP preview watchdog did not recognize VLC's sustained late-video error");
+        Assert(RtspPreviewHealthMonitor.IsLateFrameMessage("picture is too late to be displayed (missing 6006 ms)"),
+            "The RTSP preview watchdog did not recognize VLC's late-picture warning");
+        Assert(!RtspPreviewHealthMonitor.IsLateFrameMessage("RTSP stream playing successfully"),
+            "The RTSP preview watchdog classified a healthy playback message as late");
+
+        var monitor = new RtspPreviewHealthMonitor(
+            burstResetGap: TimeSpan.FromSeconds(2),
+            minimumLateDuration: TimeSpan.FromSeconds(3),
+            minimumLateMessages: 4,
+            summaryInterval: TimeSpan.FromSeconds(2),
+            recoveryCooldown: TimeSpan.FromSeconds(10));
+        var started = new DateTime(2026, 8, 23, 12, 0, 0, DateTimeKind.Utc);
+
+        var first = monitor.Observe("picture is too late", started);
+        Assert(first.ShouldLogSummary && !first.ShouldRecover && first.LateMessageCount == 1,
+            "The first late-frame observation did not start a throttled diagnostic burst");
+        Assert(!monitor.Observe("picture is too late", started.AddSeconds(1)).ShouldRecover,
+            "The RTSP preview watchdog recovered before the sustained-duration threshold");
+        Assert(!monitor.Observe("late video", started.AddSeconds(2)).ShouldRecover,
+            "The RTSP preview watchdog recovered before the message threshold");
+        var recovery = monitor.Observe("late frames", started.AddSeconds(3));
+        Assert(recovery.ShouldRecover && recovery.LateMessageCount == 4,
+            "The RTSP preview watchdog did not recover after a sustained late-frame burst");
+
+        monitor.ResetBurst();
+        monitor.Observe("picture is too late", started.AddSeconds(4));
+        monitor.Observe("picture is too late", started.AddSeconds(5));
+        monitor.Observe("picture is too late", started.AddSeconds(6));
+        var cooledDown = monitor.Observe("picture is too late", started.AddSeconds(7));
+        Assert(!cooledDown.ShouldRecover,
+            "The RTSP preview watchdog ignored its recovery cooldown and would create a restart loop");
+
+        var gapMonitor = new RtspPreviewHealthMonitor(
+            burstResetGap: TimeSpan.FromSeconds(1),
+            minimumLateDuration: TimeSpan.Zero,
+            minimumLateMessages: 3,
+            summaryInterval: TimeSpan.FromSeconds(10),
+            recoveryCooldown: TimeSpan.Zero);
+        gapMonitor.Observe("late frames", started);
+        gapMonitor.Observe("late frames", started.AddMilliseconds(500));
+        var afterGap = gapMonitor.Observe("late frames", started.AddSeconds(3));
+        Assert(afterGap.LateMessageCount == 1 && !afterGap.ShouldRecover,
+            "A quiet gap did not reset the RTSP preview late-frame burst");
     }
 
     private static async Task<int> RunLiveRtspFreshnessCheckAsync()
