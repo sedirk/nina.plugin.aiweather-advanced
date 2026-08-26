@@ -39,6 +39,8 @@ internal static class Program
             VerifyRtspPreviewFit();
             VerifyRtspPreviewHealthWatchdog();
             VerifyGeminiQuotaPolicy();
+            VerifyGeminiTransportRefreshesAfterProxyChange();
+            await VerifyAIWeatherClusterProtocolAsync();
             await VerifyGeminiRequestPacingAsync();
             await VerifyGeminiServiceSuppressesQuotaRetriesAsync();
             await VerifyQuotaFallbackMetadataAsync();
@@ -57,6 +59,101 @@ internal static class Program
             Console.Error.WriteLine($"FAIL dataset smoke suite: {ex}");
             Console.Error.WriteLine($"Artifacts retained at: {runRoot}");
             return 1;
+        }
+    }
+
+    private static void VerifyGeminiTransportRefreshesAfterProxyChange()
+    {
+        var proxyFingerprint = "disabled";
+        var createdClients = 0;
+        var provider = new SystemProxyAwareHttpClientProvider(
+            () => proxyFingerprint,
+            () =>
+            {
+                createdClients++;
+                return new HttpClient(new StaticResponseHandler(
+                    HttpStatusCode.OK,
+                    "{}"));
+            });
+
+        var first = provider.GetClient();
+        var unchanged = provider.GetClient();
+        Assert(ReferenceEquals(first, unchanged),
+            "Gemini transport was recreated even though proxy settings were unchanged");
+        Assert(createdClients == 1 && provider.Generation == 1,
+            "Gemini transport did not retain its first connection pool");
+
+        proxyFingerprint = "enabled:127.0.0.1:10808";
+        var refreshed = provider.GetClient();
+        Assert(!ReferenceEquals(first, refreshed),
+            "Gemini transport did not refresh after the system proxy changed");
+        Assert(createdClients == 2 && provider.Generation == 2,
+            "Gemini proxy refresh did not create exactly one new transport generation");
+
+        var stableAfterRefresh = provider.GetClient();
+        Assert(ReferenceEquals(refreshed, stableAfterRefresh) && createdClients == 2,
+            "Gemini transport did not stabilize after the proxy refresh");
+    }
+
+    private static async Task VerifyAIWeatherClusterProtocolAsync()
+    {
+        const string token = "cluster-test-token-123456";
+        Assert(AIWeatherClusterProtocol.IsTokenUsable(token), "cluster token length validation");
+        Assert(AIWeatherClusterProtocol.FixedTimeTokenEquals(token, token), "cluster constant-time token match");
+        Assert(!AIWeatherClusterProtocol.FixedTimeTokenEquals(token, token + "x"), "cluster token mismatch");
+
+        var portProbe = new System.Net.Sockets.TcpListener(IPAddress.Loopback, 0);
+        portProbe.Start();
+        var port = ((IPEndPoint)portProbe.LocalEndpoint).Port;
+        portProbe.Stop();
+
+        long sequence = 0;
+        using var server = new AIWeatherClusterServer(
+            port,
+            token,
+            "smoke-primary",
+            () => new AIWeatherClusterSnapshot
+            {
+                Sequence = Interlocked.Increment(ref sequence),
+                Connected = true,
+                Monitoring = true,
+                IsSafe = true,
+                SafetyReason = "safe",
+                WeatherCondition = WeatherCondition.Clear.ToString(),
+                CloudCoverage = 5,
+                Confidence = 99,
+                Provider = "Smoke",
+                Model = "deterministic",
+                AnalysisUtc = DateTime.UtcNow,
+                SourceFresh = true
+            });
+        server.Start();
+
+        using var client = new AIWeatherClusterClient(
+            $"http://127.0.0.1:{port}",
+            token,
+            TimeSpan.FromSeconds(3));
+        var first = await client.PollAsync(CancellationToken.None);
+        var second = await client.PollAsync(CancellationToken.None);
+        Assert(first.Product == AIWeatherClusterProtocol.Product, "cluster product identity");
+        Assert(first.SchemaVersion == AIWeatherClusterProtocol.SchemaVersion, "cluster schema identity");
+        Assert(first.NodeId == "smoke-primary", "cluster node identity");
+        Assert(first.SessionId == second.SessionId, "cluster stable session");
+        Assert(second.Sequence > first.Sequence, "cluster monotonic sequence");
+        Assert(second.IsSafe && second.SourceFresh, "cluster weather status round trip");
+
+        using var unauthorized = new AIWeatherClusterClient(
+            $"http://127.0.0.1:{port}",
+            "wrong-token-1234567890",
+            TimeSpan.FromSeconds(3));
+        try
+        {
+            await unauthorized.PollAsync(CancellationToken.None);
+            throw new InvalidOperationException("cluster unauthorized request was accepted");
+        }
+        catch (AIWeatherClusterException ex)
+        {
+            Assert(ex.Failure == AIWeatherReplicaFailure.Authentication, "cluster authentication failure category");
         }
     }
 

@@ -17,13 +17,12 @@ namespace AIWeather.Services
     [System.Runtime.Versioning.SupportedOSPlatform("windows")]
     public class GeminiAnalysisService : IOnlineWeatherAnalysisService
     {
-        private static readonly HttpClient SharedHttp = new HttpClient();
         private const int MaxAttempts = 3;
         private static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(60);
 
         private readonly string _apiKey;
         private readonly string _modelName;
-        private readonly HttpClient _http;
+        private readonly IHttpClientProvider _httpProvider;
         private readonly GeminiQuotaCircuitBreaker _quotaCircuit;
         private readonly Func<DateTimeOffset> _utcNow;
         private readonly int _requestEveryChecks;
@@ -37,7 +36,7 @@ namespace AIWeather.Services
             : this(
                 apiKey,
                 NormalizeModelName(modelName),
-                SharedHttp,
+                new SystemProxyAwareHttpClientProvider(),
                 GeminiQuotaCircuitRegistry.Get(apiKey, NormalizeModelName(modelName)),
                 () => DateTimeOffset.UtcNow,
                 requestEveryChecks)
@@ -51,12 +50,29 @@ namespace AIWeather.Services
             GeminiQuotaCircuitBreaker quotaCircuit,
             Func<DateTimeOffset> utcNow,
             int requestEveryChecks = 1)
+            : this(
+                apiKey,
+                modelName,
+                new FixedHttpClientProvider(http),
+                quotaCircuit,
+                utcNow,
+                requestEveryChecks)
+        {
+        }
+
+        private GeminiAnalysisService(
+            string apiKey,
+            string modelName,
+            IHttpClientProvider httpProvider,
+            GeminiQuotaCircuitBreaker quotaCircuit,
+            Func<DateTimeOffset> utcNow,
+            int requestEveryChecks = 1)
         {
             _apiKey = apiKey;
             // The alias tracks Google's latest stable Flash release; concrete version IDs
             // get retired out from under a hardcoded fallback (gemini-2.0-flash was).
             _modelName = NormalizeModelName(modelName);
-            _http = http ?? throw new ArgumentNullException(nameof(http));
+            _httpProvider = httpProvider ?? throw new ArgumentNullException(nameof(httpProvider));
             _quotaCircuit = quotaCircuit ?? throw new ArgumentNullException(nameof(quotaCircuit));
             _utcNow = utcNow ?? throw new ArgumentNullException(nameof(utcNow));
             _requestEveryChecks = Math.Clamp(requestEveryChecks, 1, 10000);
@@ -225,7 +241,13 @@ namespace AIWeather.Services
 
                         Logger.Info($"Calling Gemini API (attempt {attempt}/{MaxAttempts})...");
 
-                        using var response = await _http.SendAsync(request, linkedCts.Token);
+                        // Resolve the transport immediately before each real API request.
+                        // The provider preserves the normal connection pool, but swaps it
+                        // when v2rayN/Windows proxy settings changed while N.I.N.A. stayed
+                        // open.  Re-enabling the proxy therefore takes effect on this check
+                        // without restarting N.I.N.A.
+                        var http = _httpProvider.GetClient();
+                        using var response = await http.SendAsync(request, linkedCts.Token);
                         var json = await response.Content.ReadAsStringAsync(linkedCts.Token);
 
                         if (!response.IsSuccessStatusCode)

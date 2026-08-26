@@ -19,6 +19,28 @@ namespace AIWeather
             InitializeComponent();
         }
 
+        private void ClusterTokenBox_Loaded(object sender, RoutedEventArgs e)
+        {
+            if (sender is PasswordBox pb)
+            {
+                var current = Properties.Settings.Default.ClusterSharedToken ?? string.Empty;
+                if (!string.Equals(pb.Password, current, System.StringComparison.Ordinal))
+                {
+                    pb.Password = current;
+                }
+            }
+        }
+
+        private void ClusterTokenBox_PasswordChanged(object sender, RoutedEventArgs e)
+        {
+            if (sender is PasswordBox pb
+                && !string.Equals(Properties.Settings.Default.ClusterSharedToken, pb.Password, System.StringComparison.Ordinal))
+            {
+                Properties.Settings.Default.ClusterSharedToken = pb.Password;
+                NINA.Core.Utility.CoreUtil.SaveSettings(Properties.Settings.Default);
+            }
+        }
+
         private void RtspPasswordBox_PasswordChanged(object sender, RoutedEventArgs e)
         {
             var passwordBox = sender as PasswordBox;

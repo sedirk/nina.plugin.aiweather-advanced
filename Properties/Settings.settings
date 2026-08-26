@@ -131,5 +131,23 @@
     <Setting Name="DatasetRecordQuarantine" Type="System.Boolean" Scope="User">
       <Value Profile="(Default)">True</Value>
     </Setting>
+    <Setting Name="ClusterNodeMode" Type="System.String" Scope="User">
+      <Value Profile="(Default)">Standalone</Value>
+    </Setting>
+    <Setting Name="ClusterListenPort" Type="System.Int32" Scope="User">
+      <Value Profile="(Default)">18910</Value>
+    </Setting>
+    <Setting Name="ClusterPrimaryUrl" Type="System.String" Scope="User">
+      <Value Profile="(Default)">http://192.168.10.121:18910</Value>
+    </Setting>
+    <Setting Name="ClusterSharedToken" Type="System.String" Scope="User">
+      <Value Profile="(Default)" />
+    </Setting>
+    <Setting Name="ClusterPollSeconds" Type="System.Int32" Scope="User">
+      <Value Profile="(Default)">5</Value>
+    </Setting>
+    <Setting Name="ClusterStaleSeconds" Type="System.Int32" Scope="User">
+      <Value Profile="(Default)">20</Value>
+    </Setting>
   </Settings>
 </SettingsFile>

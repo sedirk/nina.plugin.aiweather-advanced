@@ -10,6 +10,12 @@ Unattended imaging sessions are at risk from sudden weather changes. Traditional
 
 ## Features
 
+### One-package LAN primary/replica mode
+
+The same plugin package now supports three explicit roles. **Standalone** keeps the original behavior. **Primary** is the only node that opens the all-sky camera, runs local or online analysis and writes the teacher-student dataset; it publishes the final safety verdict over an authenticated LAN endpoint. **Replica** only consumes that verdict and never opens the camera, calls an AI provider or writes the dataset.
+
+This is deliberately not automatic leader election. A role is frozen when the NINA Safety Monitor connects, so changing it requires disconnecting and reconnecting the device. Replica startup, authentication/protocol errors, stale transport, stale primary analysis and an unsafe primary verdict all report **Unsafe**. Configure a unique shared token of at least 16 characters and restrict the primary TCP port (default `18910`) to trusted observatory hosts with Windows Firewall. See the [frozen cluster design](docs/LAN_PRIMARY_REPLICA_CLUSTER_DESIGN.zh-CN.md) for the protocol and safety model.
+
 ### AI-Powered Sky Analysis
 
 The plugin sends captured sky images to a vision-capable AI model that evaluates:

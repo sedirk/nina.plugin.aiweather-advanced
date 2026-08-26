@@ -65,6 +65,90 @@ namespace AIWeather
             }
         }
 
+        public ClusterNodeMode ClusterNodeMode
+        {
+            get => ClusterNodeModeParser.Parse(Properties.Settings.Default.ClusterNodeMode);
+            set
+            {
+                Properties.Settings.Default.ClusterNodeMode = value.ToString();
+                CoreUtil.SaveSettings(Properties.Settings.Default);
+                RaisePropertyChanged();
+                RaisePropertyChanged(nameof(ClusterNodeModeIndex));
+                RaisePropertyChanged(nameof(IsClusterPrimary));
+                RaisePropertyChanged(nameof(IsClusterReplica));
+                RaisePropertyChanged(nameof(IsClusterLocalNode));
+                RaisePropertyChanged(nameof(IsClusterNetworked));
+            }
+        }
+
+        public int ClusterNodeModeIndex
+        {
+            get => (int)ClusterNodeMode;
+            set => ClusterNodeMode = System.Enum.IsDefined(typeof(Models.ClusterNodeMode), value)
+                ? (Models.ClusterNodeMode)value
+                : Models.ClusterNodeMode.Standalone;
+        }
+
+        public bool IsClusterPrimary => ClusterNodeMode == Models.ClusterNodeMode.Primary;
+        public bool IsClusterReplica => ClusterNodeMode == Models.ClusterNodeMode.Replica;
+        public bool IsClusterLocalNode => !IsClusterReplica;
+        public bool IsClusterNetworked => ClusterNodeMode != Models.ClusterNodeMode.Standalone;
+
+        public int ClusterListenPort
+        {
+            get => Properties.Settings.Default.ClusterListenPort;
+            set
+            {
+                Properties.Settings.Default.ClusterListenPort = System.Math.Clamp(value, 1, 65535);
+                CoreUtil.SaveSettings(Properties.Settings.Default);
+                RaisePropertyChanged();
+            }
+        }
+
+        public string ClusterPrimaryUrl
+        {
+            get => Properties.Settings.Default.ClusterPrimaryUrl ?? string.Empty;
+            set
+            {
+                Properties.Settings.Default.ClusterPrimaryUrl = value?.Trim() ?? string.Empty;
+                CoreUtil.SaveSettings(Properties.Settings.Default);
+                RaisePropertyChanged();
+            }
+        }
+
+        public string ClusterSharedToken
+        {
+            get => Properties.Settings.Default.ClusterSharedToken ?? string.Empty;
+            set
+            {
+                Properties.Settings.Default.ClusterSharedToken = value ?? string.Empty;
+                CoreUtil.SaveSettings(Properties.Settings.Default);
+                RaisePropertyChanged();
+            }
+        }
+
+        public int ClusterPollSeconds
+        {
+            get => Properties.Settings.Default.ClusterPollSeconds;
+            set
+            {
+                Properties.Settings.Default.ClusterPollSeconds = System.Math.Clamp(value, 1, 300);
+                CoreUtil.SaveSettings(Properties.Settings.Default);
+                RaisePropertyChanged();
+            }
+        }
+
+        public int ClusterStaleSeconds
+        {
+            get => Properties.Settings.Default.ClusterStaleSeconds;
+            set
+            {
+                Properties.Settings.Default.ClusterStaleSeconds = System.Math.Clamp(value, 3, 3600);
+                CoreUtil.SaveSettings(Properties.Settings.Default);
+                RaisePropertyChanged();
+            }
+        }
+
         public CaptureMode CaptureMode
         {
             get => (CaptureMode)Properties.Settings.Default.CaptureMode;

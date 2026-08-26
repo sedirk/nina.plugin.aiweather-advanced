@@ -476,5 +476,53 @@ namespace AIWeather.Properties {
             get { return ((bool)(this["DatasetRecordQuarantine"])); }
             set { this["DatasetRecordQuarantine"] = value; }
         }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("Standalone")]
+        public string ClusterNodeMode {
+            get { return ((string)(this["ClusterNodeMode"])); }
+            set { this["ClusterNodeMode"] = value; }
+        }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("18910")]
+        public int ClusterListenPort {
+            get { return ((int)(this["ClusterListenPort"])); }
+            set { this["ClusterListenPort"] = value; }
+        }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("http://192.168.10.121:18910")]
+        public string ClusterPrimaryUrl {
+            get { return ((string)(this["ClusterPrimaryUrl"])); }
+            set { this["ClusterPrimaryUrl"] = value; }
+        }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("")]
+        public string ClusterSharedToken {
+            get { return ((string)(this["ClusterSharedToken"])); }
+            set { this["ClusterSharedToken"] = value; }
+        }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("5")]
+        public int ClusterPollSeconds {
+            get { return ((int)(this["ClusterPollSeconds"])); }
+            set { this["ClusterPollSeconds"] = value; }
+        }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("20")]
+        public int ClusterStaleSeconds {
+            get { return ((int)(this["ClusterStaleSeconds"])); }
+            set { this["ClusterStaleSeconds"] = value; }
+        }
     }
 }

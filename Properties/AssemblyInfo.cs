@@ -10,7 +10,7 @@ using System.Runtime.InteropServices;
 [assembly: AssemblyTitle("AI Weather")]
 [assembly: AssemblyDescription("AI-powered all-sky camera weather monitoring with automatic safety protection")]
 [assembly: AssemblyConfiguration("")]
-[assembly: AssemblyCompany("Michele Bergo")]
+[assembly: AssemblyCompany("Michele Bergo / sedirk")]
 [assembly: AssemblyProduct("NINA.Plugins")]
 [assembly: AssemblyCopyright("Copyright © 2026")]
 [assembly: AssemblyTrademark("")]
@@ -29,12 +29,12 @@ using System.Runtime.InteropServices;
 
 // Required by the N.I.N.A. community plugin manifest repository
 [assembly: AssemblyMetadata("Identifier", "AI Weather")]
-[assembly: AssemblyMetadata("Author", "Michele Bergo")]
-[assembly: AssemblyMetadata("Repository", "https://github.com/michelebergo/nina.plugin.aiweather")]
+[assembly: AssemblyMetadata("Author", "Michele Bergo / sedirk")]
+[assembly: AssemblyMetadata("Repository", "https://github.com/sedirk/nina.plugin.aiweather-advanced")]
 
 // Version information
-[assembly: AssemblyVersion("1.22.5.0")]
-[assembly: AssemblyFileVersion("1.22.5.0")]
+[assembly: AssemblyVersion("1.23.0.0")]
+[assembly: AssemblyFileVersion("1.23.0.0")]
 
 // The license your plugin code is using
 [assembly: AssemblyMetadata("License", "MIT")]
@@ -46,11 +46,11 @@ using System.Runtime.InteropServices;
 [assembly: AssemblyMetadata("Tags", "Weather,Safety Monitor,All Sky Camera,AI,RTSP")]
 
 // Optional metadata used by N.I.N.A.'s plugin manager UI
-[assembly: AssemblyMetadata("Homepage", "https://github.com/michelebergo/nina.plugin.aiweather")]
-[assembly: AssemblyMetadata("ChangelogURL", "https://github.com/michelebergo/nina.plugin.aiweather/releases")]
+[assembly: AssemblyMetadata("Homepage", "https://github.com/sedirk/nina.plugin.aiweather-advanced")]
+[assembly: AssemblyMetadata("ChangelogURL", "https://github.com/sedirk/nina.plugin.aiweather-advanced/releases")]
 
 // Featured logo displayed next to the plugin in the plugin list
-[assembly: AssemblyMetadata("FeaturedImageURL", "https://raw.githubusercontent.com/michelebergo/nina.plugin.aiweather/main/icon.png")]
+[assembly: AssemblyMetadata("FeaturedImageURL", "https://raw.githubusercontent.com/sedirk/nina.plugin.aiweather-advanced/advanced/icon.png")]
 
 // Optional screenshots (leave empty if not available)
 [assembly: AssemblyMetadata("ScreenshotURL", "")]

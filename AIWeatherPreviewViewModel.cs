@@ -56,10 +56,11 @@ namespace AIWeather
             }
         }
 
-        public bool IsRtspMode => CurrentCaptureMode == Models.CaptureMode.RTSPStream;
-        public bool IsNonRtspMode => CurrentCaptureMode != Models.CaptureMode.RTSPStream;
-        public bool IsFolderMode => CurrentCaptureMode == Models.CaptureMode.FolderWatch;
-        public bool IsUrlMode => CurrentCaptureMode != Models.CaptureMode.FolderWatch;
+        public bool IsClusterReplica => ClusterNodeModeParser.Parse(Properties.Settings.Default.ClusterNodeMode) == ClusterNodeMode.Replica;
+        public bool IsRtspMode => !IsClusterReplica && CurrentCaptureMode == Models.CaptureMode.RTSPStream;
+        public bool IsNonRtspMode => !IsClusterReplica && CurrentCaptureMode != Models.CaptureMode.RTSPStream;
+        public bool IsFolderMode => !IsClusterReplica && CurrentCaptureMode == Models.CaptureMode.FolderWatch;
+        public bool IsUrlMode => !IsClusterReplica && CurrentCaptureMode != Models.CaptureMode.FolderWatch;
 
         private static Dispatcher? UiDispatcher => Application.Current?.Dispatcher;
 
@@ -309,6 +310,7 @@ namespace AIWeather
                     || e.PropertyName == nameof(Properties.Settings.Default.FolderPath)
                     || e.PropertyName == nameof(Properties.Settings.Default.RtspUsername)
                     || e.PropertyName == nameof(Properties.Settings.Default.RtspPassword)
+                    || e.PropertyName == nameof(Properties.Settings.Default.ClusterNodeMode)
                     || (!string.IsNullOrWhiteSpace(e.PropertyName)
                         && e.PropertyName.StartsWith("Dataset", StringComparison.Ordinal)))
                 {
@@ -329,6 +331,15 @@ namespace AIWeather
                             // Mode changes should immediately reflect in the panel. Also, if something
                             // is currently running (RTSP preview or periodic monitoring), stop it so the
                             // user can switch cleanly.
+                            _ = HandleCaptureModeChangedAsync();
+                        }
+                        else if (e.PropertyName == nameof(Properties.Settings.Default.ClusterNodeMode))
+                        {
+                            RaisePropertyChanged(nameof(IsClusterReplica));
+                            RaisePropertyChanged(nameof(IsRtspMode));
+                            RaisePropertyChanged(nameof(IsNonRtspMode));
+                            RaisePropertyChanged(nameof(IsFolderMode));
+                            RaisePropertyChanged(nameof(IsUrlMode));
                             _ = HandleCaptureModeChangedAsync();
                         }
                         else if (e.PropertyName == nameof(Properties.Settings.Default.RtspUrl)
@@ -656,7 +667,7 @@ namespace AIWeather
             }
         }
 
-        public bool DatasetEnabled => Properties.Settings.Default.DatasetEnabled;
+        public bool DatasetEnabled => !IsClusterReplica && Properties.Settings.Default.DatasetEnabled;
         public string DatasetStatusText => _safetyMonitor.DatasetStatusText;
         public DateTime? CaptureTimestamp { get; private set; }
         public DateTime? LastUpdate { get; private set; }
@@ -680,6 +691,11 @@ namespace AIWeather
         {
             get
             {
+                if (IsClusterReplica)
+                {
+                    return UiLocalization.Text("Cluster.ReplicaSettings", _safetyMonitor.ReplicaConnectionSummary);
+                }
+
                 var provider = Properties.Settings.Default.AnalysisProvider;
                 if (string.IsNullOrWhiteSpace(provider))
                 {

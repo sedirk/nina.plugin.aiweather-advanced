@@ -1,11 +1,11 @@
 {
   "Identifier": "AI Weather",
   "Name": "AI Weather - All Sky Camera Monitor",
-  "Version": "1.22.5.0",
+  "Version": "1.23.0.0",
   "MinimumApplicationVersion": "3.0.0.0",
-  "Author": "Michele Bergo",
-  "Homepage": "https://github.com/michelebergo/nina.plugin.aiweather",
-  "Repository": "https://github.com/michelebergo/nina.plugin.aiweather",
+  "Author": "Michele Bergo / sedirk",
+  "Homepage": "https://github.com/sedirk/nina.plugin.aiweather-advanced",
+  "Repository": "https://github.com/sedirk/nina.plugin.aiweather-advanced",
   "License": "MIT",
   "LicenseURL": "https://opensource.org/licenses/MIT",
   "Tags": [
@@ -24,6 +24,15 @@
     }
   },
   "ChangeLog": [
+    {
+      "Version": "1.23.0.0",
+      "Date": "2026-08-26",
+      "Changes": [
+        "Added one-package Standalone, Primary and Replica node roles: Primary runs the camera/model pipeline once and publishes the final safety verdict, while Replica never opens the camera, calls an AI provider or writes the teacher-student dataset",
+        "Added an authenticated, versioned LAN status protocol with primary session identity, monotonic sequence numbers and separate transport/analysis freshness checks; replicas fail closed on startup, authentication, protocol, stale-data or primary-unsafe conditions",
+        "Made Gemini HTTP clients refresh Windows system-proxy settings automatically, so restoring v2rayN can recover later checks without restarting N.I.N.A."
+      ]
+    },
     {
       "Version": "1.22.5.0",
       "Date": "2026-08-23",

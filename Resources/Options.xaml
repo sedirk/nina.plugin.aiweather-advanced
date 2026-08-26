@@ -12,6 +12,51 @@
     <DataTemplate x:Key="AI Weather_Options">
         <StackPanel Orientation="Vertical" Margin="10" DataContext="{Binding}">
 
+            <!-- A single package contains every role. Replica is deliberately a separate
+                 execution path: it never initializes capture, models or the dataset. -->
+            <TextBlock Text="{i18n:Loc Options.Cluster}" Margin="0,0,0,2" FontWeight="Bold"/>
+            <TextBlock Text="{i18n:Loc Options.ClusterMode}" Margin="0,0,0,2"/>
+            <ComboBox SelectedIndex="{Binding Options.ClusterNodeModeIndex, Mode=TwoWay}"
+                      Width="420" HorizontalAlignment="Left" Margin="0,0,0,6">
+                <ComboBoxItem Content="{i18n:Loc Options.ClusterStandalone}"/>
+                <ComboBoxItem Content="{i18n:Loc Options.ClusterPrimary}"/>
+                <ComboBoxItem Content="{i18n:Loc Options.ClusterReplica}"/>
+            </ComboBox>
+            <TextBlock Text="{i18n:Loc Options.ClusterModeHelp}" TextWrapping="Wrap"
+                       FontSize="10" Foreground="#AAAAAA" MaxWidth="440" HorizontalAlignment="Left"/>
+
+            <StackPanel Margin="0,8,0,0"
+                        Visibility="{Binding Options.IsClusterPrimary, Converter={StaticResource BoolToVisibility}}">
+                <TextBlock Text="{i18n:Loc Options.ClusterListenPort}" Margin="0,0,0,2"/>
+                <TextBox Text="{Binding Options.ClusterListenPort, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
+                         Width="100" HorizontalAlignment="Left"/>
+            </StackPanel>
+
+            <StackPanel Margin="0,8,0,0"
+                        Visibility="{Binding Options.IsClusterReplica, Converter={StaticResource BoolToVisibility}}">
+                <TextBlock Text="{i18n:Loc Options.ClusterPrimaryUrl}" Margin="0,0,0,2"/>
+                <TextBox Text="{Binding Options.ClusterPrimaryUrl, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                         Width="420" HorizontalAlignment="Left"/>
+                <TextBlock Text="{i18n:Loc Options.ClusterPoll}" Margin="0,6,0,2"/>
+                <TextBox Text="{Binding Options.ClusterPollSeconds, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
+                         Width="100" HorizontalAlignment="Left"/>
+                <TextBlock Text="{i18n:Loc Options.ClusterStale}" Margin="0,6,0,2"/>
+                <TextBox Text="{Binding Options.ClusterStaleSeconds, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
+                         Width="100" HorizontalAlignment="Left"/>
+                <TextBlock Text="{i18n:Loc Options.ClusterReplicaHelp}" TextWrapping="Wrap"
+                           FontSize="10" Foreground="#AAAAAA" MaxWidth="440" HorizontalAlignment="Left" Margin="0,4,0,0"/>
+            </StackPanel>
+
+            <StackPanel Margin="0,8,0,12"
+                        Visibility="{Binding Options.IsClusterNetworked, Converter={StaticResource BoolToVisibility}}">
+                <TextBlock Text="{i18n:Loc Options.ClusterToken}" Margin="0,0,0,2"/>
+                <PasswordBox Width="420" HorizontalAlignment="Left"
+                             Loaded="ClusterTokenBox_Loaded"
+                             PasswordChanged="ClusterTokenBox_PasswordChanged"/>
+                <TextBlock Text="{i18n:Loc Options.ClusterSecurityHelp}" TextWrapping="Wrap"
+                           FontSize="10" Foreground="#AAAAAA" MaxWidth="440" HorizontalAlignment="Left" Margin="0,4,0,0"/>
+            </StackPanel>
+
             <!-- Capture Mode -->
             <TextBlock Text="{i18n:Loc Options.CaptureMode}" Margin="0,0,0,2" FontWeight="Bold"/>
             <ComboBox SelectedIndex="{Binding Options.CaptureModeIndex, Mode=TwoWay}"
