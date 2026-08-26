@@ -97,6 +97,15 @@ internal static class Program
 
     private static async Task VerifyAIWeatherClusterProtocolAsync()
     {
+        var generatedToken = AIWeatherClusterProtocol.GenerateSharedToken();
+        var secondGeneratedToken = AIWeatherClusterProtocol.GenerateSharedToken();
+        Assert(generatedToken.Length == 64 && generatedToken.All(Uri.IsHexDigit),
+            "generated cluster token is not a 256-bit hexadecimal value");
+        Assert(AIWeatherClusterProtocol.IsTokenUsable(generatedToken),
+            "generated cluster token does not satisfy authentication requirements");
+        Assert(!string.Equals(generatedToken, secondGeneratedToken, StringComparison.Ordinal),
+            "successive generated cluster tokens unexpectedly repeated");
+
         const string token = "cluster-test-token-123456";
         Assert(AIWeatherClusterProtocol.IsTokenUsable(token), "cluster token length validation");
         Assert(AIWeatherClusterProtocol.FixedTimeTokenEquals(token, token), "cluster constant-time token match");

@@ -11,6 +11,9 @@ namespace AIWeather.Services
         public const int MinimumTokenLength = 16;
         public const int MaximumRequestHeaderBytes = 16 * 1024;
 
+        public static string GenerateSharedToken() =>
+            Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
+
         public static bool IsTokenUsable(string? token) =>
             !string.IsNullOrWhiteSpace(token) && token.Trim().Length >= MinimumTokenLength;
 

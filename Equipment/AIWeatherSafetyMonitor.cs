@@ -266,6 +266,11 @@ namespace AIWeather.Equipment
             get => _connected;
             private set
             {
+                if (_connected == value)
+                {
+                    return;
+                }
+
                 _connected = value;
                 RaisePropertyChanged();
             }

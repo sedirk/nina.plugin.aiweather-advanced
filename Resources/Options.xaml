@@ -50,9 +50,19 @@
             <StackPanel Margin="0,8,0,12"
                         Visibility="{Binding Options.IsClusterNetworked, Converter={StaticResource BoolToVisibility}}">
                 <TextBlock Text="{i18n:Loc Options.ClusterToken}" Margin="0,0,0,2"/>
-                <PasswordBox Width="420" HorizontalAlignment="Left"
-                             Loaded="ClusterTokenBox_Loaded"
-                             PasswordChanged="ClusterTokenBox_PasswordChanged"/>
+                <StackPanel Orientation="Horizontal" Width="420" HorizontalAlignment="Left">
+                    <PasswordBox Width="220"
+                                 Loaded="ClusterTokenBox_Loaded"
+                                 PasswordChanged="ClusterTokenBox_PasswordChanged"/>
+                    <Button Content="{i18n:Loc Options.ClusterGenerateToken}"
+                            Width="92" Margin="8,0,0,0"
+                            ToolTip="{i18n:Loc Options.ClusterGenerateTokenHelp}"
+                            Click="GenerateClusterToken_Click"/>
+                    <Button Content="{i18n:Loc Options.ClusterCopyToken}"
+                            Width="92" Margin="8,0,0,0"
+                            ToolTip="{i18n:Loc Options.ClusterCopyTokenHelp}"
+                            Click="CopyClusterToken_Click"/>
+                </StackPanel>
                 <TextBlock Text="{i18n:Loc Options.ClusterSecurityHelp}" TextWrapping="Wrap"
                            FontSize="10" Foreground="#AAAAAA" MaxWidth="440" HorizontalAlignment="Left" Margin="0,4,0,0"/>
             </StackPanel>

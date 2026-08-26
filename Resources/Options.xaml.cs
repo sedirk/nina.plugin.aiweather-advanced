@@ -1,5 +1,7 @@
 using AIWeather.Localization;
+using AIWeather.Services;
 using System.ComponentModel.Composition;
+using System.Linq;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
@@ -38,6 +40,38 @@ namespace AIWeather
             {
                 Properties.Settings.Default.ClusterSharedToken = pb.Password;
                 NINA.Core.Utility.CoreUtil.SaveSettings(Properties.Settings.Default);
+            }
+        }
+
+        private static PasswordBox? FindClusterTokenBox(object sender) =>
+            sender is Button button && button.Parent is Panel panel
+                ? panel.Children.OfType<PasswordBox>().FirstOrDefault()
+                : null;
+
+        private void GenerateClusterToken_Click(object sender, RoutedEventArgs e)
+        {
+            var tokenBox = FindClusterTokenBox(sender);
+            if (tokenBox != null)
+            {
+                tokenBox.Password = AIWeatherClusterProtocol.GenerateSharedToken();
+            }
+        }
+
+        private void CopyClusterToken_Click(object sender, RoutedEventArgs e)
+        {
+            var tokenBox = FindClusterTokenBox(sender);
+            if (tokenBox == null || string.IsNullOrEmpty(tokenBox.Password))
+            {
+                return;
+            }
+
+            try
+            {
+                Clipboard.SetText(tokenBox.Password);
+            }
+            catch (System.Exception ex)
+            {
+                NINA.Core.Utility.Logger.Warning($"AI Weather could not copy the cluster token to the clipboard: {ex.Message}");
             }
         }
 
