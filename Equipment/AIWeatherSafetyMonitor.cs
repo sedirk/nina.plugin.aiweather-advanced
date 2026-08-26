@@ -291,11 +291,6 @@ namespace AIWeather.Equipment
                     return await ConnectReplicaAsync(token);
                 }
 
-                if (_connectedNodeMode == ClusterNodeMode.Primary)
-                {
-                    ValidatePrimaryClusterConfiguration();
-                }
-
                 // Get capture mode from settings
                 var captureMode = (CaptureMode)Properties.Settings.Default.CaptureMode;
                 _captureService.CurrentMode = captureMode;
@@ -367,7 +362,7 @@ namespace AIWeather.Equipment
 
                 if (_connectedNodeMode == ClusterNodeMode.Primary)
                 {
-                    StartPrimaryClusterServer();
+                    TryStartPrimaryClusterServer();
                 }
 
                 // Start periodic monitoring (first check runs immediately)
@@ -446,28 +441,42 @@ namespace AIWeather.Equipment
             return true;
         }
 
-        private static void ValidatePrimaryClusterConfiguration()
+        private void TryStartPrimaryClusterServer()
         {
             var port = Properties.Settings.Default.ClusterListenPort;
+            var sharedToken = Properties.Settings.Default.ClusterSharedToken;
+
             if (port is < 1 or > 65535)
             {
-                throw new InvalidOperationException("AI Weather primary listen port must be between 1 and 65535.");
+                Logger.Warning(
+                    "AI Weather primary monitoring is running, but cluster sharing is disabled because the listen port is invalid.");
+                return;
             }
-            if (!AIWeatherClusterProtocol.IsTokenUsable(Properties.Settings.Default.ClusterSharedToken))
-            {
-                throw new InvalidOperationException(
-                    $"AI Weather primary mode requires a shared token with at least {AIWeatherClusterProtocol.MinimumTokenLength} characters.");
-            }
-        }
 
-        private void StartPrimaryClusterServer()
-        {
-            _clusterServer = new AIWeatherClusterServer(
-                Properties.Settings.Default.ClusterListenPort,
-                Properties.Settings.Default.ClusterSharedToken,
-                Environment.MachineName,
-                BuildPrimaryClusterSnapshot);
-            _clusterServer.Start();
+            if (!AIWeatherClusterProtocol.IsTokenUsable(sharedToken))
+            {
+                Logger.Warning(
+                    $"AI Weather primary monitoring is running, but cluster sharing is disabled until a shared token with at least {AIWeatherClusterProtocol.MinimumTokenLength} characters is configured.");
+                return;
+            }
+
+            try
+            {
+                _clusterServer = new AIWeatherClusterServer(
+                    port,
+                    sharedToken,
+                    Environment.MachineName,
+                    BuildPrimaryClusterSnapshot);
+                _clusterServer.Start();
+                Logger.Info($"AI Weather primary cluster sharing started on port {port}");
+            }
+            catch (Exception ex)
+            {
+                _clusterServer?.Dispose();
+                _clusterServer = null;
+                Logger.Warning(
+                    $"AI Weather primary monitoring is running, but cluster sharing could not start: {ex.Message}");
+            }
         }
 
         private AIWeatherClusterSnapshot BuildPrimaryClusterSnapshot()
