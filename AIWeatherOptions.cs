@@ -149,6 +149,50 @@ namespace AIWeather
             }
         }
 
+        public bool ClusterAutomaticFailoverEnabled
+        {
+            get => Properties.Settings.Default.ClusterAutomaticFailoverEnabled;
+            set
+            {
+                Properties.Settings.Default.ClusterAutomaticFailoverEnabled = value;
+                CoreUtil.SaveSettings(Properties.Settings.Default);
+                RaisePropertyChanged();
+            }
+        }
+
+        public int ClusterFailoverAfterSeconds
+        {
+            get => Properties.Settings.Default.ClusterFailoverAfterSeconds;
+            set
+            {
+                Properties.Settings.Default.ClusterFailoverAfterSeconds = System.Math.Clamp(value, 15, 3600);
+                CoreUtil.SaveSettings(Properties.Settings.Default);
+                RaisePropertyChanged();
+            }
+        }
+
+        public int ClusterRecoveryStableSeconds
+        {
+            get => Properties.Settings.Default.ClusterRecoveryStableSeconds;
+            set
+            {
+                Properties.Settings.Default.ClusterRecoveryStableSeconds = System.Math.Clamp(value, 5, 600);
+                CoreUtil.SaveSettings(Properties.Settings.Default);
+                RaisePropertyChanged();
+            }
+        }
+
+        public bool ClusterFailoverConfigSyncEnabled
+        {
+            get => Properties.Settings.Default.ClusterFailoverConfigSyncEnabled;
+            set
+            {
+                Properties.Settings.Default.ClusterFailoverConfigSyncEnabled = value;
+                CoreUtil.SaveSettings(Properties.Settings.Default);
+                RaisePropertyChanged();
+            }
+        }
+
         public CaptureMode CaptureMode
         {
             get => (CaptureMode)Properties.Settings.Default.CaptureMode;

@@ -1,7 +1,7 @@
 {
   "Identifier": "AI Weather",
   "Name": "AI Weather - All Sky Camera Monitor",
-  "Version": "1.23.0.0",
+  "Version": "1.24.0.0",
   "MinimumApplicationVersion": "3.0.0.0",
   "Author": "Michele Bergo / sedirk",
   "Homepage": "https://github.com/sedirk/nina.plugin.aiweather-advanced",
@@ -24,6 +24,15 @@
     }
   },
   "ChangeLog": [
+    {
+      "Version": "1.24.0.0",
+      "Date": "2026-08-28",
+      "Changes": [
+        "Added opt-in primary-preferred high availability: after a configurable sustained network outage, a Replica can fail closed and start its own local camera and analysis pipeline, then return to the Primary only after a configurable stable recovery window",
+        "Added opt-in encrypted failover configuration synchronization for camera and AI-provider settings; replicas cache only an AES-256-GCM envelope derived from the shared token, while dataset recording, cluster roles and local external safety devices remain node-local",
+        "Replaced bearer-token cluster requests with replay-resistant HMAC-SHA256 request signing, including timestamp, node, method, path and nonce validation; authentication or protocol failures never authorize automatic takeover"
+      ]
+    },
     {
       "Version": "1.23.0.0",
       "Date": "2026-08-26",

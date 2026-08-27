@@ -1,7 +1,6 @@
 using System;
 using System.Net;
 using System.Net.Http;
-using System.Net.Http.Headers;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
@@ -16,10 +15,16 @@ namespace AIWeather.Services
         };
 
         private readonly HttpClient _client;
+        private readonly string _token;
+        private readonly string _nodeId;
         private string? _sessionId;
         private long _lastSequence = -1;
 
-        public AIWeatherClusterClient(string primaryUrl, string token, TimeSpan timeout)
+        public AIWeatherClusterClient(
+            string primaryUrl,
+            string token,
+            TimeSpan timeout,
+            string? nodeId = null)
         {
             if (!Uri.TryCreate(primaryUrl, UriKind.Absolute, out var baseUri)
                 || (baseUri.Scheme != Uri.UriSchemeHttp && baseUri.Scheme != Uri.UriSchemeHttps))
@@ -36,18 +41,19 @@ namespace AIWeather.Services
             // LAN replication must not depend on a user-space internet proxy such as v2rayN.
             // A proxy being restarted should affect Gemini, not the safety heartbeat.
             var handler = new HttpClientHandler { UseProxy = false };
+            _token = token.Trim();
+            _nodeId = string.IsNullOrWhiteSpace(nodeId) ? Environment.MachineName : nodeId.Trim();
             _client = new HttpClient(handler)
             {
                 BaseAddress = new Uri(baseUri.AbsoluteUri.TrimEnd('/') + "/"),
                 Timeout = timeout <= TimeSpan.Zero ? TimeSpan.FromSeconds(5) : timeout
             };
-            _client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token.Trim());
-            _client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
         }
 
         public async Task<AIWeatherClusterSnapshot> PollAsync(CancellationToken cancellationToken)
         {
-            using var response = await _client.GetAsync("api/v1/status", cancellationToken).ConfigureAwait(false);
+            using var request = CreateGetRequest("/api/v1/status");
+            using var response = await _client.SendAsync(request, cancellationToken).ConfigureAwait(false);
             if (response.StatusCode == HttpStatusCode.Unauthorized)
             {
                 throw new AIWeatherClusterException(AIWeatherReplicaFailure.Authentication, "Primary node rejected the shared token.");
@@ -65,6 +71,77 @@ namespace AIWeather.Services
 
             Validate(snapshot);
             return snapshot;
+        }
+
+        public async Task<AIWeatherFailoverConfigurationEnvelope> FetchFailoverConfigurationAsync(
+            AIWeatherClusterSnapshot expectedPrimary,
+            CancellationToken cancellationToken)
+        {
+            ArgumentNullException.ThrowIfNull(expectedPrimary);
+            using var request = CreateGetRequest("/api/v1/failover-config");
+            using var response = await _client.SendAsync(request, cancellationToken).ConfigureAwait(false);
+            if (response.StatusCode == HttpStatusCode.Unauthorized)
+            {
+                throw new AIWeatherClusterException(AIWeatherReplicaFailure.Authentication, "Primary node rejected the signed configuration request.");
+            }
+            if (!response.IsSuccessStatusCode)
+            {
+                throw new AIWeatherClusterException(
+                    AIWeatherReplicaFailure.Network,
+                    $"Primary configuration endpoint returned HTTP {(int)response.StatusCode}.");
+            }
+
+            await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+            var envelope = await JsonSerializer.DeserializeAsync<AIWeatherFailoverConfigurationEnvelope>(
+                               stream,
+                               JsonOptions,
+                               cancellationToken).ConfigureAwait(false)
+                           ?? throw new AIWeatherClusterException(
+                               AIWeatherReplicaFailure.Protocol,
+                               "Primary node returned an empty failover configuration envelope.");
+            if (envelope.SchemaVersion != AIWeatherClusterProtocol.SchemaVersion
+                || !string.Equals(envelope.Product, AIWeatherClusterProtocol.Product, StringComparison.Ordinal)
+                || !string.Equals(envelope.PrimaryNodeId, expectedPrimary.NodeId, StringComparison.Ordinal)
+                || !string.Equals(envelope.PrimarySessionId, expectedPrimary.SessionId, StringComparison.Ordinal)
+                || !string.Equals(envelope.Revision, expectedPrimary.FailoverConfigurationRevision, StringComparison.Ordinal))
+            {
+                throw new AIWeatherClusterException(
+                    AIWeatherReplicaFailure.Protocol,
+                    "Primary failover configuration identity does not match the current status session.");
+            }
+            return envelope;
+        }
+
+        public AIWeatherFailoverConfiguration DecryptFailoverConfiguration(
+            AIWeatherFailoverConfigurationEnvelope envelope) =>
+            AIWeatherClusterProtocol.DecryptFailoverConfiguration(envelope, _token);
+
+        private HttpRequestMessage CreateGetRequest(string path)
+        {
+            var normalizedPath = path.StartsWith('/') ? path : "/" + path;
+            var authentication = AIWeatherClusterProtocol.CreateRequestAuthentication(
+                _token,
+                HttpMethod.Get.Method,
+                normalizedPath,
+                _nodeId);
+            var request = new HttpRequestMessage(HttpMethod.Get, normalizedPath.TrimStart('/'));
+            request.Headers.TryAddWithoutValidation(
+                AIWeatherClusterProtocol.AuthenticationVersionHeader,
+                authentication.Version);
+            request.Headers.TryAddWithoutValidation(
+                AIWeatherClusterProtocol.AuthenticationNodeHeader,
+                authentication.NodeId);
+            request.Headers.TryAddWithoutValidation(
+                AIWeatherClusterProtocol.AuthenticationTimestampHeader,
+                authentication.UnixTimeSeconds.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            request.Headers.TryAddWithoutValidation(
+                AIWeatherClusterProtocol.AuthenticationNonceHeader,
+                authentication.Nonce);
+            request.Headers.TryAddWithoutValidation(
+                AIWeatherClusterProtocol.AuthenticationSignatureHeader,
+                authentication.Signature);
+            request.Headers.TryAddWithoutValidation("Accept", "application/json");
+            return request;
         }
 
         private void Validate(AIWeatherClusterSnapshot snapshot)

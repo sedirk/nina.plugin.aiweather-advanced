@@ -7,6 +7,8 @@ using System.Collections.Generic;
 using System.ComponentModel.Composition;
 using System.Drawing;
 using System.IO;
+using System.Security.Cryptography;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using AIWeather.Models;
@@ -53,6 +55,11 @@ namespace AIWeather.Equipment
         private AIWeatherReplicaFailure _replicaFailure = AIWeatherReplicaFailure.Waiting;
         private string _replicaLastError = string.Empty;
         private long _clusterSequence;
+        private readonly AIWeatherFailoverStateMachine _replicaFailoverState = new AIWeatherFailoverStateMachine();
+        private AIWeatherFailoverConfiguration? _replicaFailoverConfiguration;
+        private string _replicaFailoverConfigurationRevision = string.Empty;
+        private DateTime _replicaNextLocalCheckUtc = DateTime.MinValue;
+        private DateTime _replicaFailoverRetryAfterUtc = DateTime.MinValue;
 
         // When the last analysis actually succeeded. The sky verdict expires: a monitor that
         // keeps answering with the last known state after its camera died reports SAFE all
@@ -152,19 +159,22 @@ namespace AIWeather.Equipment
 
         private void UpdateAnalysisService()
         {
-            var provider = Properties.Settings.Default.AnalysisProvider;
+            var failover = ActiveFailoverConfiguration;
+            var provider = failover?.AnalysisProvider ?? Properties.Settings.Default.AnalysisProvider;
             if (string.IsNullOrWhiteSpace(provider))
             {
-                provider = Properties.Settings.Default.UseGitHubModels ? "GitHubModels" : "Local";
+                provider = (failover?.UseGitHubModels ?? Properties.Settings.Default.UseGitHubModels)
+                    ? "GitHubModels"
+                    : "Local";
             }
 
             provider = provider.Trim();
-            var model = Properties.Settings.Default.SelectedModel;
+            var model = failover?.SelectedModel ?? Properties.Settings.Default.SelectedModel;
 
             if (string.Equals(provider, "GitHubModels", StringComparison.OrdinalIgnoreCase))
             {
                 _analysisService = new GitHubModelsAnalysisService(
-                    Properties.Settings.Default.GitHubToken,
+                    failover?.GitHubToken ?? Properties.Settings.Default.GitHubToken,
                     model);
                 return;
             }
@@ -172,7 +182,7 @@ namespace AIWeather.Equipment
             if (string.Equals(provider, "OpenAI", StringComparison.OrdinalIgnoreCase))
             {
                 _analysisService = new OpenAIAnalysisService(
-                    Properties.Settings.Default.OpenAIKey,
+                    failover?.OpenAIKey ?? Properties.Settings.Default.OpenAIKey,
                     model);
                 return;
             }
@@ -180,16 +190,16 @@ namespace AIWeather.Equipment
             if (string.Equals(provider, "Gemini", StringComparison.OrdinalIgnoreCase))
             {
                 _analysisService = new GeminiAnalysisService(
-                    Properties.Settings.Default.GeminiKey,
+                    failover?.GeminiKey ?? Properties.Settings.Default.GeminiKey,
                     model,
-                    Properties.Settings.Default.GeminiRequestEveryChecks);
+                    failover?.GeminiRequestEveryChecks ?? Properties.Settings.Default.GeminiRequestEveryChecks);
                 return;
             }
 
             if (string.Equals(provider, "Anthropic", StringComparison.OrdinalIgnoreCase))
             {
                 _analysisService = new AnthropicAnalysisService(
-                    Properties.Settings.Default.AnthropicKey,
+                    failover?.AnthropicKey ?? Properties.Settings.Default.AnthropicKey,
                     model);
                 return;
             }
@@ -197,14 +207,19 @@ namespace AIWeather.Equipment
             if (string.Equals(provider, "Ollama", StringComparison.OrdinalIgnoreCase))
             {
                 _analysisService = new OllamaAnalysisService(
-                    Properties.Settings.Default.OllamaBaseUrl,
+                    failover?.OllamaBaseUrl ?? Properties.Settings.Default.OllamaBaseUrl,
                     model,
-                    Properties.Settings.Default.OllamaDisableThinking);
+                    failover?.OllamaDisableThinking ?? Properties.Settings.Default.OllamaDisableThinking);
                 return;
             }
 
             _analysisService = new LocalWeatherAnalysisService();
         }
+
+        private AIWeatherFailoverConfiguration? ActiveFailoverConfiguration =>
+            _connectedNodeMode == ClusterNodeMode.Replica && _replicaFailoverState.LocalActive
+                ? _replicaFailoverConfiguration
+                : null;
 
         private async Task<IWeatherAnalysisService> EnsureAnalysisServiceInitializedAsync(
             CancellationToken cancellationToken)
@@ -394,6 +409,11 @@ namespace AIWeather.Equipment
             _replicaLastReceivedUtc = DateTime.MinValue;
             _replicaFailure = AIWeatherReplicaFailure.Waiting;
             _replicaLastError = string.Empty;
+            _replicaFailoverState.Reset();
+            _replicaFailoverConfiguration = null;
+            _replicaFailoverConfigurationRevision = string.Empty;
+            _replicaNextLocalCheckUtc = DateTime.MinValue;
+            _replicaFailoverRetryAfterUtc = DateTime.MinValue;
             _lastResult = null;
             _lastAnalysisBundle = null;
             _lastImage?.Dispose();
@@ -411,11 +431,29 @@ namespace AIWeather.Equipment
             }
 
             _captureService.Reset();
-            _clusterClient = new AIWeatherClusterClient(primaryUrl, sharedToken, TimeSpan.FromSeconds(5));
+            TryLoadCachedFailoverConfiguration(sharedToken);
+            if (_replicaFailoverConfiguration == null
+                && Properties.Settings.Default.ClusterAutomaticFailoverEnabled
+                && !Properties.Settings.Default.ClusterFailoverConfigSyncEnabled)
+            {
+                // Manual pre-provisioning remains possible when encrypted synchronization
+                // is deliberately disabled. Nothing is persisted or logged here.
+                var localConfiguration = AIWeatherFailoverConfiguration.FromSettings();
+                if (localConfiguration.TryValidate(out _))
+                {
+                    _replicaFailoverConfiguration = localConfiguration;
+                    _replicaFailoverConfigurationRevision = "LOCAL";
+                }
+            }
+            _clusterClient = new AIWeatherClusterClient(
+                primaryUrl,
+                sharedToken,
+                TimeSpan.FromSeconds(5),
+                Environment.MachineName);
 
-            // A replica may add a local environmental monitor, but it can only tighten the
-            // primary verdict. It never supplies a local sky verdict or substitutes for the
-            // primary when the network is unavailable.
+            // A replica may add a local environmental monitor. It always tightens the active
+            // verdict, whether that verdict currently comes from the preferred primary or from
+            // the replica's explicitly enabled local failover pipeline.
             if (Properties.Settings.Default.UseAscomSafetyMonitor)
             {
                 var progId = Properties.Settings.Default.AscomSafetyMonitorProgId;
@@ -435,7 +473,7 @@ namespace AIWeather.Equipment
             // Do not report a successful N.I.N.A. connection without at least attempting the
             // first synchronization. A temporarily unreachable primary still leaves the
             // equipment connected but Unsafe so it can recover without restarting N.I.N.A.
-            await PollPrimaryAsync(token);
+            await RunReplicaCycleAsync(token, forceLocalCheck: false);
             StartPeriodicMonitoring();
             MonitoringStarted?.Invoke(this, EventArgs.Empty);
             return true;
@@ -466,7 +504,10 @@ namespace AIWeather.Equipment
                     port,
                     sharedToken,
                     Environment.MachineName,
-                    BuildPrimaryClusterSnapshot);
+                    BuildPrimaryClusterSnapshot,
+                    () => Properties.Settings.Default.ClusterFailoverConfigSyncEnabled
+                        ? BuildValidatedFailoverConfiguration()
+                        : null);
                 _clusterServer.Start();
                 Logger.Info($"AI Weather primary cluster sharing started on port {port}");
             }
@@ -483,6 +524,10 @@ namespace AIWeather.Equipment
         {
             var result = _lastResult;
             var analysisUtc = _lastAnalysisUtc == DateTime.MinValue ? (DateTime?)null : _lastAnalysisUtc;
+            var sharedToken = Properties.Settings.Default.ClusterSharedToken ?? string.Empty;
+            var failoverConfiguration = Properties.Settings.Default.ClusterFailoverConfigSyncEnabled
+                ? BuildValidatedFailoverConfiguration()
+                : null;
             return new AIWeatherClusterSnapshot
             {
                 Sequence = Interlocked.Increment(ref _clusterSequence),
@@ -501,8 +546,18 @@ namespace AIWeather.Equipment
                 AnalysisAgeSeconds = analysisUtc.HasValue
                     ? Math.Max(0, (DateTime.UtcNow - analysisUtc.Value).TotalSeconds)
                     : null,
-                SourceFresh = !_isSolarAltitudeSuspended && IsAnalysisFresh()
+                SourceFresh = !_isSolarAltitudeSuspended && IsAnalysisFresh(),
+                FailoverConfigurationAvailable = failoverConfiguration != null,
+                FailoverConfigurationRevision = failoverConfiguration != null
+                    ? AIWeatherClusterProtocol.ComputeConfigurationRevision(failoverConfiguration, sharedToken)
+                    : string.Empty
             };
+        }
+
+        private static AIWeatherFailoverConfiguration? BuildValidatedFailoverConfiguration()
+        {
+            var configuration = AIWeatherFailoverConfiguration.FromSettings();
+            return configuration.TryValidate(out _) ? configuration : null;
         }
 
         private string PrimarySafetyReasonCode()
@@ -518,77 +573,347 @@ namespace AIWeather.Equipment
             return "safe";
         }
 
-        private async Task PollPrimaryAsync(CancellationToken cancellationToken)
+        private async Task RunReplicaCycleAsync(
+            CancellationToken cancellationToken,
+            bool forceLocalCheck)
         {
             if (!await _replicaPollGate.WaitAsync(0, cancellationToken))
             {
-                Logger.Debug("AI Weather replica poll skipped because the previous poll is still running");
+                Logger.Debug("AI Weather replica cycle skipped because the previous cycle is still running");
                 return;
             }
 
-            var client = _clusterClient;
             try
             {
+                var client = _clusterClient;
                 if (client == null)
                 {
                     SetReplicaFailure(AIWeatherReplicaFailure.Network, "Replica client is not initialized.");
+                    await ObserveReplicaFailureAsync(
+                        AIWeatherFailoverObservation.NetworkUnavailable,
+                        cancellationToken).ConfigureAwait(false);
+                    await RunLocalFailoverCheckIfDueAsync(
+                        cancellationToken,
+                        forceLocalCheck).ConfigureAwait(false);
                     return;
                 }
 
-                var snapshot = await client.PollAsync(cancellationToken);
-                _replicaSnapshot = snapshot;
-                _replicaLastReceivedUtc = DateTime.UtcNow;
-                _replicaFailure = AIWeatherReplicaFailure.None;
-                _replicaLastError = string.Empty;
-                _lastAnalysisUtc = snapshot.AnalysisUtc ?? DateTime.MinValue;
-                _isCurrentlySafe = snapshot.IsSafe;
+                AIWeatherClusterSnapshot? snapshot = null;
+                try
+                {
+                    snapshot = await client.PollAsync(cancellationToken).ConfigureAwait(false);
+                    _replicaSnapshot = snapshot;
+                    _replicaLastReceivedUtc = DateTime.UtcNow;
+                    _replicaFailure = AIWeatherReplicaFailure.None;
+                    _replicaLastError = string.Empty;
 
-                if (!Enum.TryParse(snapshot.WeatherCondition, ignoreCase: true, out WeatherCondition condition))
-                {
-                    condition = WeatherCondition.Unknown;
-                }
-                _lastResult = new WeatherAnalysisResult
-                {
-                    Timestamp = snapshot.AnalysisUtc ?? snapshot.GeneratedUtc,
-                    Condition = condition,
-                    CloudCoverage = snapshot.CloudCoverage,
-                    Confidence = snapshot.Confidence,
-                    IsSafeForImaging = snapshot.IsSafe,
-                    RainDetected = snapshot.RainDetected,
-                    FogDetected = snapshot.FogDetected,
-                    Description = $"Remote primary: {snapshot.SafetyReason}",
-                    Provenance = new AnalysisProvenance
+                    await TrySynchronizeFailoverConfigurationAsync(
+                        client,
+                        snapshot,
+                        cancellationToken).ConfigureAwait(false);
+
+                    var transition = _replicaFailoverState.Observe(
+                        AIWeatherFailoverObservation.PrimaryReachable,
+                        DateTime.UtcNow,
+                        Properties.Settings.Default.ClusterAutomaticFailoverEnabled,
+                        _replicaFailoverConfiguration != null,
+                        FailoverAfter(),
+                        RecoveryStableFor());
+                    if (transition == AIWeatherFailoverTransition.ReturnToPrimary)
                     {
-                        Provider = snapshot.Provider,
-                        Model = snapshot.Model,
-                        Origin = AnalysisOrigin.Unknown,
-                        OnlineSucceeded = false,
-                        IsFallback = false
+                        StopLocalFailover(snapshot);
                     }
-                };
+                    else if (!_replicaFailoverState.LocalActive)
+                    {
+                        ApplyRemoteSnapshot(snapshot);
+                    }
+                    else
+                    {
+                        RaiseReplicaStateChanged();
+                    }
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (AIWeatherClusterException ex)
+                {
+                    SetReplicaFailure(ex.Failure, ex.Message);
+                    var fatal = ex.Failure is AIWeatherReplicaFailure.Authentication
+                        or AIWeatherReplicaFailure.Protocol;
+                    await ObserveReplicaFailureAsync(
+                        fatal
+                            ? AIWeatherFailoverObservation.FatalConfigurationFailure
+                            : AIWeatherFailoverObservation.NetworkUnavailable,
+                        cancellationToken).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    SetReplicaFailure(AIWeatherReplicaFailure.Network, ex.Message);
+                    await ObserveReplicaFailureAsync(
+                        AIWeatherFailoverObservation.NetworkUnavailable,
+                        cancellationToken).ConfigureAwait(false);
+                }
 
-                RaisePropertyChanged(nameof(IsSafe));
-                RaisePropertyChanged(nameof(IsSkyConditionSafe));
-                RaisePropertyChanged(nameof(SafetyStateReason));
-                RaisePropertyChanged(nameof(ReplicaConnectionSummary));
-                WriteSafetyStatusFile();
-            }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-            {
-                throw;
-            }
-            catch (AIWeatherClusterException ex)
-            {
-                SetReplicaFailure(ex.Failure, ex.Message);
-            }
-            catch (Exception ex)
-            {
-                SetReplicaFailure(AIWeatherReplicaFailure.Network, ex.Message);
+                await RunLocalFailoverCheckIfDueAsync(
+                    cancellationToken,
+                    forceLocalCheck).ConfigureAwait(false);
             }
             finally
             {
                 _replicaPollGate.Release();
             }
+        }
+
+        private async Task RunLocalFailoverCheckIfDueAsync(
+            CancellationToken cancellationToken,
+            bool forceLocalCheck)
+        {
+            if (!_replicaFailoverState.LocalActive
+                || (!forceLocalCheck && DateTime.UtcNow < _replicaNextLocalCheckUtc))
+            {
+                return;
+            }
+
+            await PerformWeatherCheckAsync(cancellationToken).ConfigureAwait(false);
+            _replicaNextLocalCheckUtc = DateTime.UtcNow.AddMinutes(EffectiveCheckIntervalMinutes());
+        }
+
+        private async Task ObserveReplicaFailureAsync(
+            AIWeatherFailoverObservation observation,
+            CancellationToken cancellationToken)
+        {
+            var now = DateTime.UtcNow;
+            var configurationReady = _replicaFailoverConfiguration != null
+                                     && now >= _replicaFailoverRetryAfterUtc;
+            var transition = _replicaFailoverState.Observe(
+                observation,
+                now,
+                Properties.Settings.Default.ClusterAutomaticFailoverEnabled,
+                configurationReady,
+                FailoverAfter(),
+                RecoveryStableFor());
+            if (transition != AIWeatherFailoverTransition.ActivateLocal)
+            {
+                RaisePropertyChanged(nameof(ReplicaConnectionSummary));
+                return;
+            }
+
+            try
+            {
+                await StartLocalFailoverAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                _replicaFailoverState.AbortLocalActivation();
+                _replicaFailoverRetryAfterUtc = now.AddMinutes(1);
+                _captureService.Reset();
+                _lastAnalysisUtc = DateTime.MinValue;
+                _isCurrentlySafe = false;
+                Logger.Error($"AI Weather local failover activation failed: {ex.Message}", ex);
+                SetReplicaFailure(
+                    AIWeatherReplicaFailure.Network,
+                    UiLocalization.Text("Cluster.FailoverActivationFailed", ex.Message));
+            }
+        }
+
+        private async Task StartLocalFailoverAsync(CancellationToken cancellationToken)
+        {
+            var configuration = _replicaFailoverConfiguration
+                                ?? throw new InvalidOperationException(
+                                    UiLocalization.Text("Cluster.FailoverConfigMissing"));
+            if (!configuration.TryValidate(out var validationError))
+            {
+                throw new InvalidOperationException(validationError);
+            }
+
+            Logger.Warning("AI Weather primary remained unreachable; activating local failover");
+            _lastAnalysisUtc = DateTime.MinValue;
+            _isCurrentlySafe = false;
+            _lastResult = null;
+            _lastAnalysisBundle = null;
+            _lastImage?.Dispose();
+            _lastImage = null;
+            _isSolarAltitudeSuspended = false;
+            _solarContextUnavailable = false;
+            _currentSunAltitude = null;
+            _activeSunAltitudeLimit = SolarAltitudeGuard.NormalizeLimit(
+                configuration.SunAltitudeLimitDegrees);
+
+            ConfigureLocalFailoverCapture(configuration);
+            _initializedAnalysisService = null;
+            UpdateAnalysisService();
+            await EnsureAnalysisServiceInitializedAsync(cancellationToken).ConfigureAwait(false);
+            _replicaNextLocalCheckUtc = DateTime.MinValue;
+            RaiseReplicaStateChanged();
+            WriteSafetyStatusFile();
+        }
+
+        private void ConfigureLocalFailoverCapture(AIWeatherFailoverConfiguration configuration)
+        {
+            _captureService.Reset();
+            var captureMode = (CaptureMode)configuration.CaptureMode;
+            _captureService.CurrentMode = captureMode;
+            switch (captureMode)
+            {
+                case CaptureMode.RTSPStream:
+                    _captureService.ConfigureRTSP(
+                        configuration.RtspUrl,
+                        configuration.RtspUsername,
+                        configuration.RtspPassword);
+                    break;
+                case CaptureMode.INDICamera:
+                    _captureService.ConfigureINDI(
+                        configuration.HttpImageUrl,
+                        configuration.RtspUsername,
+                        configuration.RtspPassword);
+                    break;
+                case CaptureMode.FolderWatch:
+                    if (!Directory.Exists(configuration.FolderPath))
+                    {
+                        throw new DirectoryNotFoundException("Synchronized failover folder is not available on this computer.");
+                    }
+                    _captureService.ConfigureFolderWatch(configuration.FolderPath);
+                    break;
+                default:
+                    throw new InvalidOperationException("Synchronized failover capture mode is invalid.");
+            }
+        }
+
+        private void StopLocalFailover(AIWeatherClusterSnapshot snapshot)
+        {
+            Logger.Info("AI Weather primary remained stable; stopping local failover and returning to remote synchronization");
+            _captureService.Reset();
+            _lastAnalysisUtc = DateTime.MinValue;
+            _isCurrentlySafe = false;
+            _lastResult = null;
+            _lastAnalysisBundle = null;
+            _lastImage?.Dispose();
+            _lastImage = null;
+            _replicaNextLocalCheckUtc = DateTime.MinValue;
+            _initializedAnalysisService = null;
+            UpdateAnalysisService();
+            ApplyRemoteSnapshot(snapshot);
+            Logger.Info(UiLocalization.Text("Cluster.FailoverReturned"));
+        }
+
+        private void ApplyRemoteSnapshot(AIWeatherClusterSnapshot snapshot)
+        {
+            _lastAnalysisUtc = snapshot.AnalysisUtc ?? DateTime.MinValue;
+            _isCurrentlySafe = snapshot.IsSafe;
+
+            if (!Enum.TryParse(snapshot.WeatherCondition, ignoreCase: true, out WeatherCondition condition))
+            {
+                condition = WeatherCondition.Unknown;
+            }
+            _lastResult = new WeatherAnalysisResult
+            {
+                Timestamp = snapshot.AnalysisUtc ?? snapshot.GeneratedUtc,
+                Condition = condition,
+                CloudCoverage = snapshot.CloudCoverage,
+                Confidence = snapshot.Confidence,
+                IsSafeForImaging = snapshot.IsSafe,
+                RainDetected = snapshot.RainDetected,
+                FogDetected = snapshot.FogDetected,
+                Description = $"Remote primary: {snapshot.SafetyReason}",
+                Provenance = new AnalysisProvenance
+                {
+                    Provider = snapshot.Provider,
+                    Model = snapshot.Model,
+                    Origin = AnalysisOrigin.Unknown,
+                    OnlineSucceeded = false,
+                    IsFallback = false
+                }
+            };
+            RaiseReplicaStateChanged();
+            WriteSafetyStatusFile();
+        }
+
+        private async Task TrySynchronizeFailoverConfigurationAsync(
+            AIWeatherClusterClient client,
+            AIWeatherClusterSnapshot snapshot,
+            CancellationToken cancellationToken)
+        {
+            if (!Properties.Settings.Default.ClusterFailoverConfigSyncEnabled
+                || !snapshot.FailoverConfigurationAvailable
+                || string.IsNullOrWhiteSpace(snapshot.FailoverConfigurationRevision)
+                || string.Equals(
+                    snapshot.FailoverConfigurationRevision,
+                    _replicaFailoverConfigurationRevision,
+                    StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            try
+            {
+                var envelope = await client.FetchFailoverConfigurationAsync(
+                    snapshot,
+                    cancellationToken).ConfigureAwait(false);
+                var configuration = client.DecryptFailoverConfiguration(envelope);
+                _replicaFailoverConfiguration = configuration;
+                _replicaFailoverConfigurationRevision = envelope.Revision;
+                Properties.Settings.Default.ClusterFailoverConfigCache = JsonSerializer.Serialize(envelope);
+                CoreUtil.SaveSettings(Properties.Settings.Default);
+                Logger.Info(
+                    $"AI Weather encrypted failover configuration synchronized; revision {ShortRevision(envelope.Revision)}");
+                RaisePropertyChanged(nameof(ReplicaConnectionSummary));
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                // Remote weather status remains usable. A configuration-sync failure blocks
+                // future local takeover but must not throw away a valid primary verdict.
+                Logger.Warning($"AI Weather failover configuration synchronization failed: {ex.Message}");
+            }
+        }
+
+        private void TryLoadCachedFailoverConfiguration(string sharedToken)
+        {
+            var cache = Properties.Settings.Default.ClusterFailoverConfigCache;
+            if (string.IsNullOrWhiteSpace(cache))
+            {
+                return;
+            }
+            try
+            {
+                var envelope = JsonSerializer.Deserialize<AIWeatherFailoverConfigurationEnvelope>(cache)
+                               ?? throw new CryptographicException("Cached failover configuration is empty.");
+                var configuration = AIWeatherClusterProtocol.DecryptFailoverConfiguration(envelope, sharedToken);
+                _replicaFailoverConfiguration = configuration;
+                _replicaFailoverConfigurationRevision = envelope.Revision;
+                Logger.Info(
+                    $"AI Weather encrypted failover configuration cache loaded; revision {ShortRevision(envelope.Revision)}");
+            }
+            catch (Exception ex)
+            {
+                _replicaFailoverConfiguration = null;
+                _replicaFailoverConfigurationRevision = string.Empty;
+                Logger.Warning($"AI Weather encrypted failover configuration cache is unusable: {ex.Message}");
+            }
+        }
+
+        private static string ShortRevision(string revision) =>
+            string.IsNullOrWhiteSpace(revision)
+                ? "none"
+                : revision[..Math.Min(12, revision.Length)];
+
+        private static TimeSpan FailoverAfter() => TimeSpan.FromSeconds(
+            Math.Clamp(Properties.Settings.Default.ClusterFailoverAfterSeconds, 15, 3600));
+
+        private static TimeSpan RecoveryStableFor() => TimeSpan.FromSeconds(
+            Math.Clamp(Properties.Settings.Default.ClusterRecoveryStableSeconds, 5, 600));
+
+        private void RaiseReplicaStateChanged()
+        {
+            RaisePropertyChanged(nameof(IsSafe));
+            RaisePropertyChanged(nameof(IsSkyConditionSafe));
+            RaisePropertyChanged(nameof(SafetyStateReason));
+            RaisePropertyChanged(nameof(ReplicaConnectionSummary));
+            RaisePropertyChanged(nameof(IsReplicaFailoverActive));
         }
 
         private void SetReplicaFailure(AIWeatherReplicaFailure failure, string message)
@@ -648,6 +973,11 @@ namespace AIWeather.Equipment
                 _replicaLastReceivedUtc = DateTime.MinValue;
                 _replicaFailure = AIWeatherReplicaFailure.Waiting;
                 _replicaLastError = string.Empty;
+                _replicaFailoverState.Reset();
+                _replicaFailoverConfiguration = null;
+                _replicaFailoverConfigurationRevision = string.Empty;
+                _replicaNextLocalCheckUtc = DateTime.MinValue;
+                _replicaFailoverRetryAfterUtc = DateTime.MinValue;
                 _isSolarAltitudeSuspended = false;
                 _solarContextUnavailable = false;
                 _currentSunAltitude = null;
@@ -679,7 +1009,8 @@ namespace AIWeather.Equipment
         {
             get
             {
-                if (_connectedNodeMode == ClusterNodeMode.Replica)
+                if (_connectedNodeMode == ClusterNodeMode.Replica
+                    && !_replicaFailoverState.LocalActive)
                 {
                     var snapshot = _replicaSnapshot;
                     var fatalProtocolFailure = _replicaFailure is AIWeatherReplicaFailure.Authentication
@@ -705,6 +1036,9 @@ namespace AIWeather.Equipment
 
         public ClusterNodeMode CurrentNodeMode => _connectedNodeMode;
 
+        public bool IsReplicaFailoverActive =>
+            _connectedNodeMode == ClusterNodeMode.Replica && _replicaFailoverState.LocalActive;
+
         public string ReplicaConnectionSummary
         {
             get
@@ -712,6 +1046,21 @@ namespace AIWeather.Equipment
                 if (_connectedNodeMode != ClusterNodeMode.Replica)
                 {
                     return _connectedNodeMode.ToString();
+                }
+                if (_replicaFailoverState.LocalActive)
+                {
+                    if (_replicaFailoverState.RecoverySinceUtc is DateTime recoverySince)
+                    {
+                        var recoveryAge = Math.Max(0, (DateTime.UtcNow - recoverySince).TotalSeconds);
+                        return UiLocalization.Text(
+                            "Cluster.FailoverRecovering",
+                            recoveryAge,
+                            (int)RecoveryStableFor().TotalSeconds);
+                    }
+                    var unavailableAge = _replicaFailoverState.UnavailableSinceUtc is DateTime unavailableSince
+                        ? Math.Max(0, (DateTime.UtcNow - unavailableSince).TotalSeconds)
+                        : 0;
+                    return UiLocalization.Text("Cluster.FailoverActive", unavailableAge);
                 }
                 if (_replicaSnapshot == null)
                 {
@@ -754,7 +1103,8 @@ namespace AIWeather.Equipment
                     return UiLocalization.Text("Runtime.NotConnected");
                 }
 
-                if (_connectedNodeMode == ClusterNodeMode.Replica)
+                if (_connectedNodeMode == ClusterNodeMode.Replica
+                    && !_replicaFailoverState.LocalActive)
                 {
                     if (_replicaFailure == AIWeatherReplicaFailure.Authentication)
                     {
@@ -839,7 +1189,7 @@ namespace AIWeather.Equipment
                     return UiLocalization.Text(
                         "Runtime.CloudUnsafe",
                         r.CloudCoverage,
-                        Properties.Settings.Default.CloudCoverageSafeThreshold);
+                        EffectiveCloudSafeThreshold());
                 }
 
                 return UiLocalization.Text("Runtime.SkyClear");
@@ -851,18 +1201,44 @@ namespace AIWeather.Equipment
         /// (three check intervals, never below ten minutes) so a long polling interval
         /// cannot make the state permanently stale by construction.
         /// </summary>
-        private static TimeSpan MaxDataAge()
+        private TimeSpan MaxDataAge()
         {
-            var configured = Properties.Settings.Default.MaxDataAgeMinutes;
+            var configured = ActiveFailoverConfiguration?.MaxDataAgeMinutes
+                             ?? Properties.Settings.Default.MaxDataAgeMinutes;
             if (configured > 0)
             {
                 return TimeSpan.FromMinutes(configured);
             }
 
-            var interval = Math.Max(1, Properties.Settings.Default.CheckIntervalMinutes);
+            var interval = EffectiveCheckIntervalMinutes();
             var automatic = TimeSpan.FromMinutes(interval * 3);
             return automatic < MinimumAutomaticDataAge ? MinimumAutomaticDataAge : automatic;
         }
+
+        private int EffectiveCheckIntervalMinutes() => Math.Max(
+            1,
+            ActiveFailoverConfiguration?.CheckIntervalMinutes
+            ?? Properties.Settings.Default.CheckIntervalMinutes);
+
+        private CaptureMode EffectiveCaptureMode() => (CaptureMode)(
+            ActiveFailoverConfiguration?.CaptureMode
+            ?? Properties.Settings.Default.CaptureMode);
+
+        private bool EffectiveUseSunAltitudeLimit() =>
+            ActiveFailoverConfiguration?.UseSunAltitudeLimit
+            ?? Properties.Settings.Default.UseSunAltitudeLimit;
+
+        private double EffectiveSunAltitudeLimitDegrees() =>
+            ActiveFailoverConfiguration?.SunAltitudeLimitDegrees
+            ?? Properties.Settings.Default.SunAltitudeLimitDegrees;
+
+        private double EffectiveCloudUnsafeThreshold() =>
+            ActiveFailoverConfiguration?.CloudCoverageThreshold
+            ?? Properties.Settings.Default.CloudCoverageThreshold;
+
+        private double EffectiveCloudSafeThreshold() =>
+            ActiveFailoverConfiguration?.CloudCoverageSafeThreshold
+            ?? Properties.Settings.Default.CloudCoverageSafeThreshold;
 
         /// <summary>
         /// Whether the latest analysis is recent enough to be acted upon. Logged once per
@@ -977,8 +1353,8 @@ namespace AIWeather.Equipment
                 return;
             }
 
-            var unsafeThreshold = Properties.Settings.Default.CloudCoverageThreshold;
-            var safeThreshold = Properties.Settings.Default.CloudCoverageSafeThreshold;
+            var unsafeThreshold = EffectiveCloudUnsafeThreshold();
+            var safeThreshold = EffectiveCloudSafeThreshold();
 
             // Provider-supplied IsSafeForImaging is useful for display and disagreement
             // sampling, but it is not a visual ground truth: every provider bakes different
@@ -1062,7 +1438,7 @@ namespace AIWeather.Equipment
             var replicaMode = _connectedNodeMode == ClusterNodeMode.Replica;
             var intervalValue = replicaMode
                 ? Math.Clamp(Properties.Settings.Default.ClusterPollSeconds, 1, 300)
-                : Math.Max(1, Properties.Settings.Default.CheckIntervalMinutes);
+                : EffectiveCheckIntervalMinutes();
             var interval = replicaMode
                 ? TimeSpan.FromSeconds(intervalValue)
                 : TimeSpan.FromMinutes(intervalValue);
@@ -1070,12 +1446,12 @@ namespace AIWeather.Equipment
                 ? $"{intervalValue} seconds"
                 : $"{intervalValue} minutes";
 
-            var captureMode = (CaptureMode)Properties.Settings.Default.CaptureMode;
+            var captureMode = EffectiveCaptureMode();
             Logger.Debug($"Starting periodic monitoring every {intervalDescription} (node: {_connectedNodeMode}, capture: {captureMode})");
 
             _monitoringTimer = new Timer(_ =>
             {
-                var currentMode = (CaptureMode)Properties.Settings.Default.CaptureMode;
+                var currentMode = EffectiveCaptureMode();
                 Logger.Debug($"Timer fired - Interval: {intervalDescription}, node: {_connectedNodeMode}, capture: {currentMode}");
                 
                 if (_cts?.Token.IsCancellationRequested ?? true)
@@ -1094,7 +1470,7 @@ namespace AIWeather.Equipment
                             Logger.Debug($"Executing periodic weather check (Mode: {currentMode})");
                             if (_connectedNodeMode == ClusterNodeMode.Replica)
                             {
-                                await PollPrimaryAsync(_cts.Token);
+                                await RunReplicaCycleAsync(_cts.Token, forceLocalCheck: false);
                             }
                             else
                             {
@@ -1140,7 +1516,7 @@ namespace AIWeather.Equipment
                 {
                     if (_connectedNodeMode == ClusterNodeMode.Replica)
                     {
-                        await PollPrimaryAsync(tokenSource.Token);
+                        await RunReplicaCycleAsync(tokenSource.Token, forceLocalCheck: true);
                     }
                     else
                     {
@@ -1268,7 +1644,7 @@ namespace AIWeather.Equipment
             Bitmap? frame = null;
             try
             {
-                var captureMode = (CaptureMode)Properties.Settings.Default.CaptureMode;
+                var captureMode = EffectiveCaptureMode();
                 Logger.Debug($"PerformWeatherCheckAsync - Mode: {captureMode}");
 
                 // The Sun gate deliberately runs before opening/capturing the camera and
@@ -1276,8 +1652,8 @@ namespace AIWeather.Equipment
                 // from entering the dataset and avoids spending online API quota.
                 var astroContext = TryComputeAstroContext(DateTime.UtcNow);
                 var solarDecision = SolarAltitudeGuard.Evaluate(
-                    Properties.Settings.Default.UseSunAltitudeLimit,
-                    Properties.Settings.Default.SunAltitudeLimitDegrees,
+                    EffectiveUseSunAltitudeLimit(),
+                    EffectiveSunAltitudeLimitDegrees(),
                     astroContext);
                 if (solarDecision.ShouldSuspend)
                 {
@@ -1348,16 +1724,19 @@ namespace AIWeather.Equipment
                 // Fast selection + image clone only. Resize, hashing, JPEG encoding and I/O
                 // happen on a bounded background writer. A false return is deliberately
                 // ignored: dataset collection must never affect the safety verdict.
-                _datasetRecorder.TryEnqueue(
-                    frame,
-                    capturedUtc,
-                    astroContext,
-                    analysis,
-                    effectiveSafe: IsSafe,
-                    visualSafe: _isCurrentlySafe,
-                    externalSafetyMonitorSafe: externalSafe,
-                    highThreshold: Properties.Settings.Default.CloudCoverageThreshold,
-                    lowThreshold: Properties.Settings.Default.CloudCoverageSafeThreshold);
+                if (!IsReplicaFailoverActive)
+                {
+                    _datasetRecorder.TryEnqueue(
+                        frame,
+                        capturedUtc,
+                        astroContext,
+                        analysis,
+                        effectiveSafe: IsSafe,
+                        visualSafe: _isCurrentlySafe,
+                        externalSafetyMonitorSafe: externalSafe,
+                        highThreshold: EffectiveCloudUnsafeThreshold(),
+                        lowThreshold: EffectiveCloudSafeThreshold());
+                }
 
                 // Expose the reading to the Advanced Sequencer's Symbols sidebar (N.I.N.A. 3.3+).
                 // The published Safe symbol is the composite state, so an expression in the
@@ -1498,7 +1877,7 @@ namespace AIWeather.Equipment
             await _checkGate.WaitAsync(cancellationToken);
             try
             {
-                if (_lastImage == null || _lastAnalysisBundle == null)
+                if (IsReplicaFailoverActive || _lastImage == null || _lastAnalysisBundle == null)
                 {
                     return false;
                 }
@@ -1515,8 +1894,8 @@ namespace AIWeather.Equipment
                     effectiveSafe: IsSafe,
                     visualSafe: _isCurrentlySafe,
                     externalSafetyMonitorSafe: externalSafe,
-                    highThreshold: Properties.Settings.Default.CloudCoverageThreshold,
-                    lowThreshold: Properties.Settings.Default.CloudCoverageSafeThreshold,
+                    highThreshold: EffectiveCloudUnsafeThreshold(),
+                    lowThreshold: EffectiveCloudSafeThreshold(),
                     manualReview: true);
             }
             finally
@@ -1547,7 +1926,7 @@ namespace AIWeather.Equipment
         {
             if (_connectedNodeMode == ClusterNodeMode.Replica)
             {
-                await PollPrimaryAsync(cancellationToken);
+                await RunReplicaCycleAsync(cancellationToken, forceLocalCheck: true);
             }
             else
             {

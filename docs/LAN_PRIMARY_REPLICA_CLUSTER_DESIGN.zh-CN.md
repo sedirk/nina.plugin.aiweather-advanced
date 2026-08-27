@@ -1,7 +1,7 @@
 # NINA 远程台主节点/从节点集群设计（AI Weather Advanced + RRCI Advanced）
 
-状态：**冻结 v1，进入实现**  
-日期：2026-08-26  
+状态：**v1 已实现；AI Weather 故障转移部分由后续高可用设计补充**
+日期：2026-08-26
 适用项目：`nina.plugin.aiweather-advanced`、`nina.plugin.rrci-advanced`
 
 ## 1. 目标与范围
@@ -12,7 +12,7 @@
 - **主节点模式（Primary）**：唯一连接真实数据源或硬件，并向局域网发布状态；按策略接收从节点命令。
 - **从节点模式（Replica）**：不打开真实数据源或硬件，只读取主节点状态；RRCI 从节点可在显式授权后向主节点提交高层命令。
 
-本阶段不做自动选主、主节点自动接管、跨公网连接、云端中继或分布式共识。系统采用**显式角色、单写者、失联即故障安全**的原则。
+本阶段原设计不做自动选主、主节点自动接管、跨公网连接、云端中继或分布式共识。系统采用**显式角色、单写者、失联即故障安全**的原则。AI Weather 后续增加的“固定主节点优先、本地临时接管”见 [`AI_WEATHER_HIGH_AVAILABILITY_FAILOVER_DESIGN.zh-CN.md`](AI_WEATHER_HIGH_AVAILABILITY_FAILOVER_DESIGN.zh-CN.md)；RRCI 的单写者约束不变。
 
 ## 2. 不可违反的系统约束
 
@@ -68,13 +68,17 @@
 
 ### 4.3 身份认证
 
-每个请求携带：
+每个请求携带短时有效的 HMAC-SHA256 签名：
 
 ```http
-Authorization: Bearer <shared-token>
+X-AIWeather-Auth: HMAC-SHA256
+X-AIWeather-Node: <node-id>
+X-AIWeather-Time: <unix-seconds>
+X-AIWeather-Nonce: <random-nonce>
+X-AIWeather-Signature: <base64-hmac>
 ```
 
-服务端对令牌 UTF-8 字节做常量时间比较。令牌为空、太短、不匹配均返回 `401`。日志只记录来源地址、路径和结果，绝不记录请求头或令牌。局域网令牌不是传输加密；生产部署仍需 Windows 防火墙限制来源 IP。跨公网必须另加 VPN/TLS，本版本不直接暴露公网。
+共享令牌仅作为 HMAC 密钥，**不会作为 Bearer 值在网络上传输**。签名绑定协议版本、HTTP 方法、请求路径、时间戳、节点 ID 和随机数；服务端拒绝超出时间窗、签名不匹配和随机数重放的请求。日志只记录来源地址、路径和结果，绝不记录请求头或令牌。HMAC 提供认证与防篡改，但不加密状态响应；生产部署仍需 Windows 防火墙限制来源 IP。跨公网必须另加 VPN/TLS，本版本不直接暴露公网。
 
 ### 4.4 公共信封
 
@@ -82,7 +86,7 @@ Authorization: Bearer <shared-token>
 
 ```json
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "product": "ai-weather-advanced",
   "nodeId": "machine-stable-id",
   "sessionId": "new-guid-per-primary-start",

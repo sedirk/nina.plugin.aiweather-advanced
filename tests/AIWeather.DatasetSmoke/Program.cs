@@ -2,12 +2,14 @@ using AIWeather.Models;
 using AIWeather.Services;
 using AIWeather.Localization;
 using System;
+using System.Collections.Generic;
 using System.Drawing;
 using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
+using System.Security.Cryptography;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
@@ -111,12 +113,96 @@ internal static class Program
         Assert(AIWeatherClusterProtocol.FixedTimeTokenEquals(token, token), "cluster constant-time token match");
         Assert(!AIWeatherClusterProtocol.FixedTimeTokenEquals(token, token + "x"), "cluster token mismatch");
 
+        var authenticationTime = new DateTimeOffset(2026, 8, 28, 0, 0, 0, TimeSpan.Zero);
+        var authentication = AIWeatherClusterProtocol.CreateRequestAuthentication(
+            token,
+            "GET",
+            "/api/v1/status",
+            "smoke-replica",
+            authenticationTime,
+            "00112233445566778899AABBCCDDEEFF");
+        var authenticationHeaders = AuthenticationHeaders(authentication);
+        Assert(AIWeatherClusterProtocol.TryValidateRequestAuthentication(
+                token,
+                "GET",
+                "/api/v1/status",
+                authenticationHeaders,
+                authenticationTime.AddSeconds(10),
+                out _,
+                out _),
+            "cluster HMAC request authentication");
+        Assert(!AIWeatherClusterProtocol.TryValidateRequestAuthentication(
+                token,
+                "GET",
+                "/api/v1/health",
+                authenticationHeaders,
+                authenticationTime.AddSeconds(10),
+                out _,
+                out _),
+            "cluster HMAC did not bind the request path");
+        Assert(!AIWeatherClusterProtocol.TryValidateRequestAuthentication(
+                token,
+                "GET",
+                "/api/v1/status",
+                authenticationHeaders,
+                authenticationTime.Add(AIWeatherClusterProtocol.AuthenticationClockSkew).AddSeconds(1),
+                out _,
+                out _),
+            "cluster HMAC accepted an expired request timestamp");
+
+        var failoverConfiguration = new AIWeatherFailoverConfiguration
+        {
+            CaptureMode = (int)CaptureMode.RTSPStream,
+            RtspUrl = "rtsp://camera.test/stream",
+            RtspUsername = "camera-user",
+            RtspPassword = "camera-secret",
+            CheckIntervalMinutes = 3,
+            UseSunAltitudeLimit = true,
+            SunAltitudeLimitDegrees = -6,
+            CloudCoverageThreshold = 70,
+            CloudCoverageSafeThreshold = 40,
+            AnalysisProvider = "Gemini",
+            SelectedModel = "gemini-test",
+            GeminiKey = "gemini-secret",
+            GeminiRequestEveryChecks = 2
+        };
+        var encrypted = AIWeatherClusterProtocol.EncryptFailoverConfiguration(
+            failoverConfiguration,
+            token,
+            "smoke-primary",
+            "smoke-session",
+            authenticationTime.UtcDateTime);
+        var decrypted = AIWeatherClusterProtocol.DecryptFailoverConfiguration(encrypted, token);
+        Assert(decrypted.RtspUrl == failoverConfiguration.RtspUrl
+               && decrypted.RtspPassword == failoverConfiguration.RtspPassword
+               && decrypted.GeminiKey == failoverConfiguration.GeminiKey,
+            "encrypted failover configuration round trip");
+        AssertThrows<CryptographicException>(
+            () => AIWeatherClusterProtocol.DecryptFailoverConfiguration(
+                encrypted,
+                "different-cluster-token-123456"),
+            "failover configuration decrypted with the wrong token");
+        var tampered = JsonSerializer.Deserialize<AIWeatherFailoverConfigurationEnvelope>(
+                           JsonSerializer.Serialize(encrypted))
+                       ?? throw new InvalidOperationException("could not clone encrypted failover envelope");
+        var tamperedTag = Convert.FromBase64String(tampered.Tag);
+        tamperedTag[0] ^= 0x80;
+        tampered.Tag = Convert.ToBase64String(tamperedTag);
+        AssertThrows<CryptographicException>(
+            () => AIWeatherClusterProtocol.DecryptFailoverConfiguration(tampered, token),
+            "tampered failover configuration authentication tag was accepted");
+
+        VerifyFailoverStateMachine();
+
         var portProbe = new System.Net.Sockets.TcpListener(IPAddress.Loopback, 0);
         portProbe.Start();
         var port = ((IPEndPoint)portProbe.LocalEndpoint).Port;
         portProbe.Stop();
 
         long sequence = 0;
+        var failoverRevision = AIWeatherClusterProtocol.ComputeConfigurationRevision(
+            failoverConfiguration,
+            token);
         using var server = new AIWeatherClusterServer(
             port,
             token,
@@ -134,8 +220,11 @@ internal static class Program
                 Provider = "Smoke",
                 Model = "deterministic",
                 AnalysisUtc = DateTime.UtcNow,
-                SourceFresh = true
-            });
+                SourceFresh = true,
+                FailoverConfigurationAvailable = true,
+                FailoverConfigurationRevision = failoverRevision
+            },
+            () => failoverConfiguration);
         server.Start();
 
         using var client = new AIWeatherClusterClient(
@@ -150,6 +239,36 @@ internal static class Program
         Assert(first.SessionId == second.SessionId, "cluster stable session");
         Assert(second.Sequence > first.Sequence, "cluster monotonic sequence");
         Assert(second.IsSafe && second.SourceFresh, "cluster weather status round trip");
+        Assert(first.FailoverConfigurationAvailable
+               && first.FailoverConfigurationRevision == failoverRevision,
+            "cluster failover configuration advertisement");
+        var fetchedEnvelope = await client.FetchFailoverConfigurationAsync(
+            second,
+            CancellationToken.None);
+        var fetchedConfiguration = client.DecryptFailoverConfiguration(fetchedEnvelope);
+        Assert(fetchedConfiguration.RtspPassword == failoverConfiguration.RtspPassword
+               && fetchedConfiguration.GeminiKey == failoverConfiguration.GeminiKey,
+            "cluster encrypted failover configuration exchange");
+
+        using (var rawClient = new HttpClient(new HttpClientHandler { UseProxy = false }))
+        {
+            var replayAuthentication = AIWeatherClusterProtocol.CreateRequestAuthentication(
+                token,
+                "GET",
+                "/api/v1/health",
+                "replay-test-node");
+            using var acceptedReplay = await rawClient.SendAsync(
+                BuildSignedRequest(
+                    $"http://127.0.0.1:{port}/api/v1/health",
+                    replayAuthentication));
+            using var rejectedReplay = await rawClient.SendAsync(
+                BuildSignedRequest(
+                    $"http://127.0.0.1:{port}/api/v1/health",
+                    replayAuthentication));
+            Assert(acceptedReplay.IsSuccessStatusCode
+                   && rejectedReplay.StatusCode == HttpStatusCode.Unauthorized,
+                "cluster nonce replay protection");
+        }
 
         using var unauthorized = new AIWeatherClusterClient(
             $"http://127.0.0.1:{port}",
@@ -164,6 +283,90 @@ internal static class Program
         {
             Assert(ex.Failure == AIWeatherReplicaFailure.Authentication, "cluster authentication failure category");
         }
+    }
+
+    private static Dictionary<string, string> AuthenticationHeaders(
+        AIWeatherRequestAuthentication authentication) => new(StringComparer.OrdinalIgnoreCase)
+    {
+        [AIWeatherClusterProtocol.AuthenticationVersionHeader] = authentication.Version,
+        [AIWeatherClusterProtocol.AuthenticationNodeHeader] = authentication.NodeId,
+        [AIWeatherClusterProtocol.AuthenticationTimestampHeader] = authentication.UnixTimeSeconds.ToString(CultureInfo.InvariantCulture),
+        [AIWeatherClusterProtocol.AuthenticationNonceHeader] = authentication.Nonce,
+        [AIWeatherClusterProtocol.AuthenticationSignatureHeader] = authentication.Signature
+    };
+
+    private static HttpRequestMessage BuildSignedRequest(
+        string url,
+        AIWeatherRequestAuthentication authentication)
+    {
+        var request = new HttpRequestMessage(HttpMethod.Get, url);
+        foreach (var header in AuthenticationHeaders(authentication))
+        {
+            request.Headers.TryAddWithoutValidation(header.Key, header.Value);
+        }
+        return request;
+    }
+
+    private static void VerifyFailoverStateMachine()
+    {
+        var state = new AIWeatherFailoverStateMachine();
+        var start = new DateTime(2026, 8, 28, 0, 0, 0, DateTimeKind.Utc);
+        var failoverAfter = TimeSpan.FromSeconds(60);
+        var recovery = TimeSpan.FromSeconds(30);
+        Assert(state.Observe(
+                AIWeatherFailoverObservation.NetworkUnavailable,
+                start,
+                enabled: true,
+                configurationReady: true,
+                failoverAfter,
+                recovery) == AIWeatherFailoverTransition.None,
+            "failover activated on the first network miss");
+        Assert(state.Observe(
+                AIWeatherFailoverObservation.NetworkUnavailable,
+                start.AddSeconds(59),
+                enabled: true,
+                configurationReady: true,
+                failoverAfter,
+                recovery) == AIWeatherFailoverTransition.None,
+            "failover activated before the outage threshold");
+        Assert(state.Observe(
+                AIWeatherFailoverObservation.NetworkUnavailable,
+                start.AddSeconds(60),
+                enabled: true,
+                configurationReady: true,
+                failoverAfter,
+                recovery) == AIWeatherFailoverTransition.ActivateLocal
+               && state.LocalActive,
+            "failover did not activate at the outage threshold");
+        Assert(state.Observe(
+                AIWeatherFailoverObservation.PrimaryReachable,
+                start.AddSeconds(61),
+                enabled: true,
+                configurationReady: true,
+                failoverAfter,
+                recovery) == AIWeatherFailoverTransition.None
+               && state.LocalActive,
+            "failover returned on the first recovered poll");
+        Assert(state.Observe(
+                AIWeatherFailoverObservation.PrimaryReachable,
+                start.AddSeconds(91),
+                enabled: true,
+                configurationReady: true,
+                failoverAfter,
+                recovery) == AIWeatherFailoverTransition.ReturnToPrimary
+               && !state.LocalActive,
+            "failover did not return after a stable recovery window");
+
+        var fatal = new AIWeatherFailoverStateMachine();
+        Assert(fatal.Observe(
+                AIWeatherFailoverObservation.FatalConfigurationFailure,
+                start,
+                enabled: true,
+                configurationReady: true,
+                TimeSpan.Zero,
+                TimeSpan.Zero) == AIWeatherFailoverTransition.None
+               && !fatal.LocalActive,
+            "authentication/protocol failure incorrectly activated local failover");
     }
 
     private static void VerifyLatestRtspFrameBuffer()
@@ -1216,5 +1419,19 @@ internal static class Program
         {
             throw new InvalidOperationException(message);
         }
+    }
+
+    private static void AssertThrows<TException>(Action action, string message)
+        where TException : Exception
+    {
+        try
+        {
+            action();
+        }
+        catch (TException)
+        {
+            return;
+        }
+        throw new InvalidOperationException(message);
     }
 }

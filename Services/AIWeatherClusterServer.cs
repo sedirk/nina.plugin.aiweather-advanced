@@ -25,18 +25,22 @@ namespace AIWeather.Services
         private readonly int _port;
         private readonly string _token;
         private readonly Func<AIWeatherClusterSnapshot> _snapshotFactory;
+        private readonly Func<AIWeatherFailoverConfiguration?>? _failoverConfigurationFactory;
         private readonly string _nodeId;
         private readonly string _sessionId = Guid.NewGuid().ToString("D");
         private readonly CancellationTokenSource _cts = new CancellationTokenSource();
         private TcpListener? _listener;
         private Task? _acceptLoop;
         private bool _disposed;
+        private readonly object _nonceGate = new object();
+        private readonly Dictionary<string, DateTime> _acceptedNonces = new Dictionary<string, DateTime>(StringComparer.Ordinal);
 
         public AIWeatherClusterServer(
             int port,
             string token,
             string nodeId,
-            Func<AIWeatherClusterSnapshot> snapshotFactory)
+            Func<AIWeatherClusterSnapshot> snapshotFactory,
+            Func<AIWeatherFailoverConfiguration?>? failoverConfigurationFactory = null)
         {
             if (port is < 1 or > 65535)
             {
@@ -53,6 +57,7 @@ namespace AIWeather.Services
             _token = token.Trim();
             _nodeId = string.IsNullOrWhiteSpace(nodeId) ? Environment.MachineName : nodeId;
             _snapshotFactory = snapshotFactory ?? throw new ArgumentNullException(nameof(snapshotFactory));
+            _failoverConfigurationFactory = failoverConfigurationFactory;
         }
 
         public string SessionId => _sessionId;
@@ -124,11 +129,24 @@ namespace AIWeather.Services
                         return;
                     }
 
-                    var suppliedToken = ExtractBearer(request.Headers);
-                    if (!AIWeatherClusterProtocol.FixedTimeTokenEquals(_token, suppliedToken))
+                    if (!AIWeatherClusterProtocol.TryValidateRequestAuthentication(
+                            _token,
+                            request.Method,
+                            request.Path,
+                            request.Headers,
+                            DateTimeOffset.UtcNow,
+                            out var authentication,
+                            out var authenticationError)
+                        || !TryAcceptNonce(authentication.NodeId, authentication.Nonce))
                     {
                         Logger.Warning($"AI Weather cluster rejected an unauthorized request from {remote}");
-                        await WriteErrorAsync(stream, 401, "unauthorized", "Authentication failed.", false, timeout.Token).ConfigureAwait(false);
+                        await WriteErrorAsync(
+                            stream,
+                            401,
+                            "unauthorized",
+                            string.IsNullOrWhiteSpace(authenticationError) ? "Authentication failed." : authenticationError,
+                            false,
+                            timeout.Token).ConfigureAwait(false);
                         return;
                     }
 
@@ -152,6 +170,30 @@ namespace AIWeather.Services
                         snapshot.SessionId = _sessionId;
                         snapshot.GeneratedUtc = DateTime.UtcNow;
                         await WriteJsonAsync(stream, 200, snapshot, timeout.Token).ConfigureAwait(false);
+                        return;
+                    }
+
+                    if (string.Equals(request.Path, "/api/v1/failover-config", StringComparison.Ordinal))
+                    {
+                        var configuration = _failoverConfigurationFactory?.Invoke();
+                        if (configuration == null)
+                        {
+                            await WriteErrorAsync(
+                                stream,
+                                404,
+                                "failover_config_disabled",
+                                "Encrypted failover configuration sharing is disabled.",
+                                false,
+                                timeout.Token).ConfigureAwait(false);
+                            return;
+                        }
+
+                        var envelope = AIWeatherClusterProtocol.EncryptFailoverConfiguration(
+                            configuration,
+                            _token,
+                            _nodeId,
+                            _sessionId);
+                        await WriteJsonAsync(stream, 200, envelope, timeout.Token).ConfigureAwait(false);
                         return;
                     }
 
@@ -207,14 +249,57 @@ namespace AIWeather.Services
             return null;
         }
 
-        private static string? ExtractBearer(IReadOnlyDictionary<string, string> headers)
+        private bool TryAcceptNonce(string nodeId, string nonce)
         {
-            if (!headers.TryGetValue("Authorization", out var authorization)
-                || !authorization.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
+            var now = DateTime.UtcNow;
+            var key = nodeId + ":" + nonce;
+            lock (_nonceGate)
             {
-                return null;
+                if (_acceptedNonces.ContainsKey(key))
+                {
+                    return false;
+                }
+
+                if (_acceptedNonces.Count >= 4096)
+                {
+                    var cutoff = now - AIWeatherClusterProtocol.AuthenticationClockSkew;
+                    var expired = new List<string>();
+                    foreach (var item in _acceptedNonces)
+                    {
+                        if (item.Value < cutoff)
+                        {
+                            expired.Add(item.Key);
+                        }
+                    }
+                    foreach (var expiredKey in expired)
+                    {
+                        _acceptedNonces.Remove(expiredKey);
+                    }
+                    if (_acceptedNonces.Count >= 4096)
+                    {
+                        // Bound memory even under a valid-token nonce flood. Removing the
+                        // oldest entry can only shorten replay memory within the clock window;
+                        // the timestamp and signature checks still apply.
+                        string? oldestKey = null;
+                        var oldest = DateTime.MaxValue;
+                        foreach (var item in _acceptedNonces)
+                        {
+                            if (item.Value < oldest)
+                            {
+                                oldest = item.Value;
+                                oldestKey = item.Key;
+                            }
+                        }
+                        if (oldestKey != null)
+                        {
+                            _acceptedNonces.Remove(oldestKey);
+                        }
+                    }
+                }
+
+                _acceptedNonces[key] = now;
+                return true;
             }
-            return authorization[7..].Trim();
         }
 
         private static Task WriteErrorAsync(

@@ -208,6 +208,7 @@ namespace AIWeather
             RaisePropertyChanged(nameof(IsUrlMode));
             RaisePropertyChanged(nameof(ReplicaConnectButtonText));
             RaisePropertyChanged(nameof(ReplicaConnectionStatusText));
+            RaisePropertyChanged(nameof(ReplicaModeDescription));
 
             // Restore state if SafetyMonitor is already running
             RestoreMonitoringState();
@@ -268,7 +269,8 @@ namespace AIWeather
                          || e.PropertyName == nameof(AIWeatherSafetyMonitor.IsSolarAltitudeSuspended)
                          || e.PropertyName == nameof(AIWeatherSafetyMonitor.CurrentSunAltitude)
                          || e.PropertyName == nameof(AIWeatherSafetyMonitor.SunAltitudeLimitDegrees)
-                         || e.PropertyName == nameof(AIWeatherSafetyMonitor.ReplicaConnectionSummary))
+                         || e.PropertyName == nameof(AIWeatherSafetyMonitor.ReplicaConnectionSummary)
+                         || e.PropertyName == nameof(AIWeatherSafetyMonitor.IsReplicaFailoverActive))
                 {
                     // Weather check completed — update UI with latest results
                     if (_safetyMonitor.Connected)
@@ -283,7 +285,9 @@ namespace AIWeather
                         RunOnUiThread(async () =>
                         {
                             RaisePropertyChanged(nameof(ReplicaConnectionStatusText));
-                            await UpdateFromLatestResultAsync(loadImage: !IsClusterReplica);
+                            RaisePropertyChanged(nameof(ReplicaModeDescription));
+                            await UpdateFromLatestResultAsync(
+                                loadImage: !IsClusterReplica || _safetyMonitor.IsReplicaFailoverActive);
                         });
                     }
                 }
@@ -577,6 +581,10 @@ namespace AIWeather
             ? _safetyMonitor.ReplicaConnectionSummary
             : UiLocalization.Text("Preview.ReplicaNotStarted");
 
+        public string ReplicaModeDescription => _safetyMonitor.IsReplicaFailoverActive
+            ? UiLocalization.Text("Preview.ReplicaFailover")
+            : UiLocalization.Text("Preview.ReplicaNoVideo");
+
         public BitmapImage? CurrentImage
         {
             get => _currentImage;
@@ -602,6 +610,7 @@ namespace AIWeather
                 RaisePropertyChanged(nameof(ConnectButtonText));
                 RaisePropertyChanged(nameof(ReplicaConnectButtonText));
                 RaisePropertyChanged(nameof(ReplicaConnectionStatusText));
+                RaisePropertyChanged(nameof(ReplicaModeDescription));
             }
         }
 
@@ -784,7 +793,8 @@ namespace AIWeather
                 if (result != null)
                 {
                     Logger.Info("RestoreMonitoringState: cached result available, updating display");
-                    _ = UpdateFromLatestResultAsync(loadImage: !IsClusterReplica);
+                    _ = UpdateFromLatestResultAsync(
+                        loadImage: !IsClusterReplica || _safetyMonitor.IsReplicaFailoverActive);
                     StatusMessage = UiLocalization.Text("Runtime.MonitoringActive");
                 }
                 else
@@ -848,7 +858,8 @@ namespace AIWeather
 
                         // Do not force an immediate check here; the safety monitor already starts its periodic
                         // monitoring (with an initial check). We'll just sync UI from whatever is available.
-                        await UpdateFromLatestResultAsync(loadImage: !IsClusterReplica);
+                        await UpdateFromLatestResultAsync(
+                            loadImage: !IsClusterReplica || _safetyMonitor.IsReplicaFailoverActive);
                     }
                     else
                     {
@@ -1234,6 +1245,7 @@ namespace AIWeather
             RaisePropertyChanged(nameof(AnalysisMethod));
             RaisePropertyChanged(nameof(AiSettingsSummary));
             RaisePropertyChanged(nameof(ReplicaConnectionStatusText));
+            RaisePropertyChanged(nameof(ReplicaModeDescription));
             _keepDatasetSampleCommand?.NotifyCanExecuteChanged();
         }
 

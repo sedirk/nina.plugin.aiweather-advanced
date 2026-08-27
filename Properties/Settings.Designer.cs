@@ -524,5 +524,45 @@ namespace AIWeather.Properties {
             get { return ((int)(this["ClusterStaleSeconds"])); }
             set { this["ClusterStaleSeconds"] = value; }
         }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("False")]
+        public bool ClusterAutomaticFailoverEnabled {
+            get { return ((bool)(this["ClusterAutomaticFailoverEnabled"])); }
+            set { this["ClusterAutomaticFailoverEnabled"] = value; }
+        }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("60")]
+        public int ClusterFailoverAfterSeconds {
+            get { return ((int)(this["ClusterFailoverAfterSeconds"])); }
+            set { this["ClusterFailoverAfterSeconds"] = value; }
+        }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("30")]
+        public int ClusterRecoveryStableSeconds {
+            get { return ((int)(this["ClusterRecoveryStableSeconds"])); }
+            set { this["ClusterRecoveryStableSeconds"] = value; }
+        }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("False")]
+        public bool ClusterFailoverConfigSyncEnabled {
+            get { return ((bool)(this["ClusterFailoverConfigSyncEnabled"])); }
+            set { this["ClusterFailoverConfigSyncEnabled"] = value; }
+        }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("")]
+        public string ClusterFailoverConfigCache {
+            get { return ((string)(this["ClusterFailoverConfigCache"])); }
+            set { this["ClusterFailoverConfigCache"] = value; }
+        }
     }
 }
