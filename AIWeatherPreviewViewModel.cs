@@ -206,6 +206,8 @@ namespace AIWeather
             RaisePropertyChanged(nameof(IsNonRtspMode));
             RaisePropertyChanged(nameof(IsFolderMode));
             RaisePropertyChanged(nameof(IsUrlMode));
+            RaisePropertyChanged(nameof(ReplicaConnectButtonText));
+            RaisePropertyChanged(nameof(ReplicaConnectionStatusText));
 
             // Restore state if SafetyMonitor is already running
             RestoreMonitoringState();
@@ -265,7 +267,8 @@ namespace AIWeather
                 else if (e.PropertyName == nameof(AIWeatherSafetyMonitor.IsSafe)
                          || e.PropertyName == nameof(AIWeatherSafetyMonitor.IsSolarAltitudeSuspended)
                          || e.PropertyName == nameof(AIWeatherSafetyMonitor.CurrentSunAltitude)
-                         || e.PropertyName == nameof(AIWeatherSafetyMonitor.SunAltitudeLimitDegrees))
+                         || e.PropertyName == nameof(AIWeatherSafetyMonitor.SunAltitudeLimitDegrees)
+                         || e.PropertyName == nameof(AIWeatherSafetyMonitor.ReplicaConnectionSummary))
                 {
                     // Weather check completed — update UI with latest results
                     if (_safetyMonitor.Connected)
@@ -279,7 +282,8 @@ namespace AIWeather
 
                         RunOnUiThread(async () =>
                         {
-                            await UpdateFromLatestResultAsync(loadImage: true);
+                            RaisePropertyChanged(nameof(ReplicaConnectionStatusText));
+                            await UpdateFromLatestResultAsync(loadImage: !IsClusterReplica);
                         });
                     }
                 }
@@ -340,6 +344,8 @@ namespace AIWeather
                             RaisePropertyChanged(nameof(IsNonRtspMode));
                             RaisePropertyChanged(nameof(IsFolderMode));
                             RaisePropertyChanged(nameof(IsUrlMode));
+                            RaisePropertyChanged(nameof(ReplicaConnectButtonText));
+                            RaisePropertyChanged(nameof(ReplicaConnectionStatusText));
                             _ = HandleCaptureModeChangedAsync();
                         }
                         else if (e.PropertyName == nameof(Properties.Settings.Default.RtspUrl)
@@ -414,6 +420,8 @@ namespace AIWeather
             RaisePropertyChanged(nameof(IsNonRtspMode));
             RaisePropertyChanged(nameof(IsFolderMode));
             RaisePropertyChanged(nameof(IsUrlMode));
+            RaisePropertyChanged(nameof(ReplicaConnectButtonText));
+            RaisePropertyChanged(nameof(ReplicaConnectionStatusText));
             SyncPrimarySourceFromSettings();
         }
 
@@ -561,6 +569,14 @@ namespace AIWeather
 
         public string ConnectButtonText => IsConnected ? "Disconnect" : "Connect";
 
+        public string ReplicaConnectButtonText => IsConnected
+            ? UiLocalization.Text("Preview.DisconnectPrimary")
+            : UiLocalization.Text("Preview.ConnectPrimary");
+
+        public string ReplicaConnectionStatusText => IsConnected
+            ? _safetyMonitor.ReplicaConnectionSummary
+            : UiLocalization.Text("Preview.ReplicaNotStarted");
+
         public BitmapImage? CurrentImage
         {
             get => _currentImage;
@@ -583,6 +599,9 @@ namespace AIWeather
                 _isConnected = value;
                 RaisePropertyChanged();
                 RaisePropertyChanged(nameof(ConnectionStatus));
+                RaisePropertyChanged(nameof(ConnectButtonText));
+                RaisePropertyChanged(nameof(ReplicaConnectButtonText));
+                RaisePropertyChanged(nameof(ReplicaConnectionStatusText));
             }
         }
 
@@ -765,7 +784,7 @@ namespace AIWeather
                 if (result != null)
                 {
                     Logger.Info("RestoreMonitoringState: cached result available, updating display");
-                    _ = UpdateFromLatestResultAsync(loadImage: true);
+                    _ = UpdateFromLatestResultAsync(loadImage: !IsClusterReplica);
                     StatusMessage = UiLocalization.Text("Runtime.MonitoringActive");
                 }
                 else
@@ -788,7 +807,9 @@ namespace AIWeather
                 if (IsConnected)
                 {
                     // Disconnect
-                    AddLog(UiLocalization.Text("Log.DisconnectingRtsp"));
+                    AddLog(UiLocalization.Text(IsClusterReplica
+                        ? "Log.ReplicaDisconnecting"
+                        : "Log.DisconnectingRtsp"));
                     _safetyMonitor.Disconnect();
                     IsConnected = false;
                     StatusMessage = UiLocalization.Text("Runtime.Disconnected");
@@ -798,14 +819,22 @@ namespace AIWeather
                 else
                 {
                     // Connect
-                    if (string.IsNullOrWhiteSpace(RtspUrl))
+                    if (!IsClusterReplica && string.IsNullOrWhiteSpace(RtspUrl))
                     {
                         AddLog(UiLocalization.Text("Log.RtspRequired"));
                         StatusMessage = UiLocalization.Text("Runtime.RtspRequired");
                         return false;
                     }
 
-                    AddLog(UiLocalization.Text("Log.Connecting", RtspUrl));
+                    if (IsClusterReplica)
+                    {
+                        CurrentImage = null;
+                        AddLog(UiLocalization.Text("Log.ReplicaConnecting"));
+                    }
+                    else
+                    {
+                        AddLog(UiLocalization.Text("Log.Connecting", RtspUrl));
+                    }
                     StatusMessage = UiLocalization.Text("Runtime.Connecting");
                     var connected = await _safetyMonitor.Connect(CancellationToken.None);
                     
@@ -813,21 +842,27 @@ namespace AIWeather
                     {
                         IsConnected = true;
                         StatusMessage = UiLocalization.Text("Runtime.Connected");
-                        AddLog(UiLocalization.Text("Log.Connected"));
+                        AddLog(UiLocalization.Text(IsClusterReplica
+                            ? "Log.ReplicaConnected"
+                            : "Log.Connected"));
 
                         // Do not force an immediate check here; the safety monitor already starts its periodic
                         // monitoring (with an initial check). We'll just sync UI from whatever is available.
-                        await UpdateFromLatestResultAsync(loadImage: true);
+                        await UpdateFromLatestResultAsync(loadImage: !IsClusterReplica);
                     }
                     else
                     {
-                        AddLog(UiLocalization.Text("Log.ConnectionFailed"));
+                        AddLog(UiLocalization.Text(IsClusterReplica
+                            ? "Log.ReplicaConnectionFailed"
+                            : "Log.ConnectionFailed"));
                         StatusMessage = UiLocalization.Text("Runtime.ConnectionFailed");
                         return false;
                     }
                 }
 
                 RaisePropertyChanged(nameof(ConnectButtonText));
+                RaisePropertyChanged(nameof(ReplicaConnectButtonText));
+                RaisePropertyChanged(nameof(ReplicaConnectionStatusText));
                 return true;
             }
             catch (Exception ex)
@@ -837,6 +872,8 @@ namespace AIWeather
                 IsConnected = false;
                 StatusMessage = UiLocalization.Text("Runtime.ConnectionError");
                 RaisePropertyChanged(nameof(ConnectButtonText));
+                RaisePropertyChanged(nameof(ReplicaConnectButtonText));
+                RaisePropertyChanged(nameof(ReplicaConnectionStatusText));
                 return false;
             }
         }
@@ -1196,6 +1233,7 @@ namespace AIWeather
             RaisePropertyChanged(nameof(LastUpdate));
             RaisePropertyChanged(nameof(AnalysisMethod));
             RaisePropertyChanged(nameof(AiSettingsSummary));
+            RaisePropertyChanged(nameof(ReplicaConnectionStatusText));
             _keepDatasetSampleCommand?.NotifyCanExecuteChanged();
         }
 
