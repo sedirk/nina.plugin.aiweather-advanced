@@ -20,7 +20,7 @@ namespace AIWeather.Services
     public class GeminiAnalysisService : IOnlineWeatherAnalysisService
     {
         private const int MaxAttempts = 3;
-        private const int PrimaryProbeAfterAlternateSuccesses = 2;
+        private const int PrimaryProbeAfterAlternateChecks = 2;
         private static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(60);
         private static readonly TimeSpan MinimumAttemptBudget = TimeSpan.FromSeconds(5);
 
@@ -34,6 +34,7 @@ namespace AIWeather.Services
         private readonly object _failoverGate = new object();
         private string? _alternateModelName;
         private int _alternateSuccesses;
+        private int _alternateChecks;
         private long _requestSequence;
         private bool _isInitialized;
 
@@ -64,6 +65,25 @@ namespace AIWeather.Services
                 modelName,
                 new FixedHttpClientProvider(http),
                 _ => quotaCircuit,
+                utcNow,
+                requestEveryChecks,
+                failoverCandidates)
+        {
+        }
+
+        internal GeminiAnalysisService(
+            string apiKey,
+            string modelName,
+            HttpClient http,
+            Func<string, GeminiQuotaCircuitBreaker> quotaCircuitForModel,
+            Func<DateTimeOffset> utcNow,
+            int requestEveryChecks = 1,
+            IReadOnlyList<string>? failoverCandidates = null)
+            : this(
+                apiKey,
+                modelName,
+                new FixedHttpClientProvider(http),
+                quotaCircuitForModel,
                 utcNow,
                 requestEveryChecks,
                 failoverCandidates)
@@ -110,7 +130,7 @@ namespace AIWeather.Services
 
             _isInitialized = true;
             Logger.Info($"Gemini analysis service initialized with primary model: {_primaryModelName}; " +
-                        "HTTP 503 failover is temporary and never changes the saved model selection");
+                        "provider/quota failover is temporary, quota-aware per model, and never changes the saved model selection");
             return Task.FromResult(true);
         }
 
@@ -164,6 +184,7 @@ namespace AIWeather.Services
             var startingCircuit = _quotaCircuitForModel(currentModel);
             if (startingCircuit.TryGetActive(_utcNow(), out var activeQuota))
             {
+                RecordModelFailure(currentModel, "quota circuit is still open");
                 return BuildQuotaFailure(
                     currentModel,
                     activeQuota,
@@ -291,6 +312,7 @@ namespace AIWeather.Services
                                     attemptStopwatch.ElapsedMilliseconds,
                                     "quota_rejected"));
                                 var circuit = _quotaCircuitForModel(currentModel).RecordFailure(_utcNow(), quota);
+                                RecordModelFailure(currentModel, "quota rejected");
                                 Logger.Warning(
                                     $"Gemini API quota unavailable: HTTP {(int)response.StatusCode}; " +
                                     $"immediate retries suppressed, next online attempt no earlier than " +
@@ -346,6 +368,7 @@ namespace AIWeather.Services
                                         $"Gemini retry skipped because only " +
                                         $"{Math.Max(0, (RequestTimeout - stopwatch.Elapsed).TotalSeconds):F1}s remain " +
                                         $"after HTTP {(int)response.StatusCode}; preserving the provider failure");
+                                    RecordModelFailure(currentModel, "provider retry budget exhausted");
                                     return BuildDiagnosticFailure(
                                         diagnostics,
                                         currentModel,
@@ -387,6 +410,7 @@ namespace AIWeather.Services
                         var result = PromptText.ParseAIResponse(text);
                         if (!WeatherAnalysisValidator.IsValidTeacherResult(result, out var validationReason))
                         {
+                            RecordModelFailure(currentModel, "response schema rejected");
                             Logger.Warning($"Gemini returned a response rejected by the weather schema: {validationReason}");
                             return OnlineAnalysisAttempt.Failed(
                                 AnalysisMetadata.FailedOnline(
@@ -425,6 +449,7 @@ namespace AIWeather.Services
                         Logger.Warning(
                             $"Gemini model {currentModel} exhausted the bounded online-analysis budget; " +
                             "retaining earlier HTTP evidence in provenance");
+                        RecordModelFailure(currentModel, "request timed out");
                         return BuildDiagnosticFailure(
                             diagnostics,
                             currentModel,
@@ -444,6 +469,7 @@ namespace AIWeather.Services
                         var delay = GetTransientRetryDelay(null, null, attempt);
                         if (!HasAttemptBudget(stopwatch, delay))
                         {
+                            RecordModelFailure(currentModel, "network retry budget exhausted");
                             return BuildDiagnosticFailure(
                                 diagnostics,
                                 currentModel,
@@ -489,6 +515,7 @@ namespace AIWeather.Services
                         stopwatch.ElapsedMilliseconds,
                         "timeout"));
                 }
+                RecordModelFailure(currentModel, "request timed out");
                 return BuildDiagnosticFailure(
                     diagnostics,
                     currentModel,
@@ -504,6 +531,7 @@ namespace AIWeather.Services
                     : $"Gemini request rejected ({status})";
 
                 Logger.Error($"{reason}: {ex.Message}");
+                RecordModelFailure(currentModel, reason);
                 return BuildDiagnosticFailure(
                     diagnostics,
                     currentModel,
@@ -516,6 +544,7 @@ namespace AIWeather.Services
             catch (JsonException ex)
             {
                 Logger.Error($"Gemini returned malformed envelope JSON: {ex.Message}");
+                RecordModelFailure(currentModel, "malformed response envelope");
                 return OnlineAnalysisAttempt.Failed(
                     AnalysisMetadata.FailedOnline(
                         AnalysisOrigin.Gemini,
@@ -531,6 +560,7 @@ namespace AIWeather.Services
             catch (Exception ex)
             {
                 Logger.Error($"Error in Gemini online analysis: {ex.Message}", ex);
+                RecordModelFailure(currentModel, ex.GetType().Name);
                 return OnlineAnalysisAttempt.Failed(
                     AnalysisMetadata.FailedOnline(
                         AnalysisOrigin.Gemini,
@@ -548,39 +578,86 @@ namespace AIWeather.Services
 
         private string GetStartingModel(out bool probingPrimary)
         {
+            string preferredModel;
             lock (_failoverGate)
             {
                 if (string.IsNullOrWhiteSpace(_alternateModelName))
                 {
-                    probingPrimary = false;
-                    return _primaryModelName;
+                    preferredModel = _primaryModelName;
                 }
-
-                if (_alternateSuccesses >= PrimaryProbeAfterAlternateSuccesses)
+                else if (_alternateChecks >= PrimaryProbeAfterAlternateChecks)
                 {
-                    probingPrimary = true;
-                    return _primaryModelName;
+                    preferredModel = _primaryModelName;
                 }
+                else
+                {
+                    preferredModel = _alternateModelName;
+                }
+            }
 
+            probingPrimary = string.Equals(preferredModel, _primaryModelName, StringComparison.OrdinalIgnoreCase)
+                             && !string.IsNullOrWhiteSpace(GetActiveAlternateModel());
+
+            var now = _utcNow();
+            if (!_quotaCircuitForModel(preferredModel).TryGetActive(now, out _))
+            {
+                return preferredModel;
+            }
+
+            // Quotas are per model. A temporary alternate that has exhausted its own RPD
+            // allowance must never pin the service there until the next reset while the
+            // configured primary is healthy. Likewise, a quota-limited primary may use a
+            // different same-family Flash model whose independent circuit is still open.
+            if (!string.Equals(preferredModel, _primaryModelName, StringComparison.OrdinalIgnoreCase)
+                && !_quotaCircuitForModel(_primaryModelName).TryGetActive(now, out _))
+            {
+                probingPrimary = true;
+                Logger.Info(
+                    $"Gemini temporary alternate {preferredModel} is quota-paused; " +
+                    $"probing configured primary {_primaryModelName} instead");
+                return _primaryModelName;
+            }
+
+            if (TrySelectAlternateModel(out var availableAlternate, preferredModel))
+            {
+                ActivateAlternate(availableAlternate);
                 probingPrimary = false;
+                Logger.Info(
+                    $"Gemini model {preferredModel} is quota-paused; using available " +
+                    $"same-family alternate {availableAlternate}");
+                return availableAlternate;
+            }
+
+            return preferredModel;
+        }
+
+        private string? GetActiveAlternateModel()
+        {
+            lock (_failoverGate)
+            {
                 return _alternateModelName;
             }
         }
 
-        private bool TrySelectAlternateModel(out string alternateModel)
+        private bool TrySelectAlternateModel(
+            out string alternateModel,
+            string? excludedModel = null)
         {
-            lock (_failoverGate)
+            var now = _utcNow();
+            var activeAlternate = GetActiveAlternateModel();
+            if (!string.IsNullOrWhiteSpace(activeAlternate)
+                && !string.Equals(activeAlternate, excludedModel, StringComparison.OrdinalIgnoreCase)
+                && !_quotaCircuitForModel(activeAlternate).TryGetActive(now, out _))
             {
-                if (!string.IsNullOrWhiteSpace(_alternateModelName))
-                {
-                    alternateModel = _alternateModelName;
-                    return true;
-                }
+                alternateModel = activeAlternate;
+                return true;
             }
 
             var candidates = _injectedFailoverCandidates
                 ?? GeminiModelFailoverCatalog.GetFailoverCandidates(_primaryModelName);
-            alternateModel = candidates.FirstOrDefault() ?? string.Empty;
+            alternateModel = candidates.FirstOrDefault(candidate =>
+                !string.Equals(candidate, excludedModel, StringComparison.OrdinalIgnoreCase)
+                && !_quotaCircuitForModel(candidate).TryGetActive(now, out _)) ?? string.Empty;
             return alternateModel.Length > 0;
         }
 
@@ -592,12 +669,14 @@ namespace AIWeather.Services
                 {
                     _alternateModelName = alternateModel;
                     _alternateSuccesses = 0;
+                    _alternateChecks = 0;
                 }
                 else
                 {
                     // A primary recovery probe failed again. Start a fresh, short hold on
                     // the already selected alternate before probing the primary once more.
                     _alternateSuccesses = 0;
+                    _alternateChecks = 0;
                 }
             }
         }
@@ -616,6 +695,7 @@ namespace AIWeather.Services
                     }
                     _alternateModelName = null;
                     _alternateSuccesses = 0;
+                    _alternateChecks = 0;
                     return;
                 }
 
@@ -623,17 +703,44 @@ namespace AIWeather.Services
                 {
                     _alternateModelName = modelName;
                     _alternateSuccesses = 0;
+                    _alternateChecks = 0;
                 }
 
                 _alternateSuccesses = Math.Min(
-                    PrimaryProbeAfterAlternateSuccesses,
+                    PrimaryProbeAfterAlternateChecks,
                     _alternateSuccesses + 1);
+                _alternateChecks = Math.Min(
+                    PrimaryProbeAfterAlternateChecks,
+                    _alternateChecks + 1);
                 Logger.Info(
                     $"Gemini temporary alternate {modelName} succeeded " +
-                    $"({_alternateSuccesses}/{PrimaryProbeAfterAlternateSuccesses}); " +
-                    (_alternateSuccesses >= PrimaryProbeAfterAlternateSuccesses
+                    $"({_alternateChecks}/{PrimaryProbeAfterAlternateChecks} checks; " +
+                    $"{_alternateSuccesses} successes); " +
+                    (_alternateChecks >= PrimaryProbeAfterAlternateChecks
                         ? $"the next online check will probe configured primary {_primaryModelName}"
                         : "the alternate will handle one more online check before probing the primary"));
+            }
+        }
+
+        private void RecordModelFailure(string modelName, string reason)
+        {
+            lock (_failoverGate)
+            {
+                if (string.Equals(modelName, _primaryModelName, StringComparison.OrdinalIgnoreCase)
+                    || !string.Equals(modelName, _alternateModelName, StringComparison.OrdinalIgnoreCase))
+                {
+                    return;
+                }
+
+                _alternateChecks = Math.Min(
+                    PrimaryProbeAfterAlternateChecks,
+                    _alternateChecks + 1);
+                Logger.Info(
+                    $"Gemini temporary alternate {modelName} completed with {reason} " +
+                    $"({_alternateChecks}/{PrimaryProbeAfterAlternateChecks} checks); " +
+                    (_alternateChecks >= PrimaryProbeAfterAlternateChecks
+                        ? $"the next online check will probe configured primary {_primaryModelName}"
+                        : "the alternate may handle one more online check before probing the primary"));
             }
         }
 

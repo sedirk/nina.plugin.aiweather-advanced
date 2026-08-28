@@ -57,10 +57,28 @@ namespace AIWeather
         }
 
         public bool IsClusterReplica => ClusterNodeModeParser.Parse(Properties.Settings.Default.ClusterNodeMode) == ClusterNodeMode.Replica;
-        public bool IsRtspMode => !IsClusterReplica && CurrentCaptureMode == Models.CaptureMode.RTSPStream;
-        public bool IsNonRtspMode => !IsClusterReplica && CurrentCaptureMode != Models.CaptureMode.RTSPStream;
-        public bool IsFolderMode => !IsClusterReplica && CurrentCaptureMode == Models.CaptureMode.FolderWatch;
-        public bool IsUrlMode => !IsClusterReplica && CurrentCaptureMode != Models.CaptureMode.FolderWatch;
+        public bool IsReplicaFailoverActive => IsClusterReplica && _safetyMonitor.IsReplicaFailoverActive;
+        public bool IsReplicaFollowingPrimary => IsClusterReplica && !IsReplicaFailoverActive;
+
+        private Models.CaptureMode PreviewCaptureMode
+        {
+            get
+            {
+                return IsReplicaFailoverActive
+                       && _safetyMonitor.TryGetReplicaFailoverPreviewSource(
+                           out var captureMode,
+                           out _,
+                           out _,
+                           out _)
+                    ? captureMode
+                    : CurrentCaptureMode;
+            }
+        }
+
+        public bool IsRtspMode => !IsReplicaFollowingPrimary && PreviewCaptureMode == Models.CaptureMode.RTSPStream;
+        public bool IsNonRtspMode => !IsReplicaFollowingPrimary && PreviewCaptureMode != Models.CaptureMode.RTSPStream;
+        public bool IsFolderMode => !IsReplicaFollowingPrimary && PreviewCaptureMode == Models.CaptureMode.FolderWatch;
+        public bool IsUrlMode => !IsReplicaFollowingPrimary && PreviewCaptureMode != Models.CaptureMode.FolderWatch;
 
         private static Dispatcher? UiDispatcher => Application.Current?.Dispatcher;
 
@@ -201,11 +219,7 @@ namespace AIWeather
             }, source => source != null);
             
             // Raise property changed for capture mode visibility on initialization
-            RaisePropertyChanged(nameof(CurrentCaptureMode));
-            RaisePropertyChanged(nameof(IsRtspMode));
-            RaisePropertyChanged(nameof(IsNonRtspMode));
-            RaisePropertyChanged(nameof(IsFolderMode));
-            RaisePropertyChanged(nameof(IsUrlMode));
+            RaiseCapturePresentationChanged();
             RaisePropertyChanged(nameof(ReplicaConnectButtonText));
             RaisePropertyChanged(nameof(ReplicaConnectionStatusText));
             RaisePropertyChanged(nameof(ReplicaModeDescription));
@@ -284,8 +298,11 @@ namespace AIWeather
 
                         RunOnUiThread(async () =>
                         {
-                            RaisePropertyChanged(nameof(ReplicaConnectionStatusText));
-                            RaisePropertyChanged(nameof(ReplicaModeDescription));
+                            RaiseCapturePresentationChanged();
+                            if (e.PropertyName == nameof(AIWeatherSafetyMonitor.IsReplicaFailoverActive))
+                            {
+                                await SynchronizeReplicaPreviewAsync();
+                            }
                             await UpdateFromLatestResultAsync(
                                 loadImage: !IsClusterReplica || _safetyMonitor.IsReplicaFailoverActive);
                         });
@@ -330,11 +347,7 @@ namespace AIWeather
                         }
                         if (e.PropertyName == nameof(Properties.Settings.Default.CaptureMode))
                         {
-                            RaisePropertyChanged(nameof(CurrentCaptureMode));
-                            RaisePropertyChanged(nameof(IsRtspMode));
-                            RaisePropertyChanged(nameof(IsNonRtspMode));
-                            RaisePropertyChanged(nameof(IsFolderMode));
-                            RaisePropertyChanged(nameof(IsUrlMode));
+                            RaiseCapturePresentationChanged();
 
                             // Mode changes should immediately reflect in the panel. Also, if something
                             // is currently running (RTSP preview or periodic monitoring), stop it so the
@@ -343,13 +356,7 @@ namespace AIWeather
                         }
                         else if (e.PropertyName == nameof(Properties.Settings.Default.ClusterNodeMode))
                         {
-                            RaisePropertyChanged(nameof(IsClusterReplica));
-                            RaisePropertyChanged(nameof(IsRtspMode));
-                            RaisePropertyChanged(nameof(IsNonRtspMode));
-                            RaisePropertyChanged(nameof(IsFolderMode));
-                            RaisePropertyChanged(nameof(IsUrlMode));
-                            RaisePropertyChanged(nameof(ReplicaConnectButtonText));
-                            RaisePropertyChanged(nameof(ReplicaConnectionStatusText));
+                            RaiseCapturePresentationChanged();
                             _ = HandleCaptureModeChangedAsync();
                         }
                         else if (e.PropertyName == nameof(Properties.Settings.Default.RtspUrl)
@@ -419,14 +426,62 @@ namespace AIWeather
         /// </summary>
         public void SyncCaptureMode()
         {
+            RaiseCapturePresentationChanged();
+            SyncPrimarySourceFromSettings();
+        }
+
+        private void RaiseCapturePresentationChanged()
+        {
             RaisePropertyChanged(nameof(CurrentCaptureMode));
+            RaisePropertyChanged(nameof(IsClusterReplica));
+            RaisePropertyChanged(nameof(IsReplicaFailoverActive));
+            RaisePropertyChanged(nameof(IsReplicaFollowingPrimary));
             RaisePropertyChanged(nameof(IsRtspMode));
             RaisePropertyChanged(nameof(IsNonRtspMode));
             RaisePropertyChanged(nameof(IsFolderMode));
             RaisePropertyChanged(nameof(IsUrlMode));
             RaisePropertyChanged(nameof(ReplicaConnectButtonText));
             RaisePropertyChanged(nameof(ReplicaConnectionStatusText));
-            SyncPrimarySourceFromSettings();
+            RaisePropertyChanged(nameof(ReplicaModeDescription));
+        }
+
+        /// <summary>
+        /// A replica normally renders only the primary's status. During automatic local
+        /// takeover it owns a real local capture pipeline, so the same synchronized RTSP
+        /// source must also be visible in the panel. Returning to the primary tears this
+        /// preview down again; it never grants the follower a second safety vote.
+        /// </summary>
+        public async Task SynchronizeReplicaPreviewAsync()
+        {
+            if (!IsClusterReplica || _view == null)
+            {
+                return;
+            }
+
+            RaiseCapturePresentationChanged();
+            if (!IsReplicaFailoverActive
+                || !_safetyMonitor.TryGetReplicaFailoverPreviewSource(
+                    out var captureMode,
+                    out var source,
+                    out var username,
+                    out var password))
+            {
+                await _view.StopStreamAsync();
+                CurrentImage = null;
+                return;
+            }
+
+            if (captureMode == Models.CaptureMode.RTSPStream)
+            {
+                Logger.Info(
+                    $"Replica local takeover is starting its synchronized RTSP preview: " +
+                    $"{LogRedactor.RedactRtspUrl(source)}");
+                await _view.StartStreamAsync(source, username, password);
+                return;
+            }
+
+            await _view.StopStreamAsync();
+            await UpdateFromLatestResultAsync(loadImage: true);
         }
 
         /// <summary>
@@ -787,6 +842,10 @@ namespace AIWeather
                 // Apply refresh interval and start timer
                 ApplyRefreshIntervalFromSettings();
                 _refreshTimer.Start();
+                if (IsClusterReplica)
+                {
+                    _ = SynchronizeReplicaPreviewAsync();
+                }
 
                 // Try to show cached results immediately, then wait for periodic check to update via IsSafe
                 var result = _safetyMonitor.GetLatestResult();
@@ -1478,6 +1537,16 @@ namespace AIWeather
             AddLog(UiLocalization.Text("Log.ViewInitialized"));
 
             Logger.Info($"SetView called - IsRunning: {IsRunning}, Sources.Count: {Sources.Count}, CurrentCaptureMode: {CurrentCaptureMode}, IsNonRtspMode: {IsNonRtspMode}");
+
+            if (IsClusterReplica)
+            {
+                _ = SynchronizeReplicaPreviewAsync();
+                if (!IsRunning && _safetyMonitor.Connected)
+                {
+                    RestoreMonitoringState();
+                }
+                return;
+            }
 
             // If we're restoring state, handle mode-specific UI updates
             if (IsRunning && Sources.Count > 0)

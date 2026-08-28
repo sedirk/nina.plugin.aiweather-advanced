@@ -132,7 +132,7 @@
                             <Style TargetType="Image">
                                 <Setter Property="Visibility" Value="Visible"/>
                                 <Style.Triggers>
-                                    <DataTrigger Binding="{Binding IsClusterReplica}" Value="True">
+                                    <DataTrigger Binding="{Binding IsReplicaFollowingPrimary}" Value="True">
                                         <Setter Property="Visibility" Value="Collapsed"/>
                                     </DataTrigger>
                                 </Style.Triggers>
@@ -140,10 +140,10 @@
                         </Image.Style>
                     </Image>
 
-                    <!-- A replica has no local camera pipeline. Give it an explicit lifecycle
-                         control instead of leaving the camera panel blank and requiring the
-                         user to discover the separate Safety Monitor equipment connection. -->
-                    <Border Visibility="{Binding IsClusterReplica, Converter={StaticResource BoolToVisibility}}"
+                    <!-- A following replica shows remote status only. During automatic
+                         takeover the synchronized local source replaces this overlay so the
+                         operator can see exactly what the temporary primary is analysing. -->
+                    <Border Visibility="{Binding IsReplicaFollowingPrimary, Converter={StaticResource BoolToVisibility}}"
                             Background="{DynamicResource SecondaryBackgroundBrush}"
                             Padding="30">
                         <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" MaxWidth="520">

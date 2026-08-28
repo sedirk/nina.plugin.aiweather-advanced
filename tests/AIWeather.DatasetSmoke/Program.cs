@@ -60,6 +60,7 @@ internal static class Program
             await VerifyGeminiRequestPacingAsync();
             await VerifyGeminiServiceSuppressesQuotaRetriesAsync();
             await VerifyGeminiTemporaryFailoverReturnsToPrimaryAsync();
+            await VerifyGeminiQuotaPausedAlternateReturnsToPrimaryAsync();
             await VerifyGemini503DiagnosticsSurviveRetryBudgetAsync();
             await VerifyQuotaFallbackMetadataAsync();
             await VerifyTrainableDedupPrivacyAndManualReviewAsync(
@@ -589,24 +590,26 @@ internal static class Program
             _ => Task.FromResult<Bitmap?>(null));
         try
         {
-            using var missing = await capture.CaptureImageAsync();
-            Assert(missing == null,
-                "A failed active preview unexpectedly produced an analysis frame");
-            Assert(decoder.InitializeCalls == 0 && decoder.CaptureCalls == 0,
-                "A failed active preview silently opened a second RTSP session");
+            decoder.NextFrameColor = Color.CadetBlue;
+            using var recovered = await capture.CaptureImageAsync();
+            Assert(recovered != null
+                   && recovered.GetPixel(0, 0).ToArgb() == Color.CadetBlue.ToArgb(),
+                "A failed shared preview did not fall back to the independent RTSP decoder");
+            Assert(decoder.InitializeCalls == 1 && decoder.CaptureCalls == 1,
+                "The independent RTSP health fallback was not attempted exactly once");
         }
         finally
         {
             failedPreview.Dispose();
         }
 
-        decoder.NextFrameColor = Color.CadetBlue;
+        decoder.NextFrameColor = Color.DarkCyan;
         using var backgroundFrame = await capture.CaptureImageAsync();
         Assert(backgroundFrame != null
-               && backgroundFrame.GetPixel(0, 0).ToArgb() == Color.CadetBlue.ToArgb(),
+               && backgroundFrame.GetPixel(0, 0).ToArgb() == Color.DarkCyan.ToArgb(),
             "Unified capture did not retain the independent decoder when no preview existed");
-        Assert(decoder.InitializeCalls == 1 && decoder.CaptureCalls == 1,
-            "The background RTSP decoder was not used exactly once without a preview");
+        Assert(decoder.InitializeCalls == 1 && decoder.CaptureCalls == 2,
+            "The healthy background RTSP decoder was not reused after preview fallback");
     }
 
     private static void VerifyRtspPreviewFit()
@@ -1152,6 +1155,58 @@ internal static class Program
             "Gemini service did not probe and return to the configured primary after two alternate successes");
         Assert(handler.RequestedModels.SequenceEqual(new[] { primary, alternate, alternate, primary }),
             "Gemini failover/return request order was not deterministic");
+    }
+
+    private static async Task VerifyGeminiQuotaPausedAlternateReturnsToPrimaryAsync()
+    {
+        const string primary = "gemini-3.5-flash-lite";
+        const string alternate = "gemini-3.5-flash";
+        var handler = new ScriptedGeminiResponseHandler(
+            new Dictionary<string, Queue<HttpStatusCode>>(StringComparer.OrdinalIgnoreCase)
+            {
+                [primary] = new Queue<HttpStatusCode>(new[]
+                {
+                    HttpStatusCode.ServiceUnavailable,
+                    HttpStatusCode.OK
+                }),
+                [alternate] = new Queue<HttpStatusCode>(new[]
+                {
+                    (HttpStatusCode)429
+                })
+            });
+        using var http = new HttpClient(handler);
+        var circuits = new Dictionary<string, GeminiQuotaCircuitBreaker>(StringComparer.OrdinalIgnoreCase);
+        GeminiQuotaCircuitBreaker CircuitFor(string model)
+        {
+            if (!circuits.TryGetValue(model, out var circuit))
+            {
+                circuit = new GeminiQuotaCircuitBreaker();
+                circuits[model] = circuit;
+            }
+            return circuit;
+        }
+
+        var service = new GeminiAnalysisService(
+            "test-key-never-sent-to-network",
+            primary,
+            http,
+            CircuitFor,
+            () => new DateTimeOffset(2026, 8, 29, 0, 0, 0, TimeSpan.Zero),
+            failoverCandidates: new[] { alternate });
+        Assert(await service.InitializeAsync(), "Quota-aware failover Gemini service failed to initialize");
+
+        using var frame = CreateFrame();
+        var alternateQuota = await service.TryAnalyzeOnlineOnlyAsync(frame);
+        var primaryRecovery = await service.TryAnalyzeOnlineOnlyAsync(frame);
+
+        Assert(!alternateQuota.Success
+               && alternateQuota.Provenance.Model == alternate
+               && alternateQuota.Provenance.FailureCategory == AnalysisFailureCategory.QuotaExhausted,
+            "The alternate model's independent quota failure was not retained");
+        Assert(primaryRecovery.Success && primaryRecovery.Provenance.Model == primary,
+            "A quota-paused temporary alternate pinned the service instead of probing the configured primary");
+        Assert(handler.RequestedModels.SequenceEqual(new[] { primary, alternate, primary }),
+            "Quota-aware failover did not return to the configured primary on the next check");
     }
 
     private static async Task VerifyGemini503DiagnosticsSurviveRetryBudgetAsync()
@@ -1768,7 +1823,9 @@ internal static class Program
             var status = queue.Dequeue();
             var body = status == HttpStatusCode.OK
                 ? SuccessfulEnvelope
-                : "{\"error\":{\"code\":503,\"status\":\"UNAVAILABLE\"}}";
+                : (int)status == 429
+                    ? "{\"error\":{\"code\":429,\"status\":\"RESOURCE_EXHAUSTED\",\"message\":\"Per-model daily quota exhausted\",\"details\":[{\"@type\":\"type.googleapis.com/google.rpc.QuotaFailure\",\"violations\":[{\"quotaMetric\":\"generativelanguage.googleapis.com/generate_content_free_tier_requests\",\"quotaId\":\"GenerateRequestsPerDayPerProjectPerModel-FreeTier\"}]}]}}"
+                    : "{\"error\":{\"code\":503,\"status\":\"UNAVAILABLE\"}}";
             return Task.FromResult(new HttpResponseMessage(status)
             {
                 Content = new StringContent(body)

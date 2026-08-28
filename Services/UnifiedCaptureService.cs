@@ -164,15 +164,16 @@ namespace AIWeather.Services
 
                 if (sharedPreview.Status == SharedRtspPreviewCaptureStatus.Failed)
                 {
-                    // An active preview owns this endpoint. Opening OpenCV here would turn a
-                    // transient snapshot problem into the exact double-session conflict this
-                    // bridge is intended to prevent. A missing current frame remains a failed
-                    // capture and therefore ages toward the monitor's fail-safe UNSAFE state.
+                    // Prefer the already decoded LibVLC frame, but do not confuse that
+                    // optimization with a camera connection limit. Both observatories have
+                    // now verified that the camera can serve N.I.N.A. and OBS concurrently.
+                    // If the snapshot bridge itself is unhealthy, make one real decoder
+                    // attempt below; failure still propagates as a missing frame and ages the
+                    // safety state toward UNSAFE.
                     Logger.Warning(
                         $"UnifiedCaptureService - Active LibVLC preview could not provide " +
-                        $"a current analysis frame ({sharedPreview.Reason}); independent RTSP " +
-                        "fallback suppressed to preserve single-session ownership");
-                    return null;
+                        $"a current analysis frame ({sharedPreview.Reason}); trying the " +
+                        "independent RTSP decoder as a health fallback");
                 }
 
                 if (!_rtspService.IsInitializedFor(authenticatedUrl))
@@ -264,7 +265,7 @@ namespace AIWeather.Services
                     Logger.Info(
                         $"UnifiedCaptureService - Reserved RTSP source " +
                         $"{SharedRtspPreviewFrameProvider.Fingerprint(sourceIdentity)} for " +
-                        "the shared LibVLC preview; independent decoder released");
+                        "the preferred shared LibVLC preview; idle independent decoder released");
                 }
                 finally
                 {

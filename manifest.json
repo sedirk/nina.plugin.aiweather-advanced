@@ -1,7 +1,7 @@
 {
   "Identifier": "AI Weather",
   "Name": "AI Weather - All Sky Camera Monitor",
-  "Version": "1.27.0.0",
+  "Version": "1.28.0.0",
   "MinimumApplicationVersion": "3.0.0.0",
   "Author": "Michele Bergo / sedirk",
   "Homepage": "https://github.com/sedirk/nina.plugin.aiweather-advanced",
@@ -24,6 +24,16 @@
     }
   },
   "ChangeLog": [
+    {
+      "Version": "1.28.0.0",
+      "Date": "2026-08-29",
+      "Changes": [
+        "Made Gemini failover quota-aware per model: a temporary alternate whose own quota circuit opens can no longer pin the service, and the configured primary is probed again on the next eligible check",
+        "Bounded temporary failover by completed checks rather than successes alone, so timeouts and provider failures also count toward returning to the user's configured primary after at most two alternate checks",
+        "Added a live local preview during replica automatic takeover using the encrypted synchronized capture configuration in memory, and automatically removes it after stable return to the primary",
+        "Changed RTSP coordination from a hard single-session assumption to preferred LibVLC frame reuse with one independent decoder health fallback when the shared snapshot bridge fails"
+      ]
+    },
     {
       "Version": "1.27.0.0",
       "Date": "2026-08-29",

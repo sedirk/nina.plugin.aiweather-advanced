@@ -6,9 +6,9 @@ using System.Threading.Tasks;
 namespace AIWeather.Services
 {
     /// <summary>
-    /// Narrow ownership boundary used by the unified capture coordinator. Keeping the
-    /// decoder behind this interface makes it possible to prove that an active shared
-    /// preview is not accompanied by a second RTSP connection.
+    /// Narrow lifecycle boundary used by the unified capture coordinator. Keeping the
+    /// decoder behind this interface lets the active preview remain the preferred source
+    /// while retaining a testable, bounded independent health fallback.
     /// </summary>
     internal interface IRtspFrameCaptureService : IDisposable
     {

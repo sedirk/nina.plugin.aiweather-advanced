@@ -78,7 +78,13 @@ namespace AIWeather
                             }
                             
                             Logger.Debug($"Checking for running RTSP stream. Mode: {viewModel.CurrentCaptureMode}");
-                            
+
+                            if (viewModel.IsClusterReplica)
+                            {
+                                await viewModel.SynchronizeReplicaPreviewAsync();
+                                return;
+                            }
+
                             // Check if any source is marked as running (RTSP mode only)
                             var runningSource = viewModel.Sources?.FirstOrDefault(src => src.IsRunning);
                             if (runningSource != null && viewModel.CurrentCaptureMode == CaptureMode.RTSPStream)
@@ -359,8 +365,8 @@ namespace AIWeather
                 var startToken = _startCts.Token;
 
                 // Reserve this endpoint before LibVLC opens it. The safety monitor uses
-                // the reservation to release a background OpenCV decoder and suppresses
-                // any concurrent second connection while playback is starting.
+                // the reservation to release an idle background OpenCV decoder and prefer
+                // frames from the decoder that is already proven healthy.
                 _sharedPreviewFrameRegistration =
                     await SharedRtspPreviewFrameProvider.Instance.RegisterAsync(
                         playbackUrl,

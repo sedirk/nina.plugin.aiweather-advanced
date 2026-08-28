@@ -1042,6 +1042,41 @@ namespace AIWeather.Equipment
         public bool IsReplicaFailoverActive =>
             _connectedNodeMode == ClusterNodeMode.Replica && _replicaFailoverState.LocalActive;
 
+        /// <summary>
+        /// Supplies the synchronized local-capture source to the replica UI only while this
+        /// process is actively taking over. Credentials stay in memory and are never copied
+        /// into the replica's editable settings or written to a log.
+        /// </summary>
+        internal bool TryGetReplicaFailoverPreviewSource(
+            out CaptureMode captureMode,
+            out string source,
+            out string username,
+            out string password)
+        {
+            captureMode = CaptureMode.RTSPStream;
+            source = string.Empty;
+            username = string.Empty;
+            password = string.Empty;
+
+            var configuration = ActiveFailoverConfiguration;
+            if (!IsReplicaFailoverActive || configuration == null)
+            {
+                return false;
+            }
+
+            captureMode = (CaptureMode)configuration.CaptureMode;
+            source = captureMode switch
+            {
+                CaptureMode.RTSPStream => configuration.RtspUrl,
+                CaptureMode.INDICamera => configuration.HttpImageUrl,
+                CaptureMode.FolderWatch => configuration.FolderPath,
+                _ => string.Empty
+            };
+            username = configuration.RtspUsername;
+            password = configuration.RtspPassword;
+            return !string.IsNullOrWhiteSpace(source);
+        }
+
         public string ReplicaConnectionSummary
         {
             get
