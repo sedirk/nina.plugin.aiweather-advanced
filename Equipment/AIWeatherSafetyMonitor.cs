@@ -221,6 +221,14 @@ namespace AIWeather.Equipment
                 ? _replicaFailoverConfiguration
                 : null;
 
+        // A replica's preview lifecycle is deliberately independent from its safety-vote
+        // lifecycle.  The synchronized source may be displayed while the preferred primary
+        // is healthy, but it only becomes an active analysis configuration after failover.
+        private AIWeatherFailoverConfiguration? ReplicaPreviewConfiguration =>
+            _connectedNodeMode == ClusterNodeMode.Replica
+                ? _replicaFailoverConfiguration
+                : null;
+
         private async Task<IWeatherAnalysisService> EnsureAnalysisServiceInitializedAsync(
             CancellationToken cancellationToken)
         {
@@ -435,12 +443,13 @@ namespace AIWeather.Equipment
             {
                 TryLoadCachedFailoverConfiguration(sharedToken);
             }
-            else if (Properties.Settings.Default.ClusterAutomaticFailoverEnabled)
+            else
             {
-                // Manual pre-provisioning remains possible when encrypted synchronization
-                // is deliberately disabled. A previously synchronized cache is intentionally
-                // ignored in this mode, so the visible local settings are the values that will
-                // actually be used during takeover.
+                // With encrypted synchronization deliberately disabled, the replica's visible
+                // local source remains its preview source even when automatic failover is off.
+                // Automatic failover still has its own independent enable switch, so resolving
+                // this source grants preview only and never grants a local safety vote.
+                // A previously synchronized cache is intentionally ignored in this mode.
                 var localConfiguration = AIWeatherFailoverConfiguration.FromSettings();
                 if (localConfiguration.TryValidate(out _))
                 {
@@ -861,6 +870,7 @@ namespace AIWeather.Equipment
                 Logger.Info(
                     $"AI Weather encrypted failover configuration synchronized; revision {ShortRevision(envelope.Revision)}");
                 RaisePropertyChanged(nameof(ReplicaConnectionSummary));
+                RaisePropertyChanged(nameof(HasReplicaPreviewConfiguration));
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -890,12 +900,14 @@ namespace AIWeather.Equipment
                 _replicaFailoverConfigurationRevision = envelope.Revision;
                 Logger.Info(
                     $"AI Weather encrypted failover configuration cache loaded; revision {ShortRevision(envelope.Revision)}");
+                RaisePropertyChanged(nameof(HasReplicaPreviewConfiguration));
             }
             catch (Exception ex)
             {
                 _replicaFailoverConfiguration = null;
                 _replicaFailoverConfigurationRevision = string.Empty;
                 Logger.Warning($"AI Weather encrypted failover configuration cache is unusable: {ex.Message}");
+                RaisePropertyChanged(nameof(HasReplicaPreviewConfiguration));
             }
         }
 
@@ -1043,11 +1055,29 @@ namespace AIWeather.Equipment
             _connectedNodeMode == ClusterNodeMode.Replica && _replicaFailoverState.LocalActive;
 
         /// <summary>
-        /// Supplies the synchronized local-capture source to the replica UI only while this
-        /// process is actively taking over. Credentials stay in memory and are never copied
-        /// into the replica's editable settings or written to a log.
+        /// Supplies the synchronized local-capture source to the replica UI in both follower
+        /// and takeover states.  Merely resolving this source never authorizes local analysis
+        /// or a local safety vote. Credentials stay in memory and are never copied into the
+        /// replica's editable settings or written to a log.
         /// </summary>
-        internal bool TryGetReplicaFailoverPreviewSource(
+        internal bool TryGetReplicaPreviewSource(
+            out CaptureMode captureMode,
+            out string source,
+            out string username,
+            out string password)
+        {
+            return TryResolveReplicaPreviewSource(
+                _connectedNodeMode,
+                ReplicaPreviewConfiguration,
+                out captureMode,
+                out source,
+                out username,
+                out password);
+        }
+
+        internal static bool TryResolveReplicaPreviewSource(
+            ClusterNodeMode nodeMode,
+            AIWeatherFailoverConfiguration? configuration,
             out CaptureMode captureMode,
             out string source,
             out string username,
@@ -1058,8 +1088,7 @@ namespace AIWeather.Equipment
             username = string.Empty;
             password = string.Empty;
 
-            var configuration = ActiveFailoverConfiguration;
-            if (!IsReplicaFailoverActive || configuration == null)
+            if (nodeMode != ClusterNodeMode.Replica || configuration == null)
             {
                 return false;
             }
@@ -1076,6 +1105,9 @@ namespace AIWeather.Equipment
             password = configuration.RtspPassword;
             return !string.IsNullOrWhiteSpace(source);
         }
+
+        public bool HasReplicaPreviewConfiguration =>
+            TryGetReplicaPreviewSource(out _, out _, out _, out _);
 
         public string ReplicaConnectionSummary
         {

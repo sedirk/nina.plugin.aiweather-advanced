@@ -51,7 +51,7 @@ namespace AIWeather.Localization
                 ["Preview.DeleteSource"] = new("Delete selected source", "删除所选相机源"),
                 ["Preview.ReplicaTitle"] = new("Primary weather connection", "主节点天气连接"),
                 ["Preview.ReplicaNotStarted"] = new("Synchronization has not started. Connect here, or connect AI Weather from N.I.N.A.'s Safety Monitor equipment page.", "同步尚未启动。请在此连接，或在 N.I.N.A. 的安全监视器设备页连接 AI Weather。"),
-                ["Preview.ReplicaNoVideo"] = new("Replica mode receives weather and safety status only. It does not open the camera or transmit the primary video.", "从节点模式只接收天气与安全状态，不会打开相机，也不会传输主节点视频。"),
+                ["Preview.ReplicaNoVideo"] = new("This replica keeps one local camera stream for preview. While the primary is healthy it does not run local weather analysis; if takeover activates, AI reuses the same preview frames instead of opening a second stream.", "本从节点始终保持一条本地相机预览流。主节点健康时不执行本地天气分析；触发接管后，AI 会复用同一预览帧，不会再打开第二路视频流。"),
                 ["Preview.ReplicaFailover"] = new("The primary is unavailable and this replica has temporarily taken over camera capture and analysis. It continues probing the primary and will return only after the recovery period.", "主节点不可达，本从节点已临时接管相机采集与天气分析。它仍会持续探测主节点，并只在恢复稳定期结束后回切。"),
                 ["Preview.ConnectPrimary"] = new("Connect primary", "连接主节点"),
                 ["Preview.DisconnectPrimary"] = new("Disconnect primary", "断开主节点"),

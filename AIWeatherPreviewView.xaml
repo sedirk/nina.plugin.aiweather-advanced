@@ -127,23 +127,12 @@
                            Source="{Binding CurrentImage}"
                            Stretch="Uniform"
                            HorizontalAlignment="Center"
-                           VerticalAlignment="Center">
-                        <Image.Style>
-                            <Style TargetType="Image">
-                                <Setter Property="Visibility" Value="Visible"/>
-                                <Style.Triggers>
-                                    <DataTrigger Binding="{Binding IsReplicaFollowingPrimary}" Value="True">
-                                        <Setter Property="Visibility" Value="Collapsed"/>
-                                    </DataTrigger>
-                                </Style.Triggers>
-                            </Style>
-                        </Image.Style>
-                    </Image>
+                           VerticalAlignment="Center"/>
 
-                    <!-- A following replica shows remote status only. During automatic
-                         takeover the synchronized local source replaces this overlay so the
-                         operator can see exactly what the temporary primary is analysing. -->
-                    <Border Visibility="{Binding IsReplicaFollowingPrimary, Converter={StaticResource BoolToVisibility}}"
+                    <!-- A replica displays this state only until a synchronized local source
+                         becomes available. Follower and takeover states both keep the same
+                         one-session local preview once configuration has arrived. -->
+                    <Border Visibility="{Binding IsReplicaPreviewUnavailable, Converter={StaticResource BoolToVisibility}}"
                             Background="{DynamicResource SecondaryBackgroundBrush}"
                             Padding="30">
                         <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" MaxWidth="520">

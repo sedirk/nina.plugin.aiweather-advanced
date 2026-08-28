@@ -41,6 +41,7 @@ namespace AIWeather
         private AIWeatherPreviewView? _view;
         private DispatcherTimer _refreshTimer;
         private readonly SemaphoreSlim _refreshGate = new SemaphoreSlim(1, 1);
+        private readonly SemaphoreSlim _replicaPreviewGate = new SemaphoreSlim(1, 1);
         private CommunityToolkit.Mvvm.Input.RelayCommand? _saveImageCommand;
         private CommunityToolkit.Mvvm.Input.AsyncRelayCommand? _keepDatasetSampleCommand;
         private DatasetLabelReviewWindow? _datasetReviewWindow;
@@ -59,13 +60,16 @@ namespace AIWeather
         public bool IsClusterReplica => ClusterNodeModeParser.Parse(Properties.Settings.Default.ClusterNodeMode) == ClusterNodeMode.Replica;
         public bool IsReplicaFailoverActive => IsClusterReplica && _safetyMonitor.IsReplicaFailoverActive;
         public bool IsReplicaFollowingPrimary => IsClusterReplica && !IsReplicaFailoverActive;
+        private bool HasReplicaPreviewSource =>
+            !IsClusterReplica || _safetyMonitor.HasReplicaPreviewConfiguration;
+        public bool IsReplicaPreviewUnavailable => IsClusterReplica && !HasReplicaPreviewSource;
 
         private Models.CaptureMode PreviewCaptureMode
         {
             get
             {
-                return IsReplicaFailoverActive
-                       && _safetyMonitor.TryGetReplicaFailoverPreviewSource(
+                return IsClusterReplica
+                       && _safetyMonitor.TryGetReplicaPreviewSource(
                            out var captureMode,
                            out _,
                            out _,
@@ -75,10 +79,10 @@ namespace AIWeather
             }
         }
 
-        public bool IsRtspMode => !IsReplicaFollowingPrimary && PreviewCaptureMode == Models.CaptureMode.RTSPStream;
-        public bool IsNonRtspMode => !IsReplicaFollowingPrimary && PreviewCaptureMode != Models.CaptureMode.RTSPStream;
-        public bool IsFolderMode => !IsReplicaFollowingPrimary && PreviewCaptureMode == Models.CaptureMode.FolderWatch;
-        public bool IsUrlMode => !IsReplicaFollowingPrimary && PreviewCaptureMode != Models.CaptureMode.FolderWatch;
+        public bool IsRtspMode => HasReplicaPreviewSource && PreviewCaptureMode == Models.CaptureMode.RTSPStream;
+        public bool IsNonRtspMode => HasReplicaPreviewSource && PreviewCaptureMode != Models.CaptureMode.RTSPStream;
+        public bool IsFolderMode => HasReplicaPreviewSource && PreviewCaptureMode == Models.CaptureMode.FolderWatch;
+        public bool IsUrlMode => HasReplicaPreviewSource && PreviewCaptureMode != Models.CaptureMode.FolderWatch;
 
         private static Dispatcher? UiDispatcher => Application.Current?.Dispatcher;
 
@@ -92,6 +96,17 @@ namespace AIWeather
             }
 
             dispatcher.BeginInvoke(action);
+        }
+
+        private static Task RunOnUiThreadAsync(Func<Task> action)
+        {
+            var dispatcher = UiDispatcher;
+            if (dispatcher == null || dispatcher.CheckAccess())
+            {
+                return action();
+            }
+
+            return dispatcher.InvokeAsync(action).Task.Unwrap();
         }
 
         [ImportingConstructor]
@@ -284,7 +299,8 @@ namespace AIWeather
                          || e.PropertyName == nameof(AIWeatherSafetyMonitor.CurrentSunAltitude)
                          || e.PropertyName == nameof(AIWeatherSafetyMonitor.SunAltitudeLimitDegrees)
                          || e.PropertyName == nameof(AIWeatherSafetyMonitor.ReplicaConnectionSummary)
-                         || e.PropertyName == nameof(AIWeatherSafetyMonitor.IsReplicaFailoverActive))
+                         || e.PropertyName == nameof(AIWeatherSafetyMonitor.IsReplicaFailoverActive)
+                         || e.PropertyName == nameof(AIWeatherSafetyMonitor.HasReplicaPreviewConfiguration))
                 {
                     // Weather check completed — update UI with latest results
                     if (_safetyMonitor.Connected)
@@ -296,10 +312,11 @@ namespace AIWeather
                             RunOnUiThread(() => RestoreMonitoringState());
                         }
 
-                        RunOnUiThread(async () =>
+                        await RunOnUiThreadAsync(async () =>
                         {
                             RaiseCapturePresentationChanged();
-                            if (e.PropertyName == nameof(AIWeatherSafetyMonitor.IsReplicaFailoverActive))
+                            if (e.PropertyName == nameof(AIWeatherSafetyMonitor.IsReplicaFailoverActive)
+                                || e.PropertyName == nameof(AIWeatherSafetyMonitor.HasReplicaPreviewConfiguration))
                             {
                                 await SynchronizeReplicaPreviewAsync();
                             }
@@ -436,6 +453,7 @@ namespace AIWeather
             RaisePropertyChanged(nameof(IsClusterReplica));
             RaisePropertyChanged(nameof(IsReplicaFailoverActive));
             RaisePropertyChanged(nameof(IsReplicaFollowingPrimary));
+            RaisePropertyChanged(nameof(IsReplicaPreviewUnavailable));
             RaisePropertyChanged(nameof(IsRtspMode));
             RaisePropertyChanged(nameof(IsNonRtspMode));
             RaisePropertyChanged(nameof(IsFolderMode));
@@ -446,10 +464,10 @@ namespace AIWeather
         }
 
         /// <summary>
-        /// A replica normally renders only the primary's status. During automatic local
-        /// takeover it owns a real local capture pipeline, so the same synchronized RTSP
-        /// source must also be visible in the panel. Returning to the primary tears this
-        /// preview down again; it never grants the follower a second safety vote.
+        /// Every replica terminal keeps one local preview stream in both follower and
+        /// takeover states.  Follower mode still consumes only the primary safety verdict;
+        /// takeover merely starts reusing this terminal's existing preview frames for local
+        /// analysis.  Primary recovery stops the local verdict, not the preview stream.
         /// </summary>
         public async Task SynchronizeReplicaPreviewAsync()
         {
@@ -458,30 +476,44 @@ namespace AIWeather
                 return;
             }
 
-            RaiseCapturePresentationChanged();
-            if (!IsReplicaFailoverActive
-                || !_safetyMonitor.TryGetReplicaFailoverPreviewSource(
-                    out var captureMode,
-                    out var source,
-                    out var username,
-                    out var password))
+            await _replicaPreviewGate.WaitAsync();
+            try
             {
+                RaiseCapturePresentationChanged();
+                if (!_safetyMonitor.TryGetReplicaPreviewSource(
+                        out var captureMode,
+                        out var source,
+                        out var username,
+                        out var password))
+                {
+                    await _view.StopStreamAsync();
+                    CurrentImage = null;
+                    return;
+                }
+
+                if (captureMode == Models.CaptureMode.RTSPStream)
+                {
+                    Logger.Info(
+                        $"Replica terminal is starting its synchronized RTSP preview: " +
+                        $"{LogRedactor.RedactRtspUrl(source)}");
+                    await _view.StartStreamAsync(source, username, password);
+                    return;
+                }
+
                 await _view.StopStreamAsync();
-                CurrentImage = null;
-                return;
+                if (IsReplicaFailoverActive)
+                {
+                    await UpdateFromLatestResultAsync(loadImage: true);
+                }
+                else
+                {
+                    CurrentImage = null;
+                }
             }
-
-            if (captureMode == Models.CaptureMode.RTSPStream)
+            finally
             {
-                Logger.Info(
-                    $"Replica local takeover is starting its synchronized RTSP preview: " +
-                    $"{LogRedactor.RedactRtspUrl(source)}");
-                await _view.StartStreamAsync(source, username, password);
-                return;
+                _replicaPreviewGate.Release();
             }
-
-            await _view.StopStreamAsync();
-            await UpdateFromLatestResultAsync(loadImage: true);
         }
 
         /// <summary>

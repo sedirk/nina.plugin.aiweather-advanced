@@ -1,7 +1,7 @@
 {
   "Identifier": "AI Weather",
   "Name": "AI Weather - All Sky Camera Monitor",
-  "Version": "1.28.0.0",
+  "Version": "1.29.0.0",
   "MinimumApplicationVersion": "3.0.0.0",
   "Author": "Michele Bergo / sedirk",
   "Homepage": "https://github.com/sedirk/nina.plugin.aiweather-advanced",
@@ -24,6 +24,17 @@
     }
   },
   "ChangeLog": [
+    {
+      "Version": "1.29.0.0",
+      "Date": "2026-08-29",
+      "Changes": [
+        "Restored one local RTSP preview per primary and replica terminal, including while a replica is following the preferred primary",
+        "Kept the v1.28 single-session rule inside each terminal: local AI takeover reuses the existing LibVLC preview frames instead of opening a second OpenCV/FFmpeg stream",
+        "Separated replica preview availability from local safety authority, so primary recovery stops local analysis without stopping or restarting the replica preview",
+        "Serialized replica preview lifecycle changes and replaced fire-and-forget UI dispatch with awaitable dispatch to prevent configuration, view-load and takeover races",
+        "Documented the per-terminal stream boundary and added regression coverage for follower preview resolution and decoder reuse across takeover"
+      ]
+    },
     {
       "Version": "1.28.0.0",
       "Date": "2026-08-29",

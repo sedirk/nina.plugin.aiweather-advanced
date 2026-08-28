@@ -1,6 +1,7 @@
 using AIWeather.Models;
 using AIWeather.Services;
 using AIWeather.Localization;
+using AIWeather.Equipment;
 using System;
 using System.Collections.Generic;
 using System.Drawing;
@@ -50,6 +51,7 @@ internal static class Program
             VerifySolarAltitudeGuard();
             VerifyDatasetDefaults();
             VerifyLatestRtspFrameBuffer();
+            VerifyReplicaPreviewSourcePolicy();
             await VerifySharedRtspPreviewFrameProviderAsync();
             await VerifyUnifiedCapturePrefersSharedPreviewAsync();
             VerifyRtspPreviewFit();
@@ -510,6 +512,40 @@ internal static class Program
         return bitmap;
     }
 
+    private static void VerifyReplicaPreviewSourcePolicy()
+    {
+        var synchronized = new AIWeatherFailoverConfiguration
+        {
+            CaptureMode = (int)CaptureMode.RTSPStream,
+            RtspUrl = "rtsp://camera.local:554/live/main",
+            RtspUsername = "replica-user",
+            RtspPassword = "replica-secret"
+        };
+
+        var resolved = AIWeatherSafetyMonitor.TryResolveReplicaPreviewSource(
+            ClusterNodeMode.Replica,
+            synchronized,
+            out var mode,
+            out var source,
+            out var username,
+            out var password);
+        Assert(resolved
+               && mode == CaptureMode.RTSPStream
+               && source == synchronized.RtspUrl
+               && username == synchronized.RtspUsername
+               && password == synchronized.RtspPassword,
+            "A following replica could not resolve its synchronized local preview source");
+
+        Assert(!AIWeatherSafetyMonitor.TryResolveReplicaPreviewSource(
+                ClusterNodeMode.Primary,
+                synchronized,
+                out _,
+                out _,
+                out _,
+                out _),
+            "A non-replica node incorrectly resolved the replica-only preview source");
+    }
+
     private static async Task VerifySharedRtspPreviewFrameProviderAsync()
     {
         var provider = new SharedRtspPreviewFrameProvider();
@@ -574,8 +610,14 @@ internal static class Program
             _ => Task.FromResult<Bitmap?>(CreateSolidBitmap(Color.Orange)));
         try
         {
-            using var frame = await capture.CaptureImageAsync();
-            Assert(frame != null && frame.GetPixel(0, 0).ToArgb() == Color.Orange.ToArgb(),
+            // The same registered preview is consumed before and after a notional replica
+            // takeover. No lifecycle transition may open a second decoder in this terminal.
+            using var followerFrame = await capture.CaptureImageAsync();
+            using var takeoverFrame = await capture.CaptureImageAsync();
+            Assert(followerFrame != null
+                   && followerFrame.GetPixel(0, 0).ToArgb() == Color.Orange.ToArgb()
+                   && takeoverFrame != null
+                   && takeoverFrame.GetPixel(0, 0).ToArgb() == Color.Orange.ToArgb(),
                 "Unified capture did not return the active shared preview frame");
             Assert(decoder.InitializeCalls == 0 && decoder.CaptureCalls == 0,
                 "Unified capture opened the independent RTSP decoder beside an active preview");
