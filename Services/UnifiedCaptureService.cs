@@ -13,9 +13,11 @@ namespace AIWeather.Services
     /// Unified image capture service that handles RTSP, INDI camera, and folder watch modes
     /// </summary>
     [System.Runtime.Versioning.SupportedOSPlatform("windows")]
-    public class UnifiedCaptureService
+    public class UnifiedCaptureService : IDisposable
     {
-        private readonly RtspCaptureService _rtspService;
+        private readonly IRtspFrameCaptureService _rtspService;
+        private readonly SharedRtspPreviewFrameProvider _sharedPreviewFrames;
+        private readonly SemaphoreSlim _rtspCaptureGate = new SemaphoreSlim(1, 1);
         private readonly INDICameraCapture _indiService; // Not nullable - always initialized
         private readonly FolderWatchCapture _folderService;
         private CaptureMode _currentMode = CaptureMode.RTSPStream;
@@ -27,10 +29,25 @@ namespace AIWeather.Services
         private const int RtspFailuresBeforeReconnect = 2;
 
         public UnifiedCaptureService(ICameraMediator? cameraMediator = null)
+            : this(
+                cameraMediator,
+                SharedRtspPreviewFrameProvider.Instance,
+                new RtspCaptureService())
         {
-            _rtspService = new RtspCaptureService();
+        }
+
+        internal UnifiedCaptureService(
+            ICameraMediator? cameraMediator,
+            SharedRtspPreviewFrameProvider sharedPreviewFrames,
+            IRtspFrameCaptureService rtspService)
+        {
+            _sharedPreviewFrames = sharedPreviewFrames
+                ?? throw new ArgumentNullException(nameof(sharedPreviewFrames));
+            _rtspService = rtspService
+                ?? throw new ArgumentNullException(nameof(rtspService));
             _indiService = new INDICameraCapture(cameraMediator); // Always create - HTTP download doesn't need mediator
             _folderService = new FolderWatchCapture();
+            _sharedPreviewFrames.SourceReserved += OnSharedPreviewSourceReservedAsync;
         }
 
         public CaptureMode CurrentMode
@@ -111,9 +128,52 @@ namespace AIWeather.Services
 
         private async Task<Bitmap?> CaptureFromRTSPAsync(CancellationToken ct)
         {
+            await _rtspCaptureGate.WaitAsync(ct);
+            try
+            {
+                return await CaptureFromRTSPCoreAsync(ct);
+            }
+            finally
+            {
+                _rtspCaptureGate.Release();
+            }
+        }
+
+        private async Task<Bitmap?> CaptureFromRTSPCoreAsync(CancellationToken ct)
+        {
             try
             {
                 var authenticatedUrl = BuildAuthenticatedUrl(_rtspUrl, _rtspUsername, _rtspPassword);
+
+                var sharedPreview = await _sharedPreviewFrames.TryCaptureAsync(
+                    authenticatedUrl,
+                    TimeSpan.FromSeconds(5),
+                    ct);
+                if (sharedPreview.Status == SharedRtspPreviewCaptureStatus.Captured)
+                {
+                    // A preview reservation normally closes this decoder before LibVLC
+                    // starts. Reset again here as a final ownership guarantee in case a
+                    // previous initialization completed concurrently with the reservation.
+                    _rtspService.Reset();
+                    _consecutiveRtspCaptureFailures = 0;
+                    Logger.Info(
+                        "UnifiedCaptureService - Captured AI frame from the existing " +
+                        "LibVLC preview; no second RTSP decoder was opened");
+                    return sharedPreview.Frame;
+                }
+
+                if (sharedPreview.Status == SharedRtspPreviewCaptureStatus.Failed)
+                {
+                    // An active preview owns this endpoint. Opening OpenCV here would turn a
+                    // transient snapshot problem into the exact double-session conflict this
+                    // bridge is intended to prevent. A missing current frame remains a failed
+                    // capture and therefore ages toward the monitor's fail-safe UNSAFE state.
+                    Logger.Warning(
+                        $"UnifiedCaptureService - Active LibVLC preview could not provide " +
+                        $"a current analysis frame ({sharedPreview.Reason}); independent RTSP " +
+                        "fallback suppressed to preserve single-session ownership");
+                    return null;
+                }
 
                 if (!_rtspService.IsInitializedFor(authenticatedUrl))
                 {
@@ -174,6 +234,43 @@ namespace AIWeather.Services
                 Logger.Error($"Error capturing from RTSP stream: {ex.Message}");
                 return null;
             }
+        }
+
+        private Task OnSharedPreviewSourceReservedAsync(string sourceIdentity)
+        {
+            // Reset can wait for a native OpenCV Read() to return. Keep that wait away from
+            // WPF's dispatcher; RegisterAsync awaits this task before opening LibVLC.
+            return Task.Run(() =>
+            {
+                _rtspCaptureGate.Wait();
+                try
+                {
+                    var configuredUrl = BuildAuthenticatedUrl(
+                        _rtspUrl,
+                        _rtspUsername,
+                        _rtspPassword);
+                    var configuredIdentity =
+                        SharedRtspPreviewFrameProvider.CreateSourceIdentity(configuredUrl);
+                    if (!string.Equals(
+                            configuredIdentity,
+                            sourceIdentity,
+                            StringComparison.Ordinal))
+                    {
+                        return;
+                    }
+
+                    _rtspService.Reset();
+                    _consecutiveRtspCaptureFailures = 0;
+                    Logger.Info(
+                        $"UnifiedCaptureService - Reserved RTSP source " +
+                        $"{SharedRtspPreviewFrameProvider.Fingerprint(sourceIdentity)} for " +
+                        "the shared LibVLC preview; independent decoder released");
+                }
+                finally
+                {
+                    _rtspCaptureGate.Release();
+                }
+            });
         }
 
         private static string BuildAuthenticatedUrl(string rtspUrl, string username, string password)
@@ -288,7 +385,8 @@ namespace AIWeather.Services
         /// </summary>
         public void Dispose()
         {
-            _rtspService?.Dispose();
+            _sharedPreviewFrames.SourceReserved -= OnSharedPreviewSourceReservedAsync;
+            _rtspService.Dispose();
         }
     }
 }

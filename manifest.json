@@ -1,7 +1,7 @@
 {
   "Identifier": "AI Weather",
   "Name": "AI Weather - All Sky Camera Monitor",
-  "Version": "1.26.0.0",
+  "Version": "1.27.0.0",
   "MinimumApplicationVersion": "3.0.0.0",
   "Author": "Michele Bergo / sedirk",
   "Homepage": "https://github.com/sedirk/nina.plugin.aiweather-advanced",
@@ -24,6 +24,16 @@
     }
   },
   "ChangeLog": [
+    {
+      "Version": "1.27.0.0",
+      "Date": "2026-08-29",
+      "Changes": [
+        "Unified active RTSP preview and AI analysis onto the existing LibVLC session, eliminating the second OpenCV/FFmpeg camera connection that could fail even while the live preview remained healthy",
+        "Added credential-free source arbitration and fail-safe single-session ownership: starting a preview releases the matching background decoder, and a temporary preview-snapshot failure cannot silently reopen a competing RTSP connection",
+        "Preserved headless monitoring by retaining the independent OpenCV capture path whenever no matching preview is active, with bounded snapshot waits, lifecycle-safe registration and automated regression coverage",
+        "Documented the audited local cloud-model roadmap, including grouped night/event splits, Gemini and DINOv3 teacher roles, lightweight multi-task ONNX deployment, shadow-mode validation and fail-safe acceptance gates"
+      ]
+    },
     {
       "Version": "1.26.0.0",
       "Date": "2026-08-29",

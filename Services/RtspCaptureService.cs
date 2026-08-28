@@ -17,7 +17,7 @@ namespace AIWeather.Services
     /// Service for capturing frames from RTSP stream
     /// </summary>
     [System.Runtime.Versioning.SupportedOSPlatform("windows")]
-    public class RtspCaptureService : IDisposable
+    public class RtspCaptureService : IRtspFrameCaptureService
     {
         private VideoCapture? _capture;
         private readonly object _captureLock = new object();

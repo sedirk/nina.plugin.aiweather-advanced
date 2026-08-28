@@ -21,6 +21,18 @@ internal static class Program
     [System.Runtime.Versioning.SupportedOSPlatform("windows")]
     private static async Task<int> Main(string[] args)
     {
+        // NINA's SDK packages deliberately model the application as the runtime
+        // host and some omit their own assemblies from a standalone executable's
+        // deps.json. The smoke harness still copies those DLLs; resolve them from
+        // its output directory when the NINA host is absent.
+        System.Runtime.Loader.AssemblyLoadContext.Default.Resolving += (_, name) =>
+        {
+            var candidate = Path.Combine(AppContext.BaseDirectory, name.Name + ".dll");
+            return File.Exists(candidate)
+                ? System.Runtime.Loader.AssemblyLoadContext.Default.LoadFromAssemblyPath(candidate)
+                : null;
+        };
+
         if (args.Contains("--rtsp-live", StringComparer.OrdinalIgnoreCase))
         {
             return await RunLiveRtspFreshnessCheckAsync();
@@ -38,6 +50,8 @@ internal static class Program
             VerifySolarAltitudeGuard();
             VerifyDatasetDefaults();
             VerifyLatestRtspFrameBuffer();
+            await VerifySharedRtspPreviewFrameProviderAsync();
+            await VerifyUnifiedCapturePrefersSharedPreviewAsync();
             VerifyRtspPreviewFit();
             VerifyRtspPreviewHealthWatchdog();
             VerifyGeminiQuotaPolicy();
@@ -493,6 +507,106 @@ internal static class Program
         using var graphics = Graphics.FromImage(bitmap);
         graphics.Clear(color);
         return bitmap;
+    }
+
+    private static async Task VerifySharedRtspPreviewFrameProviderAsync()
+    {
+        var provider = new SharedRtspPreviewFrameProvider();
+        var reservedIdentity = string.Empty;
+        provider.SourceReserved += identity =>
+        {
+            reservedIdentity = identity;
+            return Task.CompletedTask;
+        };
+
+        var registration = await provider.RegisterAsync(
+            "rtsp://camera-user:camera-secret@CAMERA.local:554/live/main",
+            _ => Task.FromResult<Bitmap?>(CreateSolidBitmap(Color.Purple)));
+        try
+        {
+            Assert(!reservedIdentity.Contains("camera-user", StringComparison.Ordinal)
+                   && !reservedIdentity.Contains("camera-secret", StringComparison.Ordinal),
+                "The shared RTSP source identity retained credentials");
+
+            var captured = await provider.TryCaptureAsync(
+                "rtsp://different-user:different-secret@camera.local:554/live/main",
+                TimeSpan.FromSeconds(1));
+            Assert(captured.Status == SharedRtspPreviewCaptureStatus.Captured,
+                "A matching shared preview was not used when only credentials differed");
+            using (captured.Frame)
+            {
+                Assert(captured.Frame!.GetPixel(0, 0).ToArgb() == Color.Purple.ToArgb(),
+                    "The shared preview returned the wrong frame");
+            }
+
+            var wrongSource = await provider.TryCaptureAsync(
+                "rtsp://camera.local:554/live/sub",
+                TimeSpan.FromSeconds(1));
+            Assert(wrongSource.Status == SharedRtspPreviewCaptureStatus.Unavailable,
+                "A shared preview was incorrectly reused for a different RTSP path");
+        }
+        finally
+        {
+            registration.Dispose();
+        }
+
+        var afterRelease = await provider.TryCaptureAsync(
+            "rtsp://camera.local:554/live/main",
+            TimeSpan.FromSeconds(1));
+        Assert(afterRelease.Status == SharedRtspPreviewCaptureStatus.Unavailable,
+            "A released preview registration remained visible");
+    }
+
+    private static async Task VerifyUnifiedCapturePrefersSharedPreviewAsync()
+    {
+        var provider = new SharedRtspPreviewFrameProvider();
+        using var decoder = new FakeRtspFrameCaptureService();
+        using var capture = new UnifiedCaptureService(null, provider, decoder);
+        capture.CurrentMode = CaptureMode.RTSPStream;
+        capture.ConfigureRTSP(
+            "rtsp://camera.local:554/live/main",
+            "configured-user",
+            "configured-secret");
+
+        var successfulPreview = await provider.RegisterAsync(
+            "rtsp://embedded-user:embedded-secret@camera.local:554/live/main",
+            _ => Task.FromResult<Bitmap?>(CreateSolidBitmap(Color.Orange)));
+        try
+        {
+            using var frame = await capture.CaptureImageAsync();
+            Assert(frame != null && frame.GetPixel(0, 0).ToArgb() == Color.Orange.ToArgb(),
+                "Unified capture did not return the active shared preview frame");
+            Assert(decoder.InitializeCalls == 0 && decoder.CaptureCalls == 0,
+                "Unified capture opened the independent RTSP decoder beside an active preview");
+        }
+        finally
+        {
+            successfulPreview.Dispose();
+        }
+
+        var failedPreview = await provider.RegisterAsync(
+            "rtsp://camera.local:554/live/main",
+            _ => Task.FromResult<Bitmap?>(null));
+        try
+        {
+            using var missing = await capture.CaptureImageAsync();
+            Assert(missing == null,
+                "A failed active preview unexpectedly produced an analysis frame");
+            Assert(decoder.InitializeCalls == 0 && decoder.CaptureCalls == 0,
+                "A failed active preview silently opened a second RTSP session");
+        }
+        finally
+        {
+            failedPreview.Dispose();
+        }
+
+        decoder.NextFrameColor = Color.CadetBlue;
+        using var backgroundFrame = await capture.CaptureImageAsync();
+        Assert(backgroundFrame != null
+               && backgroundFrame.GetPixel(0, 0).ToArgb() == Color.CadetBlue.ToArgb(),
+            "Unified capture did not retain the independent decoder when no preview existed");
+        Assert(decoder.InitializeCalls == 1 && decoder.CaptureCalls == 1,
+            "The background RTSP decoder was not used exactly once without a preview");
     }
 
     private static void VerifyRtspPreviewFit()
@@ -1491,6 +1605,55 @@ internal static class Program
             }
             return condition(status);
         }, description);
+    }
+
+    private sealed class FakeRtspFrameCaptureService : IRtspFrameCaptureService
+    {
+        private string _initializedUrl = string.Empty;
+
+        public int InitializeCalls { get; private set; }
+
+        public int CaptureCalls { get; private set; }
+
+        public int ResetCalls { get; private set; }
+
+        public Color NextFrameColor { get; set; } = Color.Black;
+
+        public bool IsInitializedFor(string rtspUrl) =>
+            string.Equals(_initializedUrl, rtspUrl, StringComparison.Ordinal);
+
+        public Task<bool> InitializeAsync(
+            string rtspUrl,
+            CancellationToken cancellationToken = default)
+        {
+            InitializeCalls++;
+            _initializedUrl = rtspUrl;
+            return Task.FromResult(true);
+        }
+
+        public Task<Bitmap?> CaptureFrameAsync(
+            CancellationToken cancellationToken = default)
+        {
+            CaptureCalls++;
+            return Task.FromResult<Bitmap?>(CreateSolidBitmap(NextFrameColor));
+        }
+
+        public Task<bool> SaveFrameAsync(
+            Bitmap frame,
+            string filePath,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(true);
+
+        public void Reset()
+        {
+            ResetCalls++;
+            _initializedUrl = string.Empty;
+        }
+
+        public void Dispose()
+        {
+            _initializedUrl = string.Empty;
+        }
     }
 
     private sealed class QuotaTeacher : IOnlineWeatherAnalysisService

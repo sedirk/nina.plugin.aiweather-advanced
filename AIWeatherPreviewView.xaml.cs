@@ -1,5 +1,6 @@
 using System;
 using System.ComponentModel.Composition;
+using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -14,6 +15,8 @@ using AIWeather.Services;
 using System.Windows.Controls.Primitives;
 using MediaColor = System.Windows.Media.Color;
 using SolidColorBrush = System.Windows.Media.SolidColorBrush;
+using Bitmap = System.Drawing.Bitmap;
+using DrawingImage = System.Drawing.Image;
 
 namespace AIWeather
 {
@@ -36,6 +39,7 @@ namespace AIWeather
         private readonly RtspPreviewHealthMonitor _previewHealthMonitor = new RtspPreviewHealthMonitor();
         private int _previewRecoveryScheduled;
         private int _previewUnhealthy;
+        private IDisposable? _sharedPreviewFrameRegistration;
 
         public AIWeatherPreviewView()
         {
@@ -354,6 +358,21 @@ namespace AIWeather
                 _startCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
                 var startToken = _startCts.Token;
 
+                // Reserve this endpoint before LibVLC opens it. The safety monitor uses
+                // the reservation to release a background OpenCV decoder and suppresses
+                // any concurrent second connection while playback is starting.
+                _sharedPreviewFrameRegistration =
+                    await SharedRtspPreviewFrameProvider.Instance.RegisterAsync(
+                        playbackUrl,
+                        CaptureCurrentPreviewFrameAsync,
+                        startToken);
+                var sharedSourceIdentity =
+                    SharedRtspPreviewFrameProvider.CreateSourceIdentity(playbackUrl);
+                Logger.Info(
+                    $"Reserved RTSP source " +
+                    $"{SharedRtspPreviewFrameProvider.Fingerprint(sharedSourceIdentity)} " +
+                    "for shared preview and AI capture");
+
                 Logger.Info("Creating MediaPlayer and VideoHost...");
                 Logger.Debug("Creating LibVLC MediaPlayer...");
 
@@ -512,6 +531,12 @@ namespace AIWeather
                         $"  3. Ensure camera is reachable (ping the IP address)\n" +
                         $"  4. Try the URL in VLC media player to verify it works\n" +
                         $"  5. Some cameras require specific paths like /h264, /live, or /stream");
+
+                    // The shared source reservation is deliberately installed before
+                    // LibVLC opens the stream. If playback never becomes healthy, release
+                    // that reservation as well as the failed player so headless monitoring
+                    // can use its independent OpenCV path on the next analysis cycle.
+                    await StopStreamCoreAsync();
                 }
                 else
                 {
@@ -525,6 +550,7 @@ namespace AIWeather
             catch (OperationCanceledException)
             {
                 Logger.Info("StartStream canceled");
+                await StopStreamCoreAsync();
             }
             catch (UriFormatException ex)
             {
@@ -542,6 +568,117 @@ namespace AIWeather
             {
                 _isStartingStream = false;
                 _streamGate.Release();
+            }
+        }
+
+        private async Task<Bitmap?> CaptureCurrentPreviewFrameAsync(
+            CancellationToken cancellationToken)
+        {
+            if (Dispatcher.HasShutdownStarted || Dispatcher.HasShutdownFinished)
+            {
+                return null;
+            }
+
+            var tempPath = Path.Combine(
+                Path.GetTempPath(),
+                $"aiweather_shared_preview_{Guid.NewGuid():N}.png");
+            try
+            {
+                // TakeSnapshot queues a write from LibVLC. A few bounded attempts cover the
+                // short interval between Play() succeeding and the first video output frame.
+                for (var attempt = 0; attempt < 4; attempt++)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    TryDeleteSnapshot(tempPath);
+
+                    var requested = await Dispatcher.InvokeAsync(
+                        () =>
+                        {
+                            var player = _videoHost?.Player;
+                            if (player?.IsPlaying != true
+                                || string.IsNullOrWhiteSpace(_activePlaybackUrl)
+                                || Volatile.Read(ref _previewUnhealthy) != 0)
+                            {
+                                return false;
+                            }
+
+                            return player.TakeSnapshot(0, tempPath, 0, 0);
+                        },
+                        DispatcherPriority.Background,
+                        cancellationToken);
+
+                    if (!requested)
+                    {
+                        await Task.Delay(150, cancellationToken);
+                        continue;
+                    }
+
+                    for (var wait = 0; wait < 30; wait++)
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+                        var frame = await Task.Run(
+                            () => TryLoadSnapshot(tempPath),
+                            cancellationToken);
+                        if (frame != null)
+                        {
+                            Logger.Debug(
+                                $"Captured current AI frame from existing LibVLC preview: " +
+                                $"{frame.Width}x{frame.Height}");
+                            return frame;
+                        }
+
+                        await Task.Delay(50, cancellationToken);
+                    }
+                }
+
+                Logger.Warning(
+                    "Existing LibVLC preview did not produce a current snapshot within the bounded wait");
+                return null;
+            }
+            finally
+            {
+                TryDeleteSnapshot(tempPath);
+            }
+        }
+
+        private static Bitmap? TryLoadSnapshot(string path)
+        {
+            try
+            {
+                var info = new FileInfo(path);
+                if (!info.Exists || info.Length <= 0)
+                {
+                    return null;
+                }
+
+                using var stream = new FileStream(
+                    path,
+                    FileMode.Open,
+                    FileAccess.Read,
+                    FileShare.ReadWrite | FileShare.Delete);
+                using var image = DrawingImage.FromStream(stream);
+                return new Bitmap(image);
+            }
+            catch (IOException)
+            {
+                return null;
+            }
+            catch (ArgumentException)
+            {
+                // The file exists but LibVLC has not finished writing a complete image.
+                return null;
+            }
+        }
+
+        private static void TryDeleteSnapshot(string path)
+        {
+            try
+            {
+                File.Delete(path);
+            }
+            catch
+            {
+                // Best effort only. Every request uses a unique path.
             }
         }
 
@@ -584,6 +721,8 @@ namespace AIWeather
         {
             try
             {
+                _sharedPreviewFrameRegistration?.Dispose();
+                _sharedPreviewFrameRegistration = null;
                 _activePlaybackUrl = null;
                 _previewHealthMonitor.ResetBurst();
                 _startCts?.Cancel();
