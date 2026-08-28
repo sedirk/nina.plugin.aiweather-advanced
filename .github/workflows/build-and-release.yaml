@@ -17,7 +17,10 @@ name: Build and Release
 on:
   push:
     tags:
-      - '[0-9]+.[0-9]+.[0-9]+.[0-9]+'
+      # GitHub tag filters use glob syntax, not regular expressions.  The
+      # previous `[0-9]+` form looked like regex but matched a literal `+`, so
+      # ordinary four-part version tags never started this workflow.
+      - '[0-9]*.[0-9]*.[0-9]*.[0-9]*'
 
 permissions:
   contents: write
