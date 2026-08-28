@@ -53,7 +53,28 @@ jobs:
       # This plugin has NuGet dependencies (Emgu.CV, LibVLCSharp, etc.) that must ship.
       - name: Prepare package
         run: |
-          Copy-Item "bin/Release/*" "packages/${{ env.PLUGIN_NAME }}/" -Force -Recurse
+          $packageRoot = "packages/${{ env.PLUGIN_NAME }}"
+          Copy-Item "bin/Release/*" $packageRoot -Force -Recurse
+
+          # N.I.N.A. 3.x and this plugin are x64-only. NuGet copies native
+          # assets for every supported OS/architecture (including iOS,
+          # Android, Linux, macOS, Windows x86/ARM64 and 32-bit LibVLC) into
+          # the class-library output. Shipping all of them adds roughly
+          # 475 MiB without providing anything N.I.N.A. can load.
+          foreach ($nativeRoot in @("runtimes", "libvlc")) {
+            $nativePath = Join-Path $packageRoot $nativeRoot
+            if (-not (Test-Path (Join-Path $nativePath "win-x64"))) {
+              throw "Required $nativeRoot/win-x64 runtime is missing"
+            }
+
+            Get-ChildItem $nativePath -Directory |
+              Where-Object Name -ne "win-x64" |
+              Remove-Item -Recurse -Force
+          }
+
+          $packageBytes = (Get-ChildItem $packageRoot -File -Recurse |
+            Measure-Object Length -Sum).Sum
+          Write-Host ("Prepared x64-only package: {0:N2} MiB" -f ($packageBytes / 1MB))
 
       - name: Create Plugin archives and manifests
         run: |
