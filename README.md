@@ -16,6 +16,8 @@ The same plugin package now supports three explicit roles. **Standalone** keeps 
 
 This is deliberately not automatic leader election. A role is frozen when the NINA Safety Monitor connects, so changing it requires disconnecting and reconnecting the device. Replica startup, authentication/protocol errors, stale transport, stale primary analysis and an unsafe primary verdict all report **Unsafe**. Configure a unique shared token of at least 16 characters and restrict the primary TCP port (default `18910`) to trusted observatory hosts with Windows Firewall. See the [frozen cluster design](docs/LAN_PRIMARY_REPLICA_CLUSTER_DESIGN.zh-CN.md) for the protocol and safety model.
 
+Optional primary-preferred failover lets a Replica take over locally only after a sustained network outage and only when it has a valid encrypted camera/AI configuration. It returns to the Primary after a stable recovery window; authentication and protocol errors never authorize takeover. In Replica mode the synchronized takeover configuration is shown as a read-only panel with its revision and synchronization time. Camera/API secrets are never displayed—only redacted sources and configured/not-configured status. Turning synchronization off switches to explicitly editable local standby values and ignores any older synchronized cache.
+
 ### AI-Powered Sky Analysis
 
 The plugin sends captured sky images to a vision-capable AI model that evaluates:

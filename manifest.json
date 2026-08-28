@@ -1,7 +1,7 @@
 {
   "Identifier": "AI Weather",
   "Name": "AI Weather - All Sky Camera Monitor",
-  "Version": "1.24.0.0",
+  "Version": "1.24.1.0",
   "MinimumApplicationVersion": "3.0.0.0",
   "Author": "Michele Bergo / sedirk",
   "Homepage": "https://github.com/sedirk/nina.plugin.aiweather-advanced",
@@ -24,6 +24,15 @@
     }
   },
   "ChangeLog": [
+    {
+      "Version": "1.24.1.0",
+      "Date": "2026-08-28",
+      "Changes": [
+        "Replica options now show the encrypted primary-synchronized takeover configuration in a clearly labeled read-only panel, including camera source, night guard, thresholds, AI provider/model and credential-presence status",
+        "Camera and API secrets never enter the read-only visual model: authenticated RTSP URLs and sensitive query values are redacted, while passwords and provider keys are represented only as configured/not-configured",
+        "Disabling encrypted configuration synchronization now makes the visible local standby values authoritative and ignores any older synchronized cache instead of silently continuing to use it"
+      ]
+    },
     {
       "Version": "1.24.0.0",
       "Date": "2026-08-28",

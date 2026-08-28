@@ -1,8 +1,13 @@
 using NINA.Core.Utility;
 using NINA.Profile;
 using NINA.Profile.Interfaces;
+using AIWeather.Localization;
+using AIWeather.Services;
+using System;
 using System.ComponentModel;
+using System.Globalization;
 using System.Runtime.CompilerServices;
+using System.Windows;
 using AIWeather.Models;
 
 namespace AIWeather
@@ -13,6 +18,8 @@ namespace AIWeather
     public class AIWeatherOptions : BaseINPC
     {
         private readonly IProfileService _profileService;
+        private AIWeatherReplicaConfigurationSummary? _replicaConfigurationSummary;
+        private string _replicaConfigurationLoadError = string.Empty;
 
         // Centralized external link (single point of truth; see .github/FUNDING.yml and README)
         public const string BuyMeACoffeeUrl = "https://buymeacoffee.com/michelebergo";
@@ -46,6 +53,8 @@ namespace AIWeather
             
             // Initialize default settings
             InitializeOptions();
+            Properties.Settings.Default.PropertyChanged += Settings_PropertyChanged;
+            RefreshReplicaConfigurationView();
         }
 
         private void InitializeOptions()
@@ -78,6 +87,8 @@ namespace AIWeather
                 RaisePropertyChanged(nameof(IsClusterReplica));
                 RaisePropertyChanged(nameof(IsClusterLocalNode));
                 RaisePropertyChanged(nameof(IsClusterNetworked));
+                RaiseReplicaConfigurationProperties();
+                RefreshReplicaConfigurationView();
             }
         }
 
@@ -93,6 +104,188 @@ namespace AIWeather
         public bool IsClusterReplica => ClusterNodeMode == Models.ClusterNodeMode.Replica;
         public bool IsClusterLocalNode => !IsClusterReplica;
         public bool IsClusterNetworked => ClusterNodeMode != Models.ClusterNodeMode.Standalone;
+
+        /// <summary>
+        /// When encrypted synchronization is enabled on a replica, the primary's cached
+        /// failover configuration is the only operational configuration that may be used
+        /// for local takeover. The normal local fields therefore must not look editable.
+        /// Manual pre-provisioning remains available when synchronization is disabled.
+        /// </summary>
+        public bool ShowReplicaSynchronizedConfiguration =>
+            IsClusterReplica && ClusterFailoverConfigSyncEnabled;
+
+        public bool ShowManualReplicaConfigurationNotice =>
+            IsClusterReplica && !ClusterFailoverConfigSyncEnabled;
+
+        public bool AreLocalOperationalSettingsVisible =>
+            !ShowReplicaSynchronizedConfiguration;
+
+        public string ReplicaConfigurationStatus
+        {
+            get
+            {
+                if (!IsClusterReplica)
+                {
+                    return string.Empty;
+                }
+                if (!ClusterFailoverConfigSyncEnabled)
+                {
+                    return UiLocalization.Text("Options.ReplicaSyncDisabled");
+                }
+                if (_replicaConfigurationSummary != null)
+                {
+                    return UiLocalization.Text("Options.ReplicaSyncReady");
+                }
+                if (!string.IsNullOrWhiteSpace(_replicaConfigurationLoadError))
+                {
+                    return UiLocalization.Text(
+                        "Options.ReplicaSyncInvalid",
+                        _replicaConfigurationLoadError);
+                }
+                if (!AIWeatherClusterProtocol.IsTokenUsable(ClusterSharedToken))
+                {
+                    return UiLocalization.Text("Options.ReplicaSyncMissingToken");
+                }
+                return UiLocalization.Text("Options.ReplicaSyncWaiting");
+            }
+        }
+
+        public string ReplicaConfigurationRevision =>
+            _replicaConfigurationSummary == null
+                ? "—"
+                : ShortRevision(_replicaConfigurationSummary.Revision);
+
+        public string ReplicaConfigurationUpdated =>
+            _replicaConfigurationSummary == null
+                ? "—"
+                : _replicaConfigurationSummary.GeneratedUtc
+                    .ToLocalTime()
+                    .ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.CurrentCulture);
+
+        public string ReplicaConfigurationCaptureMode =>
+            _replicaConfigurationSummary?.CaptureMode switch
+            {
+                Models.CaptureMode.RTSPStream => UiLocalization.Text("Options.RtspMode"),
+                Models.CaptureMode.INDICamera => UiLocalization.Text("Options.HttpMode"),
+                Models.CaptureMode.FolderWatch => UiLocalization.Text("Options.FolderMode"),
+                _ => "—"
+            };
+
+        public string ReplicaConfigurationCaptureSource =>
+            DisplayOrDash(_replicaConfigurationSummary?.CaptureSource);
+
+        public string ReplicaConfigurationCaptureCredentials =>
+            _replicaConfigurationSummary == null
+                ? "—"
+                : UiLocalization.Text(
+                    _replicaConfigurationSummary.CaptureCredentialsConfigured
+                        ? "Options.ReplicaCredentialConfigured"
+                        : "Options.ReplicaCredentialNotConfigured");
+
+        public string ReplicaConfigurationCheckInterval =>
+            _replicaConfigurationSummary == null
+                ? "—"
+                : UiLocalization.Text(
+                    "Options.ReplicaMinutesValue",
+                    _replicaConfigurationSummary.CheckIntervalMinutes);
+
+        public string ReplicaConfigurationSolarGuard =>
+            _replicaConfigurationSummary == null
+                ? "—"
+                : UiLocalization.Text(
+                    _replicaConfigurationSummary.UseSunAltitudeLimit
+                        ? "Options.ReplicaEnabled"
+                        : "Options.ReplicaDisabled");
+
+        public string ReplicaConfigurationSunAltitude =>
+            _replicaConfigurationSummary == null
+                ? "—"
+                : _replicaConfigurationSummary.UseSunAltitudeLimit
+                    ? $"{_replicaConfigurationSummary.SunAltitudeLimitDegrees.ToString("0.#", CultureInfo.CurrentCulture)}°"
+                    : UiLocalization.Text("Options.ReplicaNotApplicable");
+
+        public string ReplicaConfigurationCloudThresholds =>
+            _replicaConfigurationSummary == null
+                ? "—"
+                : UiLocalization.Text(
+                    "Options.ReplicaThresholdsValue",
+                    _replicaConfigurationSummary.CloudCoverageThreshold.ToString("0.#", CultureInfo.CurrentCulture),
+                    _replicaConfigurationSummary.CloudCoverageSafeThreshold.ToString("0.#", CultureInfo.CurrentCulture));
+
+        public string ReplicaConfigurationMaxDataAge =>
+            _replicaConfigurationSummary == null
+                ? "—"
+                : _replicaConfigurationSummary.MaxDataAgeMinutes <= 0
+                    ? UiLocalization.Text("Options.ReplicaAutomatic")
+                    : UiLocalization.Text(
+                        "Options.ReplicaMinutesValue",
+                        _replicaConfigurationSummary.MaxDataAgeMinutes);
+
+        public string ReplicaConfigurationProvider =>
+            DisplayOrDash(_replicaConfigurationSummary?.AnalysisProvider);
+
+        public string ReplicaConfigurationModel =>
+            _replicaConfigurationSummary == null
+                ? "—"
+                : string.Equals(
+                    _replicaConfigurationSummary.AnalysisProvider,
+                    "Local",
+                    StringComparison.OrdinalIgnoreCase)
+                    ? UiLocalization.Text("Options.ReplicaNotApplicable")
+                    : DisplayOrDash(_replicaConfigurationSummary.SelectedModel);
+
+        public string ReplicaConfigurationApiCredential
+        {
+            get
+            {
+                if (_replicaConfigurationSummary == null)
+                {
+                    return "—";
+                }
+                if (!_replicaConfigurationSummary.ApiCredentialRequired)
+                {
+                    return UiLocalization.Text("Options.ReplicaCredentialNotRequired");
+                }
+                return UiLocalization.Text(
+                    _replicaConfigurationSummary.ApiCredentialConfigured
+                        ? "Options.ReplicaCredentialConfigured"
+                        : "Options.ReplicaCredentialNotConfigured");
+            }
+        }
+
+        public string ReplicaConfigurationProviderDetails
+        {
+            get
+            {
+                if (_replicaConfigurationSummary == null)
+                {
+                    return "—";
+                }
+                if (string.Equals(
+                        _replicaConfigurationSummary.AnalysisProvider,
+                        "Gemini",
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    return UiLocalization.Text(
+                        "Options.ReplicaGeminiPacingValue",
+                        _replicaConfigurationSummary.GeminiRequestEveryChecks);
+                }
+                if (string.Equals(
+                        _replicaConfigurationSummary.AnalysisProvider,
+                        "Ollama",
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    return UiLocalization.Text(
+                        "Options.ReplicaOllamaDetailsValue",
+                        DisplayOrDash(_replicaConfigurationSummary.ProviderEndpoint),
+                        UiLocalization.Text(
+                            _replicaConfigurationSummary.OllamaDisableThinking
+                                ? "Options.ReplicaEnabled"
+                                : "Options.ReplicaDisabled"));
+                }
+                return UiLocalization.Text("Options.ReplicaNotApplicable");
+            }
+        }
 
         public int ClusterListenPort
         {
@@ -124,6 +317,7 @@ namespace AIWeather
                 Properties.Settings.Default.ClusterSharedToken = value ?? string.Empty;
                 CoreUtil.SaveSettings(Properties.Settings.Default);
                 RaisePropertyChanged();
+                RefreshReplicaConfigurationView();
             }
         }
 
@@ -190,8 +384,120 @@ namespace AIWeather
                 Properties.Settings.Default.ClusterFailoverConfigSyncEnabled = value;
                 CoreUtil.SaveSettings(Properties.Settings.Default);
                 RaisePropertyChanged();
+                RaiseReplicaConfigurationProperties();
+                RefreshReplicaConfigurationView();
             }
         }
+
+        private void Settings_PropertyChanged(object? sender, PropertyChangedEventArgs e)
+        {
+            if (!string.IsNullOrEmpty(e.PropertyName)
+                && e.PropertyName != nameof(Properties.Settings.Default.ClusterNodeMode)
+                && e.PropertyName != nameof(Properties.Settings.Default.ClusterSharedToken)
+                && e.PropertyName != nameof(Properties.Settings.Default.ClusterFailoverConfigSyncEnabled)
+                && e.PropertyName != nameof(Properties.Settings.Default.ClusterFailoverConfigCache))
+            {
+                return;
+            }
+
+            var dispatcher = Application.Current?.Dispatcher;
+            if (dispatcher != null && !dispatcher.CheckAccess())
+            {
+                dispatcher.BeginInvoke(new Action(() => Settings_PropertyChanged(sender, e)));
+                return;
+            }
+
+            if (string.IsNullOrEmpty(e.PropertyName)
+                || e.PropertyName == nameof(Properties.Settings.Default.ClusterNodeMode))
+            {
+                RaisePropertyChanged(nameof(ClusterNodeMode));
+                RaisePropertyChanged(nameof(ClusterNodeModeIndex));
+                RaisePropertyChanged(nameof(IsClusterPrimary));
+                RaisePropertyChanged(nameof(IsClusterReplica));
+                RaisePropertyChanged(nameof(IsClusterLocalNode));
+                RaisePropertyChanged(nameof(IsClusterNetworked));
+            }
+            if (string.IsNullOrEmpty(e.PropertyName)
+                || e.PropertyName == nameof(Properties.Settings.Default.ClusterSharedToken))
+            {
+                RaisePropertyChanged(nameof(ClusterSharedToken));
+            }
+            if (string.IsNullOrEmpty(e.PropertyName)
+                || e.PropertyName == nameof(Properties.Settings.Default.ClusterFailoverConfigSyncEnabled))
+            {
+                RaisePropertyChanged(nameof(ClusterFailoverConfigSyncEnabled));
+            }
+
+            RaiseReplicaConfigurationProperties();
+            RefreshReplicaConfigurationView();
+        }
+
+        private void RefreshReplicaConfigurationView()
+        {
+            _replicaConfigurationSummary = null;
+            _replicaConfigurationLoadError = string.Empty;
+
+            if (!IsClusterReplica || !ClusterFailoverConfigSyncEnabled)
+            {
+                RaiseReplicaConfigurationProperties();
+                return;
+            }
+
+            var token = Properties.Settings.Default.ClusterSharedToken ?? string.Empty;
+            var cache = Properties.Settings.Default.ClusterFailoverConfigCache ?? string.Empty;
+            if (!AIWeatherClusterProtocol.IsTokenUsable(token) || string.IsNullOrWhiteSpace(cache))
+            {
+                RaiseReplicaConfigurationProperties();
+                return;
+            }
+
+            try
+            {
+                _replicaConfigurationSummary =
+                    AIWeatherReplicaConfigurationSummary.FromEncryptedCache(cache, token);
+            }
+            catch (Exception ex)
+            {
+                // Do not copy exception details into the UI: cryptographic and JSON errors
+                // can contain fragments of malformed input. A concise state is enough and
+                // the runtime separately logs the diagnostic when it loads the cache.
+                _replicaConfigurationLoadError = ex is System.Security.Cryptography.CryptographicException
+                    ? UiLocalization.Text("Options.ReplicaSyncDecryptFailed")
+                    : UiLocalization.Text("Options.ReplicaSyncCacheInvalid");
+            }
+
+            RaiseReplicaConfigurationProperties();
+        }
+
+        private void RaiseReplicaConfigurationProperties()
+        {
+            RaisePropertyChanged(nameof(ShowReplicaSynchronizedConfiguration));
+            RaisePropertyChanged(nameof(ShowManualReplicaConfigurationNotice));
+            RaisePropertyChanged(nameof(AreLocalOperationalSettingsVisible));
+            RaisePropertyChanged(nameof(ReplicaConfigurationStatus));
+            RaisePropertyChanged(nameof(ReplicaConfigurationRevision));
+            RaisePropertyChanged(nameof(ReplicaConfigurationUpdated));
+            RaisePropertyChanged(nameof(ReplicaConfigurationCaptureMode));
+            RaisePropertyChanged(nameof(ReplicaConfigurationCaptureSource));
+            RaisePropertyChanged(nameof(ReplicaConfigurationCaptureCredentials));
+            RaisePropertyChanged(nameof(ReplicaConfigurationCheckInterval));
+            RaisePropertyChanged(nameof(ReplicaConfigurationSolarGuard));
+            RaisePropertyChanged(nameof(ReplicaConfigurationSunAltitude));
+            RaisePropertyChanged(nameof(ReplicaConfigurationCloudThresholds));
+            RaisePropertyChanged(nameof(ReplicaConfigurationMaxDataAge));
+            RaisePropertyChanged(nameof(ReplicaConfigurationProvider));
+            RaisePropertyChanged(nameof(ReplicaConfigurationModel));
+            RaisePropertyChanged(nameof(ReplicaConfigurationApiCredential));
+            RaisePropertyChanged(nameof(ReplicaConfigurationProviderDetails));
+        }
+
+        private static string DisplayOrDash(string? value) =>
+            string.IsNullOrWhiteSpace(value) ? "—" : value.Trim();
+
+        private static string ShortRevision(string revision) =>
+            string.IsNullOrWhiteSpace(revision)
+                ? "—"
+                : revision[..Math.Min(12, revision.Length)];
 
         public CaptureMode CaptureMode
         {

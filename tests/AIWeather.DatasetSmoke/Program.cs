@@ -153,7 +153,7 @@ internal static class Program
         var failoverConfiguration = new AIWeatherFailoverConfiguration
         {
             CaptureMode = (int)CaptureMode.RTSPStream,
-            RtspUrl = "rtsp://camera.test/stream",
+            RtspUrl = "rtsp://embedded-user:embedded-secret@camera.test/stream?api_key=query-secret",
             RtspUsername = "camera-user",
             RtspPassword = "camera-secret",
             CheckIntervalMinutes = 3,
@@ -177,6 +177,47 @@ internal static class Program
                && decrypted.RtspPassword == failoverConfiguration.RtspPassword
                && decrypted.GeminiKey == failoverConfiguration.GeminiKey,
             "encrypted failover configuration round trip");
+        var replicaSummary = AIWeatherReplicaConfigurationSummary.FromConfiguration(
+            decrypted,
+            encrypted.Revision,
+            encrypted.GeneratedUtc);
+        var serializedSummary = JsonSerializer.Serialize(replicaSummary);
+        Assert(replicaSummary.AnalysisProvider == "Gemini"
+               && replicaSummary.SelectedModel == "gemini-test"
+               && replicaSummary.ApiCredentialRequired
+               && replicaSummary.ApiCredentialConfigured,
+            "replica synchronized configuration summary omitted provider state");
+        Assert(replicaSummary.CaptureCredentialsConfigured
+               && replicaSummary.CaptureSource.Contains("[REDACTED]", StringComparison.Ordinal)
+               && !serializedSummary.Contains("camera-secret", StringComparison.Ordinal)
+               && !serializedSummary.Contains("embedded-secret", StringComparison.Ordinal)
+               && !serializedSummary.Contains("query-secret", StringComparison.Ordinal)
+               && !serializedSummary.Contains("gemini-secret", StringComparison.Ordinal),
+            "replica synchronized configuration summary exposed a secret");
+        var cachedSummary = AIWeatherReplicaConfigurationSummary.FromEncryptedCache(
+            JsonSerializer.Serialize(encrypted),
+            token);
+        Assert(cachedSummary.Revision == encrypted.Revision
+               && cachedSummary.GeneratedUtc == encrypted.GeneratedUtc,
+            "replica synchronized configuration cache summary lost envelope identity");
+        var httpOllamaSummary = AIWeatherReplicaConfigurationSummary.FromConfiguration(
+            new AIWeatherFailoverConfiguration
+            {
+                CaptureMode = (int)CaptureMode.INDICamera,
+                HttpImageUrl = "https://camera-user:camera-pass@camera.test/latest.jpg?token=image-secret",
+                AnalysisProvider = "Ollama",
+                SelectedModel = "vision-test",
+                OllamaBaseUrl = "http://model-user:model-pass@model.test/v1?api_key=model-secret"
+            },
+            "SAFE-DISPLAY",
+            authenticationTime.UtcDateTime);
+        var serializedHttpOllamaSummary = JsonSerializer.Serialize(httpOllamaSummary);
+        Assert(httpOllamaSummary.CaptureCredentialsConfigured
+               && !serializedHttpOllamaSummary.Contains("camera-pass", StringComparison.Ordinal)
+               && !serializedHttpOllamaSummary.Contains("image-secret", StringComparison.Ordinal)
+               && !serializedHttpOllamaSummary.Contains("model-pass", StringComparison.Ordinal)
+               && !serializedHttpOllamaSummary.Contains("model-secret", StringComparison.Ordinal),
+            "replica synchronized HTTP/Ollama summary exposed URL credentials");
         AssertThrows<CryptographicException>(
             () => AIWeatherClusterProtocol.DecryptFailoverConfiguration(
                 encrypted,

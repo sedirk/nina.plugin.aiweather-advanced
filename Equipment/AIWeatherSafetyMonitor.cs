@@ -431,13 +431,16 @@ namespace AIWeather.Equipment
             }
 
             _captureService.Reset();
-            TryLoadCachedFailoverConfiguration(sharedToken);
-            if (_replicaFailoverConfiguration == null
-                && Properties.Settings.Default.ClusterAutomaticFailoverEnabled
-                && !Properties.Settings.Default.ClusterFailoverConfigSyncEnabled)
+            if (Properties.Settings.Default.ClusterFailoverConfigSyncEnabled)
+            {
+                TryLoadCachedFailoverConfiguration(sharedToken);
+            }
+            else if (Properties.Settings.Default.ClusterAutomaticFailoverEnabled)
             {
                 // Manual pre-provisioning remains possible when encrypted synchronization
-                // is deliberately disabled. Nothing is persisted or logged here.
+                // is deliberately disabled. A previously synchronized cache is intentionally
+                // ignored in this mode, so the visible local settings are the values that will
+                // actually be used during takeover.
                 var localConfiguration = AIWeatherFailoverConfiguration.FromSettings();
                 if (localConfiguration.TryValidate(out _))
                 {
