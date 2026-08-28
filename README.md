@@ -52,7 +52,7 @@ Choose how the plugin acquires sky images based on your camera setup:
 
 If a cloud AI provider fails or times out (60-second limit), the orchestration layer explicitly falls back to local analysis so that safety monitoring is never interrupted. A fallback remains machine-identifiable and can never be recorded as a successful online teacher label.
 
-Gemini has additional quota protection. The plugin distinguishes short-window rate limits from explicit quota exhaustion, honors Google's retry guidance, and suppresses repeated traffic while the same quota window is active. Daily quota exhaustion pauses online requests until the Pacific-time reset; temporary provider/network failures keep bounded exponential retry. The options panel can also call Gemini only once every `N` weather checks while the local safety analyzer still runs on every check.
+Gemini has additional quota and availability protection. The plugin distinguishes short-window rate limits from explicit quota exhaustion, honors Google's retry guidance, and suppresses repeated traffic while the same quota window is active. Daily quota exhaustion pauses online requests until the Pacific-time reset. HTTP 429 never rotates models. An explicit HTTP 503 from the configured primary may temporarily fail over to another dynamically discovered Flash-family model inside the existing 60-second total budget. The alternate handles only two successful online checks before the primary is probed again; recovery immediately returns to the saved primary and never changes the user's model setting. Per-attempt model/status/duration metadata preserves the original 503 even if a later attempt times out. The options panel can also call Gemini only once every `N` weather checks while the local safety analyzer still runs on every check. See the [Gemini availability and temporary failover design](docs/GEMINI_AVAILABILITY_FAILOVER.zh-CN.md).
 
 ### Safety Monitor Integration
 
@@ -94,9 +94,13 @@ The preview panel in NINA shows:
 
 The engineering records for the two independent RTSP failure modes are available in Chinese: [stale analysis frames](docs/RTSP_STALE_FRAME_INCIDENT.zh-CN.md) and [white/blank native live preview airspace](docs/RTSP_PREVIEW_NATIVE_AIRSPACE_INCIDENT.zh-CN.md). A working preview does not prove that the analysis frame is fresh, and a successful analysis does not prove that LibVLC is visibly presenting its HWND; the two paths are tested separately.
 
+### Dataset Label Reviewer
+
+The built-in reviewer flattens the sharded teacher-student dataset into a searchable list. It can accept the teacher label, save a separate human correction, reject a sample while retaining its evidence, reset the review state, or permanently delete a useless sample to release disk space. Permanent deletion requires an explicit confirmation and removes the selected label, review sidecar and its image; if another label references the same content-addressed image, that shared image is retained. A compact deletion tombstone records the sample ID, time, number of deleted files and released bytes without retaining the discarded weather data.
+
 ## Installation
 
-1. Download the latest release from the [Releases](https://github.com/michelebergo/nina.plugin.aiweather/releases) page.
+1. Download the latest advanced release from the [Releases](https://github.com/sedirk/nina.plugin.aiweather-advanced/releases) page.
 2. Extract the plugin files to your NINA plugins folder:
    ```
    %LOCALAPPDATA%\NINA\Plugins\

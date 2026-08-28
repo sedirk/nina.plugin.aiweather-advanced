@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Generic;
+using System.Linq;
 
 namespace AIWeather.Models
 {
@@ -37,7 +39,36 @@ namespace AIWeather.Models
         ServiceRetired,
         Unknown,
         QuotaExhausted,
-        ScheduledLocal
+        ScheduledLocal,
+        ServiceUnavailable
+    }
+
+    /// <summary>
+    /// One provider request inside a bounded online analysis. It intentionally contains
+    /// no response body, credentials or image data, so it is safe to persist with dataset
+    /// metadata and useful when a later timeout would otherwise hide an earlier HTTP 503.
+    /// </summary>
+    public sealed class AnalysisAttemptDiagnostic
+    {
+        public int Attempt { get; set; }
+        public string Model { get; set; } = "Unknown";
+        public int? HttpStatus { get; set; }
+        public AnalysisFailureCategory FailureCategory { get; set; } = AnalysisFailureCategory.None;
+        public long DurationMilliseconds { get; set; }
+        public string Outcome { get; set; } = "unknown";
+
+        public AnalysisAttemptDiagnostic Clone()
+        {
+            return new AnalysisAttemptDiagnostic
+            {
+                Attempt = Attempt,
+                Model = Model,
+                HttpStatus = HttpStatus,
+                FailureCategory = FailureCategory,
+                DurationMilliseconds = DurationMilliseconds,
+                Outcome = Outcome
+            };
+        }
     }
 
     public sealed class AnalysisProvenance
@@ -60,6 +91,8 @@ namespace AIWeather.Models
         public bool RequestSuppressed { get; set; }
         public int RequestEveryChecks { get; set; }
         public long RequestSequence { get; set; }
+        public IReadOnlyList<AnalysisAttemptDiagnostic> AttemptDiagnostics { get; set; } =
+            Array.Empty<AnalysisAttemptDiagnostic>();
 
         public AnalysisProvenance Clone()
         {
@@ -82,7 +115,9 @@ namespace AIWeather.Models
                 ConsecutiveQuotaFailures = ConsecutiveQuotaFailures,
                 RequestSuppressed = RequestSuppressed,
                 RequestEveryChecks = RequestEveryChecks,
-                RequestSequence = RequestSequence
+                RequestSequence = RequestSequence,
+                AttemptDiagnostics = AttemptDiagnostics?.Select(item => item.Clone()).ToArray()
+                    ?? Array.Empty<AnalysisAttemptDiagnostic>()
             };
         }
     }

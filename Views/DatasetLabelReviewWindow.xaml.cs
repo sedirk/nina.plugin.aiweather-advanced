@@ -11,9 +11,21 @@ namespace AIWeather.Views
         public DatasetLabelReviewWindow(string datasetRoot)
         {
             InitializeComponent();
-            _viewModel = new DatasetLabelReviewViewModel(datasetRoot);
+            _viewModel = new DatasetLabelReviewViewModel(datasetRoot, ConfirmPermanentDeletion);
             DataContext = _viewModel;
             Loaded += OnLoaded;
+        }
+
+        private bool ConfirmPermanentDeletion(string title, string message)
+        {
+            return MessageBox.Show(
+                       this,
+                       message,
+                       title,
+                       MessageBoxButton.YesNo,
+                       MessageBoxImage.Warning,
+                       MessageBoxResult.No)
+                   == MessageBoxResult.Yes;
         }
 
         private async void OnLoaded(object sender, RoutedEventArgs e)

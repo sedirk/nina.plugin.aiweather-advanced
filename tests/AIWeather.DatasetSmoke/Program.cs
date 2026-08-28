@@ -45,6 +45,8 @@ internal static class Program
             await VerifyAIWeatherClusterProtocolAsync();
             await VerifyGeminiRequestPacingAsync();
             await VerifyGeminiServiceSuppressesQuotaRetriesAsync();
+            await VerifyGeminiTemporaryFailoverReturnsToPrimaryAsync();
+            await VerifyGemini503DiagnosticsSurviveRetryBudgetAsync();
             await VerifyQuotaFallbackMetadataAsync();
             await VerifyTrainableDedupPrivacyAndManualReviewAsync(
                 Path.Combine(runRoot, "main"));
@@ -659,6 +661,8 @@ internal static class Program
                 "English localization was not selected for en-GB");
             Assert(UiLocalization.ReviewStatus(DatasetReviewStatuses.Accepted) == "Accepted",
                 "English review status localization failed");
+            Assert(UiLocalization.Text("Review.Delete") == "Delete sample permanently",
+                "English permanent-delete localization failed");
 
             CultureInfo.CurrentUICulture = CultureInfo.GetCultureInfo("zh-CN");
             Assert(UiLocalization.Text("Preview.ActivityLog") == "活动日志",
@@ -682,6 +686,8 @@ internal static class Program
                 "Chinese weather condition localization failed");
             Assert(UiLocalization.ReviewStatus(DatasetReviewStatuses.Accepted) == "已接受",
                 "Chinese review status localization failed");
+            Assert(UiLocalization.Text("Review.Delete") == "永久删除样本",
+                "Chinese permanent-delete localization failed");
 
             fallback.Provenance.FailureCategory = AnalysisFailureCategory.QuotaExhausted;
             fallback.Provenance.RetryAfterUtc = DateTime.UtcNow.AddMinutes(10);
@@ -985,6 +991,82 @@ internal static class Program
             "An expired Gemini quota pause did not force an immediate probe between paced calls");
     }
 
+    private static async Task VerifyGeminiTemporaryFailoverReturnsToPrimaryAsync()
+    {
+        const string primary = "gemini-3.5-flash-lite";
+        const string alternate = "gemini-3.5-flash";
+        var handler = new ScriptedGeminiResponseHandler(
+            new Dictionary<string, Queue<HttpStatusCode>>(StringComparer.OrdinalIgnoreCase)
+            {
+                [primary] = new Queue<HttpStatusCode>(new[]
+                {
+                    HttpStatusCode.ServiceUnavailable,
+                    HttpStatusCode.OK
+                }),
+                [alternate] = new Queue<HttpStatusCode>(new[]
+                {
+                    HttpStatusCode.OK,
+                    HttpStatusCode.OK
+                })
+            });
+        using var http = new HttpClient(handler);
+        var service = new GeminiAnalysisService(
+            "test-key-never-sent-to-network",
+            primary,
+            http,
+            new GeminiQuotaCircuitBreaker(),
+            () => new DateTimeOffset(2026, 8, 29, 0, 0, 0, TimeSpan.Zero),
+            failoverCandidates: new[] { alternate });
+        Assert(await service.InitializeAsync(), "Failover Gemini service failed to initialize");
+
+        using var frame = CreateFrame();
+        var first = await service.TryAnalyzeOnlineOnlyAsync(frame);
+        var second = await service.TryAnalyzeOnlineOnlyAsync(frame);
+        var third = await service.TryAnalyzeOnlineOnlyAsync(frame);
+
+        Assert(first.Success && first.Provenance.Model == alternate,
+            "HTTP 503 did not temporarily fail over to the configured same-family alternate");
+        Assert(first.Provenance.AttemptDiagnostics.Count == 2
+               && first.Provenance.AttemptDiagnostics[0].Model == primary
+               && first.Provenance.AttemptDiagnostics[0].HttpStatus == 503
+               && first.Provenance.AttemptDiagnostics[1].Model == alternate
+               && first.Provenance.AttemptDiagnostics[1].HttpStatus == 200,
+            "Failover provenance did not retain the primary 503 and alternate success");
+        Assert(second.Success && second.Provenance.Model == alternate,
+            "Temporary alternate was not held for the requested short backoff window");
+        Assert(third.Success && third.Provenance.Model == primary,
+            "Gemini service did not probe and return to the configured primary after two alternate successes");
+        Assert(handler.RequestedModels.SequenceEqual(new[] { primary, alternate, alternate, primary }),
+            "Gemini failover/return request order was not deterministic");
+    }
+
+    private static async Task VerifyGemini503DiagnosticsSurviveRetryBudgetAsync()
+    {
+        var handler = new StaticResponseHandler(
+            HttpStatusCode.ServiceUnavailable,
+            "{\"error\":{\"code\":503,\"status\":\"UNAVAILABLE\"}}");
+        using var http = new HttpClient(handler);
+        var service = new GeminiAnalysisService(
+            "test-key-never-sent-to-network",
+            "gemini-test-primary",
+            http,
+            new GeminiQuotaCircuitBreaker(),
+            () => new DateTimeOffset(2026, 8, 29, 0, 0, 0, TimeSpan.Zero),
+            failoverCandidates: Array.Empty<string>());
+        Assert(await service.InitializeAsync(), "503 diagnostic Gemini service failed to initialize");
+
+        using var frame = CreateFrame();
+        var failure = await service.TryAnalyzeOnlineOnlyAsync(frame);
+        Assert(!failure.Success
+               && failure.Provenance.FailureCategory == AnalysisFailureCategory.ServiceUnavailable
+               && failure.Provenance.HttpStatus == 503
+               && failure.Provenance.ProviderFailureCode == "service_unavailable",
+            "Gemini final failure hid the concrete HTTP 503 behind a generic timeout/unknown result");
+        Assert(failure.Provenance.AttemptDiagnostics.Count == 3
+               && failure.Provenance.AttemptDiagnostics.All(item => item.HttpStatus == 503),
+            "Gemini per-attempt diagnostics did not retain all HTTP 503 responses");
+    }
+
     private static async Task VerifyTrainableDedupPrivacyAndManualReviewAsync(string root)
     {
         Directory.CreateDirectory(root);
@@ -1180,6 +1262,49 @@ internal static class Program
             status => status.TotalSamples == 2 && status.TodaySamples == 2,
             "startup dataset indexing");
         await restartedRecorder.StopAsync(TimeSpan.FromSeconds(10));
+
+        var deletedLabelPath = reloadedSelection.LabelFilePath;
+        var deletedImagePath = reloadedSelection.ImageFilePath
+                               ?? throw new InvalidOperationException("review sample image path missing");
+        var deletedReviewPath = reloadedSelection.ReviewFilePath
+                                ?? throw new InvalidOperationException("review sidecar path missing");
+        var retainedEntry = reloaded.Single(entry => entry.SampleId != reloadedSelection.SampleId);
+        var deletion = await service.DeleteSampleAsync(reloadedSelection);
+
+        Assert(deletion.SampleId == reloadedSelection.SampleId,
+            "deletion result returned the wrong sample id");
+        Assert(deletion.DeletedFileCount == 2 && deletion.ReleasedBytes > 0,
+            "shared-image deletion did not remove the label and review sidecar");
+        Assert(deletion.RetainedSharedImage,
+            "shared content-addressed image was not protected");
+        Assert(!File.Exists(deletedLabelPath)
+               && File.Exists(deletedImagePath)
+               && !File.Exists(deletedReviewPath),
+            "shared-image deletion did not preserve exactly the shared image");
+        Assert(File.Exists(retainedEntry.LabelFilePath)
+               && retainedEntry.ImageFilePath != null
+               && File.Exists(retainedEntry.ImageFilePath),
+            "sample deletion damaged an unrelated dataset entry");
+
+        var afterDeletion = await service.LoadAsync();
+        Assert(afterDeletion.Count == 1
+               && afterDeletion[0].SampleId == retainedEntry.SampleId,
+            "flat reviewer index did not remove the deleted sample");
+
+        var finalDeletion = await service.DeleteSampleAsync(afterDeletion[0]);
+        Assert(finalDeletion.DeletedFileCount == 2 && finalDeletion.ReleasedBytes > 0,
+            "last-reference deletion did not remove the label and image");
+        Assert(!finalDeletion.RetainedSharedImage && !File.Exists(deletedImagePath),
+            "last image reference was deleted but its image was not released");
+        Assert((await service.LoadAsync()).Count == 0,
+            "reviewer index was not empty after deleting the final sample");
+
+        var deletionAudit = Directory.GetFiles(
+            Path.Combine(root, "review"),
+            "deletions-*.jsonl",
+            SearchOption.TopDirectoryOnly);
+        Assert(deletionAudit.Length == 1 && File.ReadAllLines(deletionAudit[0]).Length == 2,
+            "sample deletion tombstone audits were not written");
     }
 
     private static async Task VerifyInvalidTeacherGoesToQuarantineAsync(string root)
@@ -1426,6 +1551,65 @@ internal static class Program
         public QuotaResponseHandler(string responseBody)
             : base((HttpStatusCode)429, responseBody)
         {
+        }
+    }
+
+    private sealed class ScriptedGeminiResponseHandler : HttpMessageHandler
+    {
+        private const string SuccessfulEnvelope = """
+        {
+          "candidates": [
+            {
+              "content": {
+                "parts": [
+                  {
+                    "text": "{\"condition\":\"Clear\",\"cloudCoverage\":5,\"rainDetected\":false,\"fogDetected\":false,\"isSafe\":true,\"description\":\"Clear sky\",\"confidence\":95}"
+                  }
+                ]
+              }
+            }
+          ]
+        }
+        """;
+
+        private readonly Dictionary<string, Queue<HttpStatusCode>> _responses;
+
+        public ScriptedGeminiResponseHandler(Dictionary<string, Queue<HttpStatusCode>> responses)
+        {
+            _responses = responses;
+        }
+
+        public List<string> RequestedModels { get; } = new List<string>();
+
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            var path = request.RequestUri?.AbsolutePath ?? string.Empty;
+            const string prefix = "/v1beta/models/";
+            var start = path.IndexOf(prefix, StringComparison.OrdinalIgnoreCase);
+            var model = start >= 0 ? path.Substring(start + prefix.Length) : string.Empty;
+            var suffix = model.IndexOf(':');
+            if (suffix >= 0)
+            {
+                model = model.Substring(0, suffix);
+            }
+            model = Uri.UnescapeDataString(model);
+            RequestedModels.Add(model);
+
+            if (!_responses.TryGetValue(model, out var queue) || queue.Count == 0)
+            {
+                throw new InvalidOperationException($"No scripted Gemini response remains for {model}");
+            }
+
+            var status = queue.Dequeue();
+            var body = status == HttpStatusCode.OK
+                ? SuccessfulEnvelope
+                : "{\"error\":{\"code\":503,\"status\":\"UNAVAILABLE\"}}";
+            return Task.FromResult(new HttpResponseMessage(status)
+            {
+                Content = new StringContent(body)
+            });
         }
     }
 

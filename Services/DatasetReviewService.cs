@@ -23,6 +23,7 @@ namespace AIWeather.Services
         private static readonly JsonSerializerOptions PrettyJson = CreateJsonOptions(indented: true);
         private static readonly JsonSerializerOptions CompactJson = CreateJsonOptions(indented: false);
         private static readonly string[] AllowedLabelRoots = { "labels", Path.Combine("quarantine", "labels") };
+        private static readonly string[] AllowedImageRoots = { "images", Path.Combine("quarantine", "images") };
 
         private readonly string _rootDirectory;
         private readonly string _rootPrefix;
@@ -148,6 +149,112 @@ namespace AIWeather.Services
             return overlay;
         }
 
+        public async Task<DatasetSampleDeletionResult> DeleteSampleAsync(
+            DatasetReviewEntry entry,
+            CancellationToken cancellationToken = default)
+        {
+            ArgumentNullException.ThrowIfNull(entry);
+            ValidateSampleId(entry.SampleId);
+
+            var labelPath = ValidatePathInsideAllowedRoots(
+                entry.LabelFilePath,
+                AllowedLabelRoots,
+                "label");
+            if (!File.Exists(labelPath))
+            {
+                throw new FileNotFoundException("The sample label no longer exists", labelPath);
+            }
+
+            string? imagePath = null;
+            if (!string.IsNullOrWhiteSpace(entry.ImageFilePath))
+            {
+                imagePath = ValidatePathInsideAllowedRoots(
+                    entry.ImageFilePath,
+                    AllowedImageRoots,
+                    "image");
+            }
+
+            var reviewPath = ValidatePathInsideAllowedRoots(
+                GetReviewPath(entry.SampleId),
+                new[] { Path.Combine("review", "labels") },
+                "review sidecar");
+
+            await ReviewWriteGate.WaitAsync(cancellationToken);
+            try
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var retainedSharedImage = imagePath != null
+                                          && File.Exists(imagePath)
+                                          && await IsImageReferencedByAnotherLabelAsync(
+                                              imagePath,
+                                              labelPath,
+                                              cancellationToken);
+
+                // Removing the label first keeps the human index consistent even if a later
+                // image deletion is interrupted. At worst that leaves a harmless orphan image,
+                // never a label that points at a missing image.
+                var targets = new List<string> { labelPath, reviewPath };
+                if (imagePath != null && !retainedSharedImage)
+                {
+                    targets.Add(imagePath);
+                }
+
+                var releasedBytes = 0L;
+                var deletedFileCount = 0;
+                foreach (var target in targets.Distinct(StringComparer.OrdinalIgnoreCase))
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    if (!File.Exists(target))
+                    {
+                        continue;
+                    }
+
+                    releasedBytes += new FileInfo(target).Length;
+                    File.Delete(target);
+                    deletedFileCount++;
+                }
+
+                var deletedUtc = DateTime.UtcNow;
+                var audit = new DatasetDeletionAuditEvent
+                {
+                    DeletedUtc = deletedUtc,
+                    SampleId = entry.SampleId,
+                    DeletedFileCount = deletedFileCount,
+                    ReleasedBytes = releasedBytes,
+                    RetainedSharedImage = retainedSharedImage
+                };
+
+                try
+                {
+                    var auditPath = Path.Combine(
+                        _rootDirectory,
+                        "review",
+                        $"deletions-{deletedUtc:yyyy-MM}.jsonl");
+                    await AppendAuditLineAsync(
+                        auditPath,
+                        JsonSerializer.Serialize(audit, CompactJson),
+                        CancellationToken.None);
+                }
+                catch
+                {
+                    // The sample has already been deleted. A best-effort tombstone must never
+                    // turn a successful deletion into a misleading UI failure.
+                }
+
+                return new DatasetSampleDeletionResult
+                {
+                    SampleId = entry.SampleId,
+                    DeletedFileCount = deletedFileCount,
+                    ReleasedBytes = releasedBytes,
+                    RetainedSharedImage = retainedSharedImage
+                };
+            }
+            finally
+            {
+                ReviewWriteGate.Release();
+            }
+        }
+
         private async Task<DatasetReviewEntry> LoadEntryAsync(
             string labelPath,
             ISet<string> seenIds,
@@ -241,6 +348,102 @@ namespace AIWeather.Services
                 "review",
                 "labels",
                 sampleId + ".review.json"));
+        }
+
+        private async Task<bool> IsImageReferencedByAnotherLabelAsync(
+            string imagePath,
+            string currentLabelPath,
+            CancellationToken cancellationToken)
+        {
+            var targetImagePath = Path.GetFullPath(imagePath);
+            var currentPath = Path.GetFullPath(currentLabelPath);
+            var foundUnreadableLabel = false;
+
+            foreach (var relativeRoot in AllowedLabelRoots)
+            {
+                var labelRoot = Path.Combine(_rootDirectory, relativeRoot);
+                if (!Directory.Exists(labelRoot))
+                {
+                    continue;
+                }
+
+                foreach (var candidateLabelPath in Directory.EnumerateFiles(
+                             labelRoot,
+                             "*.json",
+                             SearchOption.AllDirectories))
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    if (string.Equals(
+                            Path.GetFullPath(candidateLabelPath),
+                            currentPath,
+                            StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+
+                    try
+                    {
+                        var record = JsonSerializer.Deserialize<DatasetSampleRecord>(
+                            await File.ReadAllBytesAsync(candidateLabelPath, cancellationToken),
+                            PrettyJson);
+                        if (record == null || string.IsNullOrWhiteSpace(record.Image.RelativePath))
+                        {
+                            foundUnreadableLabel = true;
+                            continue;
+                        }
+
+                        var normalized = record.Image.RelativePath.Replace(
+                            '/',
+                            Path.DirectorySeparatorChar);
+                        if (Path.IsPathRooted(normalized))
+                        {
+                            foundUnreadableLabel = true;
+                            continue;
+                        }
+
+                        var candidateImagePath = ValidatePathInsideRoot(
+                            Path.Combine(_rootDirectory, normalized));
+                        if (string.Equals(
+                                candidateImagePath,
+                                targetImagePath,
+                                StringComparison.OrdinalIgnoreCase))
+                        {
+                            return true;
+                        }
+                    }
+                    catch (Exception ex) when (ex is not OperationCanceledException)
+                    {
+                        // Be conservative: an unreadable label might still reference the same
+                        // image, so keep the image while deleting the selected label/sidecar.
+                        foundUnreadableLabel = true;
+                    }
+                }
+            }
+
+            return foundUnreadableLabel;
+        }
+
+        private string ValidatePathInsideAllowedRoots(
+            string path,
+            IEnumerable<string> allowedRelativeRoots,
+            string description)
+        {
+            var fullPath = ValidatePathInsideRoot(path);
+            foreach (var relativeRoot in allowedRelativeRoots)
+            {
+                var allowedPrefix = Path.GetFullPath(Path.Combine(_rootDirectory, relativeRoot))
+                                        .TrimEnd(
+                                            Path.DirectorySeparatorChar,
+                                            Path.AltDirectorySeparatorChar)
+                                    + Path.DirectorySeparatorChar;
+                if (fullPath.StartsWith(allowedPrefix, StringComparison.OrdinalIgnoreCase))
+                {
+                    return fullPath;
+                }
+            }
+
+            throw new InvalidDataException(
+                $"Dataset {description} path is outside its allowed subtree");
         }
 
         private string ValidatePathInsideRoot(string path)

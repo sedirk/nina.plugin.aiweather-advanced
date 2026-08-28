@@ -1,7 +1,7 @@
 {
   "Identifier": "AI Weather",
   "Name": "AI Weather - All Sky Camera Monitor",
-  "Version": "1.24.1.0",
+  "Version": "1.26.0.0",
   "MinimumApplicationVersion": "3.0.0.0",
   "Author": "Michele Bergo / sedirk",
   "Homepage": "https://github.com/sedirk/nina.plugin.aiweather-advanced",
@@ -24,6 +24,24 @@
     }
   },
   "ChangeLog": [
+    {
+      "Version": "1.26.0.0",
+      "Date": "2026-08-29",
+      "Changes": [
+        "Added bounded Gemini HTTP 503 failover to another dynamically discovered Flash-family model without changing the user's saved primary-model selection",
+        "Temporary failover now serves only two successful online checks before probing the configured primary again, returning immediately when it recovers and renewing the short hold only if the primary still returns 503",
+        "Kept HTTP 429 quota handling model-specific and non-rotating, preserved the existing 60-second total budget, and added per-attempt model/status/duration diagnostics so a late timeout cannot hide an earlier provider 503"
+      ]
+    },
+    {
+      "Version": "1.25.0.0",
+      "Date": "2026-08-28",
+      "Changes": [
+        "Added a bilingual permanent-delete action to the flat dataset label reviewer, with an explicit destructive confirmation and immediate in-place list update",
+        "Permanent deletion removes the selected teacher label, review sidecar and uniquely owned image to release disk space, while preserving content-addressed images that are still referenced by another label",
+        "Restricted every deletion target to the configured dataset root and expected label/image/review subtrees, and added a compact append-only deletion tombstone without retaining discarded visual or weather data"
+      ]
+    },
     {
       "Version": "1.24.1.0",
       "Date": "2026-08-28",

@@ -1,6 +1,8 @@
 using AIWeather.Models;
 using System;
 using System.Net;
+using System.Collections.Generic;
+using System.Linq;
 
 namespace AIWeather.Services
 {
@@ -33,7 +35,8 @@ namespace AIWeather.Services
             string model,
             int attempts,
             long latencyMilliseconds,
-            int? httpStatus = null)
+            int? httpStatus = null,
+            IReadOnlyList<AnalysisAttemptDiagnostic>? attemptDiagnostics = null)
         {
             return new AnalysisProvenance
             {
@@ -46,7 +49,9 @@ namespace AIWeather.Services
                 FailureCategory = AnalysisFailureCategory.None,
                 Attempts = Math.Max(1, attempts),
                 HttpStatus = httpStatus,
-                LatencyMilliseconds = Math.Max(0, latencyMilliseconds)
+                LatencyMilliseconds = Math.Max(0, latencyMilliseconds),
+                AttemptDiagnostics = attemptDiagnostics?.Select(item => item.Clone()).ToArray()
+                    ?? Array.Empty<AnalysisAttemptDiagnostic>()
             };
         }
 
@@ -65,7 +70,8 @@ namespace AIWeather.Services
             int consecutiveQuotaFailures = 0,
             bool requestSuppressed = false,
             int requestEveryChecks = 0,
-            long requestSequence = 0)
+            long requestSequence = 0,
+            IReadOnlyList<AnalysisAttemptDiagnostic>? attemptDiagnostics = null)
         {
             return new AnalysisProvenance
             {
@@ -86,7 +92,9 @@ namespace AIWeather.Services
                 ConsecutiveQuotaFailures = Math.Max(0, consecutiveQuotaFailures),
                 RequestSuppressed = requestSuppressed,
                 RequestEveryChecks = Math.Max(0, requestEveryChecks),
-                RequestSequence = Math.Max(0, requestSequence)
+                RequestSequence = Math.Max(0, requestSequence),
+                AttemptDiagnostics = attemptDiagnostics?.Select(item => item.Clone()).ToArray()
+                    ?? Array.Empty<AnalysisAttemptDiagnostic>()
             };
         }
 
@@ -96,6 +104,7 @@ namespace AIWeather.Services
             {
                 HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden => AnalysisFailureCategory.Authentication,
                 HttpStatusCode.NotFound => AnalysisFailureCategory.ModelUnavailable,
+                HttpStatusCode.ServiceUnavailable => AnalysisFailureCategory.ServiceUnavailable,
                 HttpStatusCode.RequestTimeout or HttpStatusCode.GatewayTimeout => AnalysisFailureCategory.Timeout,
                 (HttpStatusCode)429 => AnalysisFailureCategory.RateLimited,
                 null => AnalysisFailureCategory.Network,

@@ -52,6 +52,28 @@ namespace AIWeather.Models
         public DatasetReviewOverlay Review { get; init; } = new DatasetReviewOverlay();
     }
 
+    /// <summary>
+    /// A compact tombstone keeps deletion auditable without retaining the discarded image
+    /// or its teacher/student labels. It intentionally contains no visual or weather data.
+    /// </summary>
+    public sealed class DatasetDeletionAuditEvent
+    {
+        public int SchemaVersion { get; init; } = 1;
+        public DateTime DeletedUtc { get; init; }
+        public string SampleId { get; init; } = string.Empty;
+        public int DeletedFileCount { get; init; }
+        public long ReleasedBytes { get; init; }
+        public bool RetainedSharedImage { get; init; }
+    }
+
+    public sealed class DatasetSampleDeletionResult
+    {
+        public string SampleId { get; init; } = string.Empty;
+        public int DeletedFileCount { get; init; }
+        public long ReleasedBytes { get; init; }
+        public bool RetainedSharedImage { get; init; }
+    }
+
     public sealed class DatasetReviewEntry
     {
         public string SampleId { get; init; } = string.Empty;

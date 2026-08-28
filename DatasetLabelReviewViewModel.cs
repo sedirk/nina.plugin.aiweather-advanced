@@ -25,6 +25,7 @@ namespace AIWeather
         public const string AllStatusFilter = "All";
 
         private readonly DatasetReviewService _service;
+        private readonly Func<string, string, bool> _confirmDeletion;
         private readonly ObservableCollection<DatasetReviewItemViewModel> _samples = new();
         private DatasetReviewItemViewModel? _selectedItem;
         private BitmapImage? _previewImage;
@@ -40,9 +41,12 @@ namespace AIWeather
         private string _reviewNotes = string.Empty;
         private int _previewGeneration;
 
-        public DatasetLabelReviewViewModel(string datasetRoot)
+        public DatasetLabelReviewViewModel(
+            string datasetRoot,
+            Func<string, string, bool>? confirmDeletion = null)
         {
             _service = new DatasetReviewService(datasetRoot);
+            _confirmDeletion = confirmDeletion ?? ((_, _) => false);
             SamplesView = CollectionViewSource.GetDefaultView(_samples);
             SamplesView.Filter = FilterSample;
 
@@ -53,6 +57,7 @@ namespace AIWeather
             SaveCorrectionCommand = new AsyncRelayCommand(SaveCorrectionAsync);
             RejectCommand = new AsyncRelayCommand(RejectAsync);
             ResetReviewCommand = new AsyncRelayCommand(ResetReviewAsync);
+            DeleteSampleCommand = new AsyncRelayCommand(DeleteSampleAsync);
             OpenDatasetFolderCommand = new RelayCommand(OpenDatasetFolder);
         }
 
@@ -79,6 +84,7 @@ namespace AIWeather
         public ICommand SaveCorrectionCommand { get; }
         public ICommand RejectCommand { get; }
         public ICommand ResetReviewCommand { get; }
+        public ICommand DeleteSampleCommand { get; }
         public ICommand OpenDatasetFolderCommand { get; }
 
         public string DatasetRoot => _service.RootDirectory;
@@ -338,6 +344,66 @@ namespace AIWeather
         private Task ResetReviewAsync()
         {
             return SaveReviewAsync(DatasetReviewStatuses.Unreviewed, null);
+        }
+
+        private async Task DeleteSampleAsync()
+        {
+            var item = SelectedItem;
+            if (item?.Entry.Record == null || IsBusy)
+            {
+                return;
+            }
+
+            var confirmed = _confirmDeletion(
+                UiLocalization.Text("Review.DeleteConfirmTitle"),
+                UiLocalization.Text(
+                    "Review.DeleteConfirm",
+                    item.SampleId,
+                    item.CapturedLocal));
+            if (!confirmed)
+            {
+                return;
+            }
+
+            var visibleBefore = SamplesView.Cast<DatasetReviewItemViewModel>().ToList();
+            var selectedIndex = Math.Max(0, visibleBefore.IndexOf(item));
+            IsBusy = true;
+            StatusMessage = UiLocalization.Text("Review.Deleting", item.SampleId);
+            try
+            {
+                var result = await _service.DeleteSampleAsync(item.Entry);
+                _samples.Remove(item);
+                SamplesView.Refresh();
+
+                var visibleAfter = SamplesView.Cast<DatasetReviewItemViewModel>().ToList();
+                SelectedItem = visibleAfter.Count == 0
+                    ? null
+                    : visibleAfter[Math.Min(selectedIndex, visibleAfter.Count - 1)];
+                UpdateSummary();
+
+                var releasedMiB = result.ReleasedBytes / 1024d / 1024d;
+                StatusMessage = result.RetainedSharedImage
+                    ? UiLocalization.Text(
+                        "Review.DeletedSharedImage",
+                        result.SampleId,
+                        result.DeletedFileCount,
+                        releasedMiB)
+                    : UiLocalization.Text(
+                        "Review.Deleted",
+                        result.SampleId,
+                        result.DeletedFileCount,
+                        releasedMiB);
+            }
+            catch (Exception ex)
+            {
+                StatusMessage = UiLocalization.Text(
+                    "Review.DeleteFailed",
+                    LogRedactor.RedactSensitiveText(ex.Message));
+            }
+            finally
+            {
+                IsBusy = false;
+            }
         }
 
         private async Task SaveReviewAsync(string status, DatasetHumanLabel? humanLabel)

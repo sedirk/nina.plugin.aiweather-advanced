@@ -88,6 +88,7 @@ namespace AIWeather.Services
             fallback.Provenance.RequestSuppressed = teacherAttempt.Provenance.RequestSuppressed;
             fallback.Provenance.RequestEveryChecks = teacherAttempt.Provenance.RequestEveryChecks;
             fallback.Provenance.RequestSequence = teacherAttempt.Provenance.RequestSequence;
+            fallback.Provenance.AttemptDiagnostics = teacherAttempt.Provenance.AttemptDiagnostics;
             fallback.Description = BuildFallbackDescription(teacherAttempt, fallback.Description);
 
             var retrySummary = teacherAttempt.Provenance.RetryAfterUtc is DateTime retryAfterUtc

@@ -236,6 +236,9 @@
                                     Background="{StaticResource DangerBrush}"/>
                             <Button Content="{i18n:Loc Review.Reset}" Command="{Binding ResetReviewCommand}"
                                     Background="#56636A"/>
+                            <Button Content="{i18n:Loc Review.Delete}" Command="{Binding DeleteSampleCommand}"
+                                    ToolTip="{i18n:Loc Review.DeleteHelp}"
+                                    Background="#A33242"/>
                         </WrapPanel>
                     </StackPanel>
                 </ScrollViewer>

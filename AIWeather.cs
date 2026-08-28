@@ -427,6 +427,10 @@ namespace AIWeather
                     cached.models.Length > 0)
                 {
                     Logger.Debug($"Returning {cached.models.Length} cached models for {currentProvider}");
+                    if (string.Equals(currentProvider, "Gemini", StringComparison.OrdinalIgnoreCase))
+                    {
+                        Services.GeminiModelFailoverCatalog.Update(cached.models);
+                    }
                     RunOnUiThread(() =>
                     {
                         SyncModelsCollection(cached.models);
@@ -502,6 +506,11 @@ namespace AIWeather
                 var statusMsg = liveModels != null && liveModels.Length > 0
                     ? UiLocalization.Text("Runtime.ModelsLoaded", finalModels.Count, currentProvider)
                     : UiLocalization.Text("Runtime.ModelsFallback", currentProvider, finalModels.Count);
+
+                if (string.Equals(currentProvider, "Gemini", StringComparison.OrdinalIgnoreCase))
+                {
+                    Services.GeminiModelFailoverCatalog.Update(finalModels);
+                }
 
                 RunOnUiThread(() =>
                 {

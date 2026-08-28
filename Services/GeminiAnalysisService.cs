@@ -1,6 +1,7 @@
 using AIWeather.Models;
 using NINA.Core.Utility;
 using System;
+using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Imaging;
 using System.Diagnostics;
@@ -11,6 +12,7 @@ using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Linq;
 
 namespace AIWeather.Services
 {
@@ -18,14 +20,20 @@ namespace AIWeather.Services
     public class GeminiAnalysisService : IOnlineWeatherAnalysisService
     {
         private const int MaxAttempts = 3;
+        private const int PrimaryProbeAfterAlternateSuccesses = 2;
         private static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(60);
+        private static readonly TimeSpan MinimumAttemptBudget = TimeSpan.FromSeconds(5);
 
         private readonly string _apiKey;
-        private readonly string _modelName;
+        private readonly string _primaryModelName;
         private readonly IHttpClientProvider _httpProvider;
-        private readonly GeminiQuotaCircuitBreaker _quotaCircuit;
+        private readonly Func<string, GeminiQuotaCircuitBreaker> _quotaCircuitForModel;
         private readonly Func<DateTimeOffset> _utcNow;
         private readonly int _requestEveryChecks;
+        private readonly IReadOnlyList<string>? _injectedFailoverCandidates;
+        private readonly object _failoverGate = new object();
+        private string? _alternateModelName;
+        private int _alternateSuccesses;
         private long _requestSequence;
         private bool _isInitialized;
 
@@ -37,7 +45,7 @@ namespace AIWeather.Services
                 apiKey,
                 NormalizeModelName(modelName),
                 new SystemProxyAwareHttpClientProvider(),
-                GeminiQuotaCircuitRegistry.Get(apiKey, NormalizeModelName(modelName)),
+                candidate => GeminiQuotaCircuitRegistry.Get(apiKey, candidate),
                 () => DateTimeOffset.UtcNow,
                 requestEveryChecks)
         {
@@ -49,14 +57,16 @@ namespace AIWeather.Services
             HttpClient http,
             GeminiQuotaCircuitBreaker quotaCircuit,
             Func<DateTimeOffset> utcNow,
-            int requestEveryChecks = 1)
+            int requestEveryChecks = 1,
+            IReadOnlyList<string>? failoverCandidates = null)
             : this(
                 apiKey,
                 modelName,
                 new FixedHttpClientProvider(http),
-                quotaCircuit,
+                _ => quotaCircuit,
                 utcNow,
-                requestEveryChecks)
+                requestEveryChecks,
+                failoverCandidates)
         {
         }
 
@@ -64,18 +74,24 @@ namespace AIWeather.Services
             string apiKey,
             string modelName,
             IHttpClientProvider httpProvider,
-            GeminiQuotaCircuitBreaker quotaCircuit,
+            Func<string, GeminiQuotaCircuitBreaker> quotaCircuitForModel,
             Func<DateTimeOffset> utcNow,
-            int requestEveryChecks = 1)
+            int requestEveryChecks = 1,
+            IReadOnlyList<string>? failoverCandidates = null)
         {
             _apiKey = apiKey;
             // The alias tracks Google's latest stable Flash release; concrete version IDs
             // get retired out from under a hardcoded fallback (gemini-2.0-flash was).
-            _modelName = NormalizeModelName(modelName);
+            _primaryModelName = NormalizeModelName(modelName);
             _httpProvider = httpProvider ?? throw new ArgumentNullException(nameof(httpProvider));
-            _quotaCircuit = quotaCircuit ?? throw new ArgumentNullException(nameof(quotaCircuit));
+            _quotaCircuitForModel = quotaCircuitForModel ?? throw new ArgumentNullException(nameof(quotaCircuitForModel));
             _utcNow = utcNow ?? throw new ArgumentNullException(nameof(utcNow));
             _requestEveryChecks = Math.Clamp(requestEveryChecks, 1, 10000);
+            _injectedFailoverCandidates = failoverCandidates?
+                .Select(NormalizeModelName)
+                .Where(candidate => !string.Equals(candidate, _primaryModelName, StringComparison.OrdinalIgnoreCase))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
         }
 
         private static string NormalizeModelName(string modelName)
@@ -93,7 +109,8 @@ namespace AIWeather.Services
             }
 
             _isInitialized = true;
-            Logger.Info($"Gemini analysis service initialized with model: {_modelName}");
+            Logger.Info($"Gemini analysis service initialized with primary model: {_primaryModelName}; " +
+                        "HTTP 503 failover is temporary and never changes the saved model selection");
             return Task.FromResult(true);
         }
 
@@ -127,6 +144,8 @@ namespace AIWeather.Services
         {
             var stopwatch = Stopwatch.StartNew();
             var attemptsUsed = 0;
+            var diagnostics = new List<AnalysisAttemptDiagnostic>();
+            var currentModel = GetStartingModel(out var probingPrimary);
 
             if (!_isInitialized)
             {
@@ -135,21 +154,24 @@ namespace AIWeather.Services
                     AnalysisMetadata.FailedOnline(
                         AnalysisOrigin.Gemini,
                         "Gemini",
-                        _modelName,
+                        _primaryModelName,
                         AnalysisFailureCategory.Authentication,
                         0,
                         stopwatch.ElapsedMilliseconds),
                     "Gemini API key is missing or the service was not initialized");
             }
 
-            if (_quotaCircuit.TryGetActive(_utcNow(), out var activeQuota))
+            var startingCircuit = _quotaCircuitForModel(currentModel);
+            if (startingCircuit.TryGetActive(_utcNow(), out var activeQuota))
             {
                 return BuildQuotaFailure(
+                    currentModel,
                     activeQuota,
                     attempts: 0,
                     stopwatch.ElapsedMilliseconds,
                     httpStatus: null,
-                    requestSuppressed: true);
+                    requestSuppressed: true,
+                    diagnostics: diagnostics);
             }
 
             // Once a quota window expires, probe immediately even if this ordinary check
@@ -179,10 +201,10 @@ namespace AIWeather.Services
 
             try
             {
-                Logger.Info($"Starting Gemini AI weather analysis with {_modelName}");
+                Logger.Info($"Starting Gemini AI weather analysis with {currentModel}" +
+                            (probingPrimary ? " (probing configured primary after temporary failover)" : string.Empty));
 
                 var base64Image = ConvertImageToBase64(image);
-                var url = $"https://generativelanguage.googleapis.com/v1beta/models/{Uri.EscapeDataString(_modelName)}:generateContent";
 
                 var promptText = PromptText.FullPrompt;
                 var promptPrefix = WeatherAnalysisPrompts.BuildPromptPrefix(astroContext);
@@ -232,14 +254,16 @@ namespace AIWeather.Services
                 for (var attempt = 1; attempt <= MaxAttempts; attempt++)
                 {
                     attemptsUsed = attempt;
+                    var attemptStopwatch = Stopwatch.StartNew();
                     try
                     {
+                        var url = $"https://generativelanguage.googleapis.com/v1beta/models/{Uri.EscapeDataString(currentModel)}:generateContent";
                         using var request = new HttpRequestMessage(HttpMethod.Post, url);
                         request.Headers.TryAddWithoutValidation("x-goog-api-key", _apiKey);
                         request.Headers.UserAgent.ParseAdd("NINA-AIWeather/1.0");
                         request.Content = new StringContent(serializedPayload, Encoding.UTF8, "application/json");
 
-                        Logger.Info($"Calling Gemini API (attempt {attempt}/{MaxAttempts})...");
+                        Logger.Info($"Calling Gemini API model {currentModel} (attempt {attempt}/{MaxAttempts})...");
 
                         // Resolve the transport immediately before each real API request.
                         // The provider preserves the normal connection pool, but swaps it
@@ -259,7 +283,14 @@ namespace AIWeather.Services
                                 serverRetryDelay);
                             if (quota.IsQuotaFailure)
                             {
-                                var circuit = _quotaCircuit.RecordFailure(_utcNow(), quota);
+                                diagnostics.Add(CreateDiagnostic(
+                                    attempt,
+                                    currentModel,
+                                    response.StatusCode,
+                                    AnalysisFailureCategory.QuotaExhausted,
+                                    attemptStopwatch.ElapsedMilliseconds,
+                                    "quota_rejected"));
+                                var circuit = _quotaCircuitForModel(currentModel).RecordFailure(_utcNow(), quota);
                                 Logger.Warning(
                                     $"Gemini API quota unavailable: HTTP {(int)response.StatusCode}; " +
                                     $"immediate retries suppressed, next online attempt no earlier than " +
@@ -269,24 +300,61 @@ namespace AIWeather.Services
                                     $"{circuit.QuotaId ?? "unknown"}; daily quota " +
                                     $"{circuit.IsDailyQuota}.");
                                 return BuildQuotaFailure(
+                                    currentModel,
                                     circuit,
                                     attempt,
                                     stopwatch.ElapsedMilliseconds,
                                     (int)response.StatusCode,
-                                    requestSuppressed: false);
+                                    requestSuppressed: false,
+                                    diagnostics: diagnostics);
                             }
 
-                            if (_quotaCircuit.Reset())
+                            if (_quotaCircuitForModel(currentModel).Reset())
                             {
-                                Logger.Info("Gemini quota circuit reset after a non-quota API response");
+                                Logger.Info($"Gemini quota circuit reset for {currentModel} after a non-quota API response");
                             }
 
                             var isTransient = IsTransientStatus(response.StatusCode);
+                            diagnostics.Add(CreateDiagnostic(
+                                attempt,
+                                currentModel,
+                                response.StatusCode,
+                                AnalysisMetadata.FromHttpStatus(response.StatusCode),
+                                attemptStopwatch.ElapsedMilliseconds,
+                                "http_error"));
                             if (isTransient && attempt < MaxAttempts)
                             {
+                                if (response.StatusCode == HttpStatusCode.ServiceUnavailable
+                                    && string.Equals(currentModel, _primaryModelName, StringComparison.OrdinalIgnoreCase)
+                                    && TrySelectAlternateModel(out var alternateModel)
+                                    && HasAttemptBudget(stopwatch, TimeSpan.Zero))
+                                {
+                                    ActivateAlternate(alternateModel);
+                                    Logger.Warning(
+                                        $"Gemini primary model {_primaryModelName} returned HTTP 503 after " +
+                                        $"{attemptStopwatch.Elapsed.TotalSeconds:F1}s; temporarily switching to " +
+                                        $"{alternateModel} within the same {RequestTimeout.TotalSeconds:F0}s budget");
+                                    currentModel = alternateModel;
+                                    probingPrimary = false;
+                                    continue;
+                                }
+
                                 var delay = GetTransientRetryDelay(response, json, attempt);
+                                if (!HasAttemptBudget(stopwatch, delay))
+                                {
+                                    Logger.Warning(
+                                        $"Gemini retry skipped because only " +
+                                        $"{Math.Max(0, (RequestTimeout - stopwatch.Elapsed).TotalSeconds):F1}s remain " +
+                                        $"after HTTP {(int)response.StatusCode}; preserving the provider failure");
+                                    return BuildDiagnosticFailure(
+                                        diagnostics,
+                                        currentModel,
+                                        attemptsUsed,
+                                        stopwatch.ElapsedMilliseconds,
+                                        "Gemini retry budget exhausted after provider failure");
+                                }
                                 Logger.Warning(
-                                    $"Gemini API temporarily unavailable: HTTP {(int)response.StatusCode}. " +
+                                    $"Gemini API model {currentModel} temporarily unavailable: HTTP {(int)response.StatusCode}. " +
                                     $"Retrying in {delay.TotalSeconds:F1}s (attempt {attempt + 1}/{MaxAttempts}).");
                                 await Task.Delay(delay, linkedCts.Token);
                                 continue;
@@ -298,9 +366,17 @@ namespace AIWeather.Services
                             throw new GeminiApiException(response.StatusCode, json, attempt, isTransient);
                         }
 
-                        if (_quotaCircuit.Reset())
+                        diagnostics.Add(CreateDiagnostic(
+                            attempt,
+                            currentModel,
+                            response.StatusCode,
+                            AnalysisFailureCategory.None,
+                            attemptStopwatch.ElapsedMilliseconds,
+                            "success"));
+
+                        if (_quotaCircuitForModel(currentModel).Reset())
                         {
-                            Logger.Info("Gemini quota circuit closed after a successful API response");
+                            Logger.Info($"Gemini quota circuit closed for {currentModel} after a successful API response");
                         }
 
                         Logger.Info("Gemini API responded, parsing response...");
@@ -316,34 +392,79 @@ namespace AIWeather.Services
                                 AnalysisMetadata.FailedOnline(
                                     AnalysisOrigin.Gemini,
                                     "Gemini",
-                                    _modelName,
+                                    currentModel,
                                     AnalysisFailureCategory.SchemaRejected,
                                     attempt,
                                     stopwatch.ElapsedMilliseconds,
-                                    (int)response.StatusCode),
+                                    (int)response.StatusCode,
+                                    attemptDiagnostics: diagnostics),
                                 validationReason);
                         }
 
+                        RecordModelSuccess(currentModel);
                         result.Provenance = AnalysisMetadata.Online(
                             AnalysisOrigin.Gemini,
                             "Gemini",
-                            _modelName,
+                            currentModel,
                             attempt,
                             stopwatch.ElapsedMilliseconds,
-                            (int)response.StatusCode);
+                            (int)response.StatusCode,
+                            diagnostics);
                         Logger.Info($"Gemini analysis complete: {result.Condition}, Cloud Coverage: {result.CloudCoverage:F1}%");
                         return OnlineAnalysisAttempt.Succeeded(result);
                     }
+                    catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+                    {
+                        diagnostics.Add(CreateDiagnostic(
+                            attempt,
+                            currentModel,
+                            null,
+                            AnalysisFailureCategory.Timeout,
+                            attemptStopwatch.ElapsedMilliseconds,
+                            "timeout"));
+                        Logger.Warning(
+                            $"Gemini model {currentModel} exhausted the bounded online-analysis budget; " +
+                            "retaining earlier HTTP evidence in provenance");
+                        return BuildDiagnosticFailure(
+                            diagnostics,
+                            currentModel,
+                            attemptsUsed,
+                            stopwatch.ElapsedMilliseconds,
+                            "Gemini request budget exhausted");
+                    }
                     catch (HttpRequestException ex) when (attempt < MaxAttempts)
                     {
+                        diagnostics.Add(CreateDiagnostic(
+                            attempt,
+                            currentModel,
+                            null,
+                            AnalysisFailureCategory.Network,
+                            attemptStopwatch.ElapsedMilliseconds,
+                            "network_error"));
                         var delay = GetTransientRetryDelay(null, null, attempt);
+                        if (!HasAttemptBudget(stopwatch, delay))
+                        {
+                            return BuildDiagnosticFailure(
+                                diagnostics,
+                                currentModel,
+                                attemptsUsed,
+                                stopwatch.ElapsedMilliseconds,
+                                "Gemini retry budget exhausted after network failure");
+                        }
                         Logger.Warning(
-                            $"Gemini network request failed: {ex.Message}. " +
+                            $"Gemini model {currentModel} network request failed: {ex.Message}. " +
                             $"Retrying in {delay.TotalSeconds:F1}s (attempt {attempt + 1}/{MaxAttempts}).");
                         await Task.Delay(delay, linkedCts.Token);
                     }
                     catch (HttpRequestException ex)
                     {
+                        diagnostics.Add(CreateDiagnostic(
+                            attempt,
+                            currentModel,
+                            null,
+                            AnalysisFailureCategory.Network,
+                            attemptStopwatch.ElapsedMilliseconds,
+                            "network_error"));
                         throw new GeminiApiException(null, ex.Message, attempt, true, ex);
                     }
                 }
@@ -358,14 +479,21 @@ namespace AIWeather.Services
                 }
 
                 Logger.Warning($"Gemini API call timed out: {ex.Message}");
-                return OnlineAnalysisAttempt.Failed(
-                    AnalysisMetadata.FailedOnline(
-                        AnalysisOrigin.Gemini,
-                        "Gemini",
-                        _modelName,
+                if (diagnostics.Count == 0)
+                {
+                    diagnostics.Add(CreateDiagnostic(
+                        Math.Max(1, attemptsUsed),
+                        currentModel,
+                        null,
                         AnalysisFailureCategory.Timeout,
-                        attemptsUsed,
-                        stopwatch.ElapsedMilliseconds),
+                        stopwatch.ElapsedMilliseconds,
+                        "timeout"));
+                }
+                return BuildDiagnosticFailure(
+                    diagnostics,
+                    currentModel,
+                    attemptsUsed,
+                    stopwatch.ElapsedMilliseconds,
                     "Gemini request timed out");
             }
             catch (GeminiApiException ex)
@@ -376,16 +504,14 @@ namespace AIWeather.Services
                     : $"Gemini request rejected ({status})";
 
                 Logger.Error($"{reason}: {ex.Message}");
-                return OnlineAnalysisAttempt.Failed(
-                    AnalysisMetadata.FailedOnline(
-                        AnalysisOrigin.Gemini,
-                        "Gemini",
-                        _modelName,
-                        AnalysisMetadata.FromHttpStatus(ex.StatusCode),
-                        ex.Attempts,
-                        stopwatch.ElapsedMilliseconds,
-                        ex.StatusCode.HasValue ? (int)ex.StatusCode.Value : null),
-                    reason);
+                return BuildDiagnosticFailure(
+                    diagnostics,
+                    currentModel,
+                    ex.Attempts,
+                    stopwatch.ElapsedMilliseconds,
+                    reason,
+                    AnalysisMetadata.FromHttpStatus(ex.StatusCode),
+                    ex.StatusCode.HasValue ? (int)ex.StatusCode.Value : null);
             }
             catch (JsonException ex)
             {
@@ -394,11 +520,12 @@ namespace AIWeather.Services
                     AnalysisMetadata.FailedOnline(
                         AnalysisOrigin.Gemini,
                         "Gemini",
-                        _modelName,
+                        currentModel,
                         AnalysisFailureCategory.MalformedResponse,
                         attemptsUsed,
                         stopwatch.ElapsedMilliseconds,
-                        200),
+                        200,
+                        attemptDiagnostics: diagnostics),
                     "Gemini response envelope was malformed");
             }
             catch (Exception ex)
@@ -408,14 +535,174 @@ namespace AIWeather.Services
                     AnalysisMetadata.FailedOnline(
                         AnalysisOrigin.Gemini,
                         "Gemini",
-                        _modelName,
+                        currentModel,
                         ex is HttpRequestException
                             ? AnalysisFailureCategory.Network
                             : AnalysisFailureCategory.Unknown,
                         attemptsUsed,
-                        stopwatch.ElapsedMilliseconds),
+                        stopwatch.ElapsedMilliseconds,
+                        attemptDiagnostics: diagnostics),
                     ex.GetType().Name);
             }
+        }
+
+        private string GetStartingModel(out bool probingPrimary)
+        {
+            lock (_failoverGate)
+            {
+                if (string.IsNullOrWhiteSpace(_alternateModelName))
+                {
+                    probingPrimary = false;
+                    return _primaryModelName;
+                }
+
+                if (_alternateSuccesses >= PrimaryProbeAfterAlternateSuccesses)
+                {
+                    probingPrimary = true;
+                    return _primaryModelName;
+                }
+
+                probingPrimary = false;
+                return _alternateModelName;
+            }
+        }
+
+        private bool TrySelectAlternateModel(out string alternateModel)
+        {
+            lock (_failoverGate)
+            {
+                if (!string.IsNullOrWhiteSpace(_alternateModelName))
+                {
+                    alternateModel = _alternateModelName;
+                    return true;
+                }
+            }
+
+            var candidates = _injectedFailoverCandidates
+                ?? GeminiModelFailoverCatalog.GetFailoverCandidates(_primaryModelName);
+            alternateModel = candidates.FirstOrDefault() ?? string.Empty;
+            return alternateModel.Length > 0;
+        }
+
+        private void ActivateAlternate(string alternateModel)
+        {
+            lock (_failoverGate)
+            {
+                if (!string.Equals(_alternateModelName, alternateModel, StringComparison.OrdinalIgnoreCase))
+                {
+                    _alternateModelName = alternateModel;
+                    _alternateSuccesses = 0;
+                }
+                else
+                {
+                    // A primary recovery probe failed again. Start a fresh, short hold on
+                    // the already selected alternate before probing the primary once more.
+                    _alternateSuccesses = 0;
+                }
+            }
+        }
+
+        private void RecordModelSuccess(string modelName)
+        {
+            lock (_failoverGate)
+            {
+                if (string.Equals(modelName, _primaryModelName, StringComparison.OrdinalIgnoreCase))
+                {
+                    if (!string.IsNullOrWhiteSpace(_alternateModelName))
+                    {
+                        Logger.Info(
+                            $"Gemini configured primary {_primaryModelName} recovered; " +
+                            $"leaving temporary alternate {_alternateModelName}");
+                    }
+                    _alternateModelName = null;
+                    _alternateSuccesses = 0;
+                    return;
+                }
+
+                if (!string.Equals(modelName, _alternateModelName, StringComparison.OrdinalIgnoreCase))
+                {
+                    _alternateModelName = modelName;
+                    _alternateSuccesses = 0;
+                }
+
+                _alternateSuccesses = Math.Min(
+                    PrimaryProbeAfterAlternateSuccesses,
+                    _alternateSuccesses + 1);
+                Logger.Info(
+                    $"Gemini temporary alternate {modelName} succeeded " +
+                    $"({_alternateSuccesses}/{PrimaryProbeAfterAlternateSuccesses}); " +
+                    (_alternateSuccesses >= PrimaryProbeAfterAlternateSuccesses
+                        ? $"the next online check will probe configured primary {_primaryModelName}"
+                        : "the alternate will handle one more online check before probing the primary"));
+            }
+        }
+
+        private static bool HasAttemptBudget(Stopwatch stopwatch, TimeSpan delay)
+        {
+            return RequestTimeout - stopwatch.Elapsed - delay >= MinimumAttemptBudget;
+        }
+
+        private static AnalysisAttemptDiagnostic CreateDiagnostic(
+            int attempt,
+            string model,
+            HttpStatusCode? statusCode,
+            AnalysisFailureCategory category,
+            long durationMilliseconds,
+            string outcome)
+        {
+            return new AnalysisAttemptDiagnostic
+            {
+                Attempt = Math.Max(1, attempt),
+                Model = model,
+                HttpStatus = statusCode.HasValue ? (int)statusCode.Value : null,
+                FailureCategory = category,
+                DurationMilliseconds = Math.Max(0, durationMilliseconds),
+                Outcome = outcome
+            };
+        }
+
+        private static OnlineAnalysisAttempt BuildDiagnosticFailure(
+            IReadOnlyList<AnalysisAttemptDiagnostic> diagnostics,
+            string currentModel,
+            int attempts,
+            long latencyMilliseconds,
+            string reason,
+            AnalysisFailureCategory fallbackCategory = AnalysisFailureCategory.Unknown,
+            int? fallbackHttpStatus = null)
+        {
+            // A concrete provider response is more informative than a later budget timeout.
+            // In particular, retain the HTTP 503 that caused failover instead of reporting
+            // only a generic timeout from the final attempt.
+            var strongest = diagnostics.LastOrDefault(item => item.HttpStatus == 503)
+                ?? diagnostics.LastOrDefault();
+            var category = strongest?.FailureCategory ?? fallbackCategory;
+            if (category == AnalysisFailureCategory.None)
+            {
+                category = fallbackCategory;
+            }
+            var httpStatus = strongest?.HttpStatus ?? fallbackHttpStatus;
+            var model = strongest?.Model ?? currentModel;
+            var providerFailureCode = category switch
+            {
+                AnalysisFailureCategory.ServiceUnavailable => "service_unavailable",
+                AnalysisFailureCategory.Timeout => "timeout",
+                AnalysisFailureCategory.Network => "network_error",
+                AnalysisFailureCategory.ModelUnavailable => "model_unavailable",
+                _ => null
+            };
+
+            return OnlineAnalysisAttempt.Failed(
+                AnalysisMetadata.FailedOnline(
+                    AnalysisOrigin.Gemini,
+                    "Gemini",
+                    model,
+                    category,
+                    Math.Max(attempts, diagnostics.Count),
+                    latencyMilliseconds,
+                    httpStatus,
+                    providerFailureCode: providerFailureCode,
+                    attemptDiagnostics: diagnostics),
+                reason);
         }
 
         private static bool IsTransientStatus(HttpStatusCode statusCode)
@@ -425,11 +712,13 @@ namespace AIWeather.Services
         }
 
         private OnlineAnalysisAttempt BuildQuotaFailure(
+            string modelName,
             GeminiQuotaCircuitState circuit,
             int attempts,
             long latencyMilliseconds,
             int? httpStatus,
-            bool requestSuppressed)
+            bool requestSuppressed,
+            IReadOnlyList<AnalysisAttemptDiagnostic>? diagnostics = null)
         {
             var retryAfterUtc = circuit.RetryAfterUtc.UtcDateTime;
             var action = requestSuppressed ? "API request skipped" : "API request rejected";
@@ -449,7 +738,7 @@ namespace AIWeather.Services
                 AnalysisMetadata.FailedOnline(
                     AnalysisOrigin.Gemini,
                     "Gemini",
-                    _modelName,
+                    modelName,
                     AnalysisFailureCategory.QuotaExhausted,
                     attempts,
                     latencyMilliseconds,
@@ -459,7 +748,8 @@ namespace AIWeather.Services
                     quotaMetric: circuit.QuotaMetric,
                     quotaId: circuit.QuotaId,
                     consecutiveQuotaFailures: circuit.ConsecutiveFailures,
-                    requestSuppressed: requestSuppressed),
+                    requestSuppressed: requestSuppressed,
+                    attemptDiagnostics: diagnostics),
                 reason);
         }
 
@@ -471,7 +761,7 @@ namespace AIWeather.Services
                 AnalysisMetadata.FailedOnline(
                     AnalysisOrigin.Gemini,
                     "Gemini",
-                    _modelName,
+                    _primaryModelName,
                     AnalysisFailureCategory.ScheduledLocal,
                     attempts: 0,
                     latencyMilliseconds,
