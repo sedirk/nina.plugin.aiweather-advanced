@@ -155,6 +155,30 @@
                                     HorizontalAlignment="Center"/>
                         </StackPanel>
                     </Border>
+
+                    <!-- Keep RTSP failures observable on the machine where they occur. The
+                         cluster verdict can remain healthy while this terminal's native VLC
+                         surface fails, so a blank panel alone is not a useful diagnostic. -->
+                    <Border Visibility="{Binding IsPreviewStreamStatusVisible, Converter={StaticResource BoolToVisibility}}"
+                            Background="#CC202B30"
+                            CornerRadius="3"
+                            Padding="12,8"
+                            Margin="18"
+                            HorizontalAlignment="Center"
+                            VerticalAlignment="Bottom">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="{Binding PreviewStreamStatusText}"
+                                       Foreground="White"
+                                       TextWrapping="Wrap"
+                                       VerticalAlignment="Center"
+                                       MaxWidth="520"/>
+                            <Button Content="{i18n:Loc Preview.VideoRetry}"
+                                    Command="{Binding RetryPreviewCommand}"
+                                    Visibility="{Binding IsPreviewStreamRetryAvailable, Converter={StaticResource BoolToVisibility}}"
+                                    Margin="12,0,0,0"
+                                    Padding="10,3"/>
+                        </StackPanel>
+                    </Border>
                     
                 </Grid>
             </Border>

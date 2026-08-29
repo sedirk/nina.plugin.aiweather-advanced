@@ -12,6 +12,7 @@ using NINA.Core.Utility;
 using AIWeather.Views;
 using AIWeather.Models;
 using AIWeather.Services;
+using AIWeather.Localization;
 using System.Windows.Controls.Primitives;
 using MediaColor = System.Windows.Media.Color;
 using SolidColorBrush = System.Windows.Media.SolidColorBrush;
@@ -36,6 +37,9 @@ namespace AIWeather
         private string? _activePlaybackUrl;
         private VideoHostLayout? _lastLoggedVideoLayout;
         private bool _videoSurfaceReady;
+        private double _decodedVideoWidth;
+        private double _decodedVideoHeight;
+        private int _voutObserved;
         private readonly RtspPreviewHealthMonitor _previewHealthMonitor = new RtspPreviewHealthMonitor();
         private int _previewRecoveryScheduled;
         private int _previewUnhealthy;
@@ -324,6 +328,7 @@ namespace AIWeather
                 }
 
                 _isStartingStream = true;
+                ReportPreviewStatus(UiLocalization.Text("Preview.VideoConnecting"));
 
                 Logger.Info($"StartStream called with URL: {RedactRtspCredentials(rtspUrl)}");
                 Logger.Info($"Authentication: {(string.IsNullOrWhiteSpace(username) ? "not configured separately" : "configured")}");
@@ -331,12 +336,14 @@ namespace AIWeather
                 if (_libVLC == null)
                 {
                     Logger.Error("LibVLC not initialized - cannot start stream");
+                    ReportPreviewFailure(UiLocalization.Text("Preview.VideoLibVlcUnavailable"));
                     return;
                 }
 
                 if (VideoPanel == null)
                 {
                     Logger.Error("VideoPanel is null - XAML element not found!");
+                    ReportPreviewFailure(UiLocalization.Text("Preview.VideoViewUnavailable"));
                     return;
                 }
 
@@ -346,10 +353,12 @@ namespace AIWeather
                 if (!forceRestart
                     && Volatile.Read(ref _previewUnhealthy) == 0
                     && _videoHost?.Player?.IsPlaying == true
+                    && _videoSurfaceReady
                     && string.Equals(_activePlaybackUrl, playbackUrl, StringComparison.Ordinal))
                 {
                     Logger.Debug("RTSP preview is already playing this source; skipping duplicate restart");
                     UpdateVideoHostLayoutToFit();
+                    ReportPreviewStatus(null);
                     return;
                 }
 
@@ -411,6 +420,9 @@ namespace AIWeather
                     Height = initialViewport.Height
                 };
                 _videoSurfaceReady = false;
+                _decodedVideoWidth = 0;
+                _decodedVideoHeight = 0;
+                Volatile.Write(ref _voutObserved, 0);
                 _lastLoggedVideoLayout = null;
                 _previewHealthMonitor.ResetBurst();
                 Volatile.Write(ref _previewUnhealthy, 0);
@@ -440,6 +452,7 @@ namespace AIWeather
                 {
                     Logger.Error("VideoHost handle never became available; aborting playback setup");
                     await StopStreamCoreAsync();
+                    ReportPreviewFailure(UiLocalization.Text("Preview.VideoSurfaceUnavailable"));
                     return;
                 }
 
@@ -479,6 +492,7 @@ namespace AIWeather
                 {
                     Logger.Error("Play() returned false - VLC refused to play media");
                     await StopStreamCoreAsync();
+                    ReportPreviewFailure(UiLocalization.Text("Preview.VideoOpenFailed"));
                     return;
                 }
 
@@ -543,12 +557,21 @@ namespace AIWeather
                     // that reservation as well as the failed player so headless monitoring
                     // can use its independent OpenCV path on the next analysis cycle.
                     await StopStreamCoreAsync();
+                    ReportPreviewFailure(UiLocalization.Text("Preview.VideoOpenFailed"));
                 }
                 else
                 {
                     _activePlaybackUrl = playbackUrl;
                     _previewHealthMonitor.ResetBurst();
                     Volatile.Write(ref _previewUnhealthy, 0);
+                    if (_videoSurfaceReady)
+                    {
+                        ReportPreviewStatus(null);
+                    }
+                    else
+                    {
+                        ReportPreviewFailure(UiLocalization.Text("Preview.VideoSurfaceUnavailable"));
+                    }
                 }
 
                 Logger.Info($"Started RTSP stream: {RedactRtspCredentials(playbackUrl)}");
@@ -563,12 +586,14 @@ namespace AIWeather
                 Logger.Error($"Invalid RTSP URL format: {ex.Message}");
                 Logger.Error("URL must be in format: rtsp://[username:password@]camera-ip[:port]/path");
                 await StopStreamCoreAsync();
+                ReportPreviewFailure(UiLocalization.Text("Preview.VideoUrlInvalid"));
             }
             catch (Exception ex)
             {
                 Logger.Error($"Failed to start RTSP stream: {ex.Message}", ex);
                 Logger.Error("Common issues: Wrong URL, authentication failure, network error, or camera offline.");
                 await StopStreamCoreAsync();
+                ReportPreviewFailure(UiLocalization.Text("Preview.VideoOpenFailed"));
             }
             finally
             {
@@ -647,6 +672,19 @@ namespace AIWeather
             }
         }
 
+        private void ReportPreviewStatus(string? text, bool retryAvailable = false)
+        {
+            if (DataContext is AIWeatherPreviewViewModel viewModel)
+            {
+                viewModel.SetPreviewStreamStatus(text, retryAvailable);
+            }
+        }
+
+        private void ReportPreviewFailure(string text)
+        {
+            ReportPreviewStatus(text, retryAvailable: true);
+        }
+
         private static Bitmap? TryLoadSnapshot(string path)
         {
             try
@@ -710,6 +748,7 @@ namespace AIWeather
                 await StopStreamCoreAsync();
                 _previewHealthMonitor.ResetAll();
                 Volatile.Write(ref _previewUnhealthy, 0);
+                ReportPreviewStatus(null);
             }
             catch (Exception ex)
             {
@@ -775,6 +814,9 @@ namespace AIWeather
                     _videoHost = null;
                     _lastLoggedVideoLayout = null;
                     _videoSurfaceReady = false;
+                    _decodedVideoWidth = 0;
+                    _decodedVideoHeight = 0;
+                    Volatile.Write(ref _voutObserved, 0);
 
                     // Stop/Dispose can sometimes block. Do it off-UI with a timeout.
                     await StopAndDisposePlayerBestEffortAsync(player, TimeSpan.FromSeconds(2));
@@ -928,6 +970,8 @@ namespace AIWeather
                 return;
             }
 
+            Volatile.Write(ref _voutObserved, 1);
+
             Dispatcher.BeginInvoke(new Action(async () =>
             {
                 try
@@ -950,13 +994,12 @@ namespace AIWeather
             MediaPlayer player,
             CancellationToken cancellationToken)
         {
-            // Vout/Playing can be raised just before libvlc_video_get_size starts returning
-            // dimensions. The dedicated target is full-sized under a native theme cover while
-            // polling, so VLC can initialize without exposing its white startup surface.
-            // This camera/LibVLC combination can create its visible output child several
-            // seconds after the first Vout notification. Keep probing long enough to catch it;
-            // the theme cover remains in place throughout, so the wait cannot expose white.
-            for (var attempt = 0; attempt < 600; attempt++)
+            // Vout/Playing can be raised before libvlc_video_get_size starts returning
+            // dimensions. Keep the real render target full-sized under the native cover and
+            // accept three independent signs of readiness: LibVLC size, a rendered output
+            // child, or a successfully decoded snapshot. The last one is important on Windows
+            // machines whose Direct3D backend renders correctly but reports video_get_size=0.
+            for (var attempt = 0; attempt < 60; attempt++)
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 if (_videoHost == null || !ReferenceEquals(_videoHost.Player, player))
@@ -997,11 +1040,110 @@ namespace AIWeather
                     }
                 }
 
+                // Probe only twice per second. TakeSnapshot uses this MediaPlayer, so it does
+                // not open another RTSP connection or alter the single-session architecture.
+                if (attempt >= 5
+                    && attempt % 5 == 0
+                    && await TryProbeDecodedFrameSizeAsync(player, cancellationToken))
+                {
+                    _videoSurfaceReady = true;
+                    if (TryUpdateVideoHostLayoutToFit(allowBeforeReady: true))
+                    {
+                        _videoHost?.ShowVideoSurface();
+                        Logger.Info(
+                            $"RTSP preview surface revealed from decoded-frame probe: " +
+                            $"{_decodedVideoWidth:0}x{_decodedVideoHeight:0}");
+                        return true;
+                    }
+                }
+
                 await Task.Delay(100, cancellationToken);
             }
 
-            Logger.Warning("RTSP video dimensions were unavailable 60 seconds after Vout; preview surface remains behind the theme cover instead of showing a white native window");
+            // A Vout callback itself proves that VLC created a video output. If this backend
+            // exposes neither dimensions nor snapshots, reveal a conventional 16:9 target
+            // after a bounded warm-up instead of leaving a permanent dark cover. Do not apply
+            // this fallback when Playing was raised without any Vout: that would hide a real
+            // decoder/open failure behind an apparently successful black preview.
+            if (Volatile.Read(ref _voutObserved) == 0)
+            {
+                Logger.Warning(
+                    "RTSP playback reported Playing, but no video output or decoded frame " +
+                    "became available within 6 seconds");
+                return false;
+            }
+
+            // The video target is SS_BLACKRECT, so it stays dark rather than flashing white
+            // while the first frame is still being painted.
+            _decodedVideoWidth = 16;
+            _decodedVideoHeight = 9;
+            _videoSurfaceReady = true;
+            if (TryUpdateVideoHostLayoutToFit(allowBeforeReady: true))
+            {
+                _videoHost?.ShowVideoSurface();
+                Logger.Warning(
+                    "RTSP backend did not expose video dimensions within 6 seconds; " +
+                    "revealed the active vout using a 16:9 compatibility viewport");
+                return true;
+            }
+
+            Logger.Warning(
+                "RTSP vout started but the compatibility viewport could not be laid out");
             return false;
+        }
+
+        private async Task<bool> TryProbeDecodedFrameSizeAsync(
+            MediaPlayer player,
+            CancellationToken cancellationToken)
+        {
+            if (_videoHost == null
+                || !ReferenceEquals(_videoHost.Player, player)
+                || player.IsPlaying != true)
+            {
+                return false;
+            }
+
+            var tempPath = Path.Combine(
+                Path.GetTempPath(),
+                $"aiweather_preview_probe_{Guid.NewGuid():N}.png");
+            try
+            {
+                if (!player.TakeSnapshot(0, tempPath, 0, 0))
+                {
+                    return false;
+                }
+
+                for (var wait = 0; wait < 10; wait++)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    var frame = await Task.Run(
+                        () => TryLoadSnapshot(tempPath),
+                        cancellationToken);
+                    if (frame != null)
+                    {
+                        using (frame)
+                        {
+                            _decodedVideoWidth = frame.Width;
+                            _decodedVideoHeight = frame.Height;
+                        }
+
+                        return _decodedVideoWidth > 1 && _decodedVideoHeight > 1;
+                    }
+
+                    await Task.Delay(50, cancellationToken);
+                }
+
+                return false;
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                Logger.Debug($"Decoded-frame preview probe was unavailable: {ex.Message}");
+                return false;
+            }
+            finally
+            {
+                TryDeleteSnapshot(tempPath);
+            }
         }
 
         private void PasswordBox_Loaded(object sender, RoutedEventArgs e)
@@ -1137,7 +1279,15 @@ namespace AIWeather
 
             return _videoHost != null
                 && ReferenceEquals(_videoHost.Player, player)
-                && _videoHost.TryGetRenderedVideoSize(out videoWidth, out videoHeight);
+                && (_videoHost.TryGetRenderedVideoSize(out videoWidth, out videoHeight)
+                    || TryGetDecodedVideoSize(out videoWidth, out videoHeight));
+        }
+
+        private bool TryGetDecodedVideoSize(out double videoWidth, out double videoHeight)
+        {
+            videoWidth = _decodedVideoWidth;
+            videoHeight = _decodedVideoHeight;
+            return videoWidth > 1 && videoHeight > 1;
         }
     }
 }

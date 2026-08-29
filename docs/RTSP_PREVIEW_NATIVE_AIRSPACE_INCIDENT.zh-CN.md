@@ -1,11 +1,12 @@
-# RTSP 实时预览白底与空白事故：根因、设计取舍和最终修复
+# RTSP 实时预览白底与空白事故：根因、跨机器回归与修复
 
 ## 文档状态
 
-- 状态：已修复，并完成真实 N.I.N.A.、真实 RTSP 摄像机和在线天气分析联合验收
+- 状态：第一阶段白底修复已验收；2026-08-29 发现跨机器空白回归并完成第二阶段代码修复，等待从节点现场复验
 - 确认日期：2026-08-23
 - 空域与启动显示修复版本：`1.22.4.0`
 - 长时播放冻结修复版本：`1.22.5.0`
+- 跨机器原生输出兼容修复：`1.30.0.0`（候选）
 - 首个完整修复提交：`cadefb4`（`fix: stabilize native RTSP preview lifecycle`）
 - 影响范围：AI Weather 的 N.I.N.A. 内嵌 RTSP 实时预览
 - 不受本事故直接影响的链路：OpenCV 天气分析捕获、Safety Monitor 判断和教师—学生标签绑定
@@ -18,12 +19,14 @@
 
 中间修复曾把视频目标隐藏、缩成 `1×1` 或放到不可见位置。这样虽然暂时避免白色，却使本机 LibVLC/摄像机组合无法正常建立视频输出，触发 `buffer deadlock prevented`，最终形成“天气分析成功但预览一直空白”的 `1.22.3` 回归。
 
-最终方案同时满足两个看似矛盾的约束：
+第一阶段方案曾试图同时满足两个看似矛盾的约束：
 
 - LibVLC 必须始终获得一个正常尺寸、`Visible`、位于屏幕内的原生视频目标，才能可靠初始化；
 - 在首帧准备好以前，这个原生空域又不能出现在用户屏幕上，否则会暴露系统白底。
 
-实现方法是：保持视频目标本身为正常尺寸和可见状态，只把最外层 `HwndHost` 的**可见窗口区域**暂时裁成一个原生像素。LibVLC 仍对完整目标解码，用户看到的则是下面真正的 N.I.N.A. WPF 主题背景。确认视频尺寸并经过短暂首帧准备后，清除裁切区域，显示实时画面。视频出现后，整个原生宿主按照真实宽高比居中，因此周围留白也是 WPF 主题像素，而不是 VLC 的原生留白。
+最初实现保持视频目标本身为正常尺寸和可见状态，但把最外层 `HwndHost` 的**可见窗口区域**暂时裁成一个原生像素。这在首台电脑上通过了真实设备验收，却在另一台使用不同 Windows/显卡/LibVLC 输出后端的从节点上形成永久空白：该后端把父窗口的 `1×1` region 当成实际可用输出，始终不发布视频尺寸，插件又把“取得尺寸”作为撤掉遮罩的必要条件，最终陷入等待。
+
+第二阶段修复取消所有 `1×1` region：视频目标和外层宿主从创建起都保持完整尺寸，白底由完整尺寸的原生深色盖板和黑色专用视频目标共同隔离。画面就绪不再只依赖 `video_get_size`，而依次接受 LibVLC 尺寸、实际输出子窗口尺寸、同一 `MediaPlayer` 的已解码快照尺寸三种证据；如果 VLC 已触发 `Vout` 但后端在 6 秒内仍不公开尺寸，则以 `16:9` 兼容视口揭开已经活动的视频输出，避免永久黑屏。整个过程仍只有一条 RTSP 会话。
 
 ## 2. 用户可见症状
 
@@ -91,7 +94,7 @@ VLC: buffer deadlock prevented
 
 ### 4.4 过早判定“首帧已准备”
 
-`MediaPlayer.Play()` 返回 `true`、状态变为 `Playing`，甚至 `libvlc_video_get_size` 返回宽高，都不保证屏幕上已经呈现第一帧。最终实现把“有解码尺寸”和短暂首帧准备作为揭开原生窗口的最低条件，并在 60 秒内持续探测实际输出。
+`MediaPlayer.Play()` 返回 `true`、状态变为 `Playing`，甚至 `libvlc_video_get_size` 返回宽高，都不保证屏幕上已经呈现第一帧；反过来，一些 Windows 视频后端已经解码并能够导出快照，却始终让 `video_get_size` 保持为 `0×0`。因此不能把单一 API 当成永久遮挡或揭开的唯一条件。当前实现采用尺寸、原生输出子窗口、已解码快照三重证据，并为已经触发 `Vout` 的后端设置 6 秒有界兼容揭开。
 
 ## 5. 现场证据
 
@@ -134,53 +137,53 @@ Static (theme cover)         675x380
 
 这进一步证明显示故障位于 LibVLC/WPF 预览链路，而不是模型请求、标签记录或安全状态逻辑。
 
-## 6. 最终设计
+## 6. 当前设计（跨机器兼容版）
 
-### 6.1 结构
+### 6.1 单终端单会话结构
 
 ```mermaid
 flowchart TB
-    P["WPF VideoPanel<br/>真实 N.I.N.A. 主题背景"]
-    H["居中的 HwndHost<br/>初始按 16:9，之后按真实视频比例"]
-    T["正常尺寸、Visible 的专用视频目标 HWND"]
-    V["LibVLC video main / video output"]
-    R["启动阶段：外层窗口区域裁为 1×1"]
-    S["首帧准备后：清除裁切区域"]
+    P["WPF VideoPanel<br/>N.I.N.A. 主题背景"]
+    H["完整尺寸 HwndHost<br/>不使用窗口 region 裁切"]
+    C["完整尺寸原生深色启动盖板"]
+    T["正常尺寸、Visible 的黑色专用视频目标"]
+    V["同一 LibVLC MediaPlayer / RTSP 会话"]
+    A["天气分析按需调用同一播放器 TakeSnapshot"]
 
-    P --> H --> T --> V
-    R --> H
-    S --> H
+    P --> H
+    H --> C
+    H --> T --> V
+    V --> A
 ```
+
+主节点和从节点可以各自建立一条到同一摄像头的 RTSP 会话；但在任意一台电脑内部，预览与天气分析只共享这一条 LibVLC 会话，不额外打开 OpenCV/FFmpeg 会话。只有共享播放器无法给出新帧时，独立解码器才作为健康回退尝试。
 
 ### 6.2 启动状态机
 
 ```mermaid
 stateDiagram-v2
     [*] --> Stopped
-    Stopped --> NativeTargetCreated: 点击开始
-    NativeTargetCreated --> StartupClipped: 创建正常尺寸可见 HWND\n外层区域裁为 1×1
-    StartupClipped --> Probing: LibVLC Play / Vout
-    Probing --> Probing: 尺寸暂不可用\n保持裁切
-    Probing --> FirstFrameWarmup: 获得真实视频尺寸
-    FirstFrameWarmup --> VisiblePlaying: 更新宽高比\n清除窗口区域裁切
-    VisiblePlaying --> VisiblePlaying: 窗口尺寸变化\n保持按比例居中
-    VisiblePlaying --> Stopped: 停止/切换来源/卸载
+    Stopped --> CoveredTarget: 创建完整尺寸可见目标和深色盖板
+    CoveredTarget --> Playing: LibVLC Play 成功
+    Playing --> Sized: MediaPlayer.Size 或输出子窗口返回尺寸
+    Playing --> SnapshotProven: 同一播放器成功导出已解码快照
+    Playing --> Compatibility: Vout 已活动但 6 秒内不公开尺寸
+    Sized --> VisiblePlaying: 250 ms 首帧准备后揭开
+    SnapshotProven --> VisiblePlaying: 使用快照宽高揭开
+    Compatibility --> VisiblePlaying: 使用 16:9 兼容视口揭开
+    VisiblePlaying --> VisiblePlaying: 面板变化时按比例重排
+    VisiblePlaying --> Stopped: 停止或切换来源
 ```
 
-### 6.3 为什么裁的是宿主可见区域，而不是视频目标尺寸
+### 6.3 为什么彻底取消 `1×1` region
 
-这两种 `1×1` 有本质区别：
+`SetWindowRgn(parent, 1×1)` 没有改变 `GetClientRect`，因此在第一台电脑上看似满足“LibVLC 仍获得正常目标尺寸”。但 Windows 的 Direct3D 输出后端不只读取客户区尺寸，还会考虑父窗口的真实可见区域。另一台从节点证明，这一 region 会让后端永远不建立可测量的 vout；主从状态同步和本地天气分析仍然工作，唯独原生预览永远被盖板挡住。
 
-| 做法 | LibVLC 看到的目标 | 屏幕上可见区域 | 结果 |
-|---|---|---|---|
-| 失败方案：视频目标缩成 `1×1` | `1×1` | `1×1` | Direct3D/解码可能死锁，不出画面 |
-| 最终方案：宿主窗口区域裁成 `1×1` | 正常 `675×380`、Visible、在屏幕内 | 1 个原生像素 | 解码正常；其余区域露出 WPF 主题 |
-
-最终方案调用 `SetWindowRgn` 只改变外层 HWND 的可见区域，不改变专用视频目标的大小、可见状态和屏幕位置。真实设备在保持裁切 60 秒的测试中仍成功完成 LibVLC 初始化；解除裁切时视频已经正常播放。
+当前实现保证父宿主、专用视频目标和 VLC 后代窗口在整个启动期都拥有完整可见区域。白底隔离交给专用黑色目标和完整尺寸原生盖板，不再通过破坏输出几何实现。
 
 ### 6.4 宽高比与留白归属
 
-启动时按 `16:9` 创建居中宿主，避免全高面板被原生窗口占满。取得真实宽高后，使用 `VideoFitCalculator.FitInside` 重新计算：
+启动时按 `16:9` 创建居中宿主；取得 LibVLC、原生输出窗口或快照给出的真实宽高后，使用 `VideoFitCalculator.FitInside` 重新计算：
 
 ```text
 scale = min(panelWidth / videoWidth, panelHeight / videoHeight)
@@ -188,21 +191,25 @@ hostWidth  = videoWidth  × scale
 hostHeight = videoHeight × scale
 ```
 
-整个 HwndHost 本身就只有视频比例大小，因此四周所有 letterbox/pillarbox 都属于 `VideoPanel` 的 WPF 背景。LibVLC 不再拥有、也无法重绘这些留白像素。
+整个 HwndHost 只占视频比例的区域，四周 letterbox/pillarbox 仍属于 `VideoPanel` 的 WPF 主题背景。若后端拒绝公开尺寸，暂以 `16:9` 兼容比例运行；这比永久空白更安全，也符合当前全天相机的真实输出比例。
 
-### 6.5 视频尺寸探测
+### 6.5 三重就绪判据
 
-尺寸探测按以下顺序工作：
+按以下优先级证明画面已解码：
 
-1. 调用 LibVLC `MediaPlayer.Size` 获取源视频宽高；
-2. 如果 LibVLC API 暂未返回尺寸，枚举专用视频目标下的 `VLC video output` 子窗口，使用其客户区作为临时可测尺寸；
-3. 最长探测 60 秒；
-4. 探测期间保持启动裁切；
-5. 如果超过 60 秒仍没有尺寸，保持主题背景，不主动暴露白色原生表面，并写入警告日志。
+1. `MediaPlayer.Size` 返回有效宽高；
+2. 枚举专用目标下的 `VLC video output` 子窗口得到有效客户区；
+3. 同一 `MediaPlayer.TakeSnapshot` 成功产生可解码图片，并使用图片宽高。
 
-### 6.6 并发 Vout 防护
+如果上述接口在 6 秒内都不给结果，但已经收到 `Vout`，插件使用 `16:9` 兼容视口揭开活动输出。快照探测只使用现有播放器，不会增加 RTSP 连接。
 
-LibVLC 的 `Vout` 和 `Playing` 通知可能重复或交错到达，从而启动多个异步探测任务。任意一个任务成功显示视频后，其他迟到任务必须先检查 `_videoSurfaceReady`，不得再次施加启动裁切。否则已经播放的预览可能在数秒后突然消失，看起来像随机故障。
+### 6.6 可观察性与人工恢复
+
+视频面板现在区分“天气安全状态”和“本机视频状态”。连接期间显示“正在连接本机相机视频流”；LibVLC、URL、HWND、播放或画面揭开失败时会显示明确原因和“重试本机视频”按钮。重试会强制重建本机播放器，但不会重连主节点、不会改变 Safety Monitor 判定，也不会保存或打印同步凭据。
+
+### 6.7 并发 Vout 防护
+
+LibVLC 的 `Vout` 和 `Playing` 通知可能重复或交错到达。任意任务成功显示视频后，其他迟到任务先检查 `_videoSurfaceReady`，不得重新抬起盖板。用户手动重试则显式 `forceRestart`，避免 `IsPlaying=true` 但画面尚未揭开时被错误当成健康播放。
 
 ## 7. 被否决的方案
 
@@ -210,11 +217,12 @@ LibVLC 的 `Vout` 和 `Playing` 通知可能重复或交错到达，从而启动
 |---|---|
 | 只修改 WPF `Background` | WPF 画刷无法控制 `HwndHost` 下的原生 Direct3D 表面 |
 | 修改外层 Static 背景画刷 | VLC 子窗口位于其上方，仍可清成白色 |
-| 添加主题色原生兄弟遮罩并置顶 | Direct3D 视频表面的合成不可靠地服从兄弟窗口视觉顺序；VLC 还会重排子窗口 |
+| 只添加 WPF 遮罩 | WPF 无法覆盖 HwndHost 原生空域；当前使用的是同一原生宿主内的 Win32 盖板和黑色目标 |
 | 让 VLC 直接占满面板、依赖自动比例 | 留白仍属于 VLC 原生表面，随机重绘会恢复白色 |
 | 隐藏视频目标 | VLC 后代窗口继承隐藏状态，预览可能永远不可见 |
 | 将视频目标设为 `1×1` | 真实设备触发视频输出死锁 |
 | 将视频目标移动到屏幕外 | 本机组合无法稳定建立有效 vout |
+| 将父 HwndHost 的 region 裁为 `1×1` | 首台机器能工作，但另一种 Direct3D 后端永远不发布输出尺寸，造成从节点永久空白 |
 | `Play()` 成功后立即显示 | `Playing` 不等于首帧已经呈现 |
 
 ## 8. 生命周期和资源安全
@@ -228,11 +236,11 @@ LibVLC 的 `Vout` 和 `Playing` 通知可能重复或交错到达，从而启动
 5. 销毁外层 HWND；其专用视频目标、VLC 后代窗口和主题表面随父窗口销毁；
 6. 释放插件创建的 GDI 画刷。
 
-`SetWindowRgn` 成功后，区域句柄所有权转交 Windows；失败时由插件调用 `DeleteObject` 释放，避免 GDI 泄漏。
+当前版本不会再创建或转交窗口 region；停止时仍释放插件创建的 GDI 画刷、原生窗口、MediaPlayer、Media 和共享帧注册。
 
 ## 9. 验收结果
 
-最终 `1.22.4.0` 在真实 N.I.N.A. 和真实全天相机上的自动验收结果：
+以下是第一阶段 `1.22.4.0` 在首台真实 N.I.N.A. 和真实全天相机上的历史验收结果。它能证明白底问题在该环境中消失，但不能证明 `1×1` region 对所有 Windows 视频后端都兼容：
 
 | 时间点 | 结果 |
 |---|---|
@@ -249,6 +257,13 @@ LibVLC 的 `Vout` 和 `Playing` 通知可能重复或交错到达，从而启动
 - `git diff --check`：通过；
 - 数据集、Gemini 配额退避、本地回退和本地化冒烟测试：`PASS dataset smoke suite`；
 - 构建 DLL 与安装到 N.I.N.A. 的 DLL SHA-256 完全一致。
+
+2026-08-29 第二阶段修复的本机自动结果：
+
+- 主项目 Release 编译：0 个错误；
+- 数据集、主从协议、单会话共享帧、Gemini 临时模型回退及本地化冒烟套件：通过；
+- `git diff --check`：通过；
+- 从节点现场画面：待安装候选版本后复验。自动测试不能模拟另一台电脑的 WPF/HwndHost/显卡合成路径，因此该项不能以编译成功替代。
 
 ## 10. 运维判据
 

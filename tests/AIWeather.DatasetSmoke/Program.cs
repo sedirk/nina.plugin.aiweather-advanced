@@ -826,6 +826,9 @@ internal static class Program
             CultureInfo.CurrentUICulture = CultureInfo.GetCultureInfo("zh-CN");
             Assert(UiLocalization.Text("Preview.ActivityLog") == "活动日志",
                 "Chinese localization was not selected for zh-CN");
+            Assert(UiLocalization.Text("Preview.VideoRetry") == "重试本机视频"
+                   && UiLocalization.Text("Preview.VideoSurfaceUnavailable").Contains("无法显示", StringComparison.Ordinal),
+                "Chinese local-preview diagnostics were not localized");
             var fallback = new WeatherAnalysisResult
             {
                 Condition = WeatherCondition.Overcast,

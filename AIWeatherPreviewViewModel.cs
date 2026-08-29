@@ -46,6 +46,8 @@ namespace AIWeather
         private CommunityToolkit.Mvvm.Input.AsyncRelayCommand? _keepDatasetSampleCommand;
         private DatasetLabelReviewWindow? _datasetReviewWindow;
         private bool _solarSuspensionShown;
+        private string _previewStreamStatusText = string.Empty;
+        private bool _previewStreamRetryAvailable;
 
         // Capture mode tracking
         public Models.CaptureMode CurrentCaptureMode
@@ -83,6 +85,9 @@ namespace AIWeather
         public bool IsNonRtspMode => HasReplicaPreviewSource && PreviewCaptureMode != Models.CaptureMode.RTSPStream;
         public bool IsFolderMode => HasReplicaPreviewSource && PreviewCaptureMode == Models.CaptureMode.FolderWatch;
         public bool IsUrlMode => HasReplicaPreviewSource && PreviewCaptureMode != Models.CaptureMode.FolderWatch;
+        public string PreviewStreamStatusText => _previewStreamStatusText;
+        public bool IsPreviewStreamStatusVisible => !string.IsNullOrWhiteSpace(_previewStreamStatusText);
+        public bool IsPreviewStreamRetryAvailable => _previewStreamRetryAvailable;
 
         private static Dispatcher? UiDispatcher => Application.Current?.Dispatcher;
 
@@ -217,6 +222,7 @@ namespace AIWeather
                 () => DatasetEnabled && _currentAnalysis != null);
             KeepDatasetSampleCommand = _keepDatasetSampleCommand;
             OpenDatasetReviewCommand = new CommunityToolkit.Mvvm.Input.RelayCommand(OpenDatasetReviewWindow);
+            RetryPreviewCommand = new CommunityToolkit.Mvvm.Input.AsyncRelayCommand(RetryPreviewAsync);
             AddSourceCommand = new CommunityToolkit.Mvvm.Input.RelayCommand(AddSource);
             DeleteSourceCommand = new CommunityToolkit.Mvvm.Input.RelayCommand<CameraSource?>(source =>
             {
@@ -469,7 +475,7 @@ namespace AIWeather
         /// takeover merely starts reusing this terminal's existing preview frames for local
         /// analysis.  Primary recovery stops the local verdict, not the preview stream.
         /// </summary>
-        public async Task SynchronizeReplicaPreviewAsync()
+        public async Task SynchronizeReplicaPreviewAsync(bool forceRestart = false)
         {
             if (!IsClusterReplica || _view == null)
             {
@@ -496,7 +502,11 @@ namespace AIWeather
                     Logger.Info(
                         $"Replica terminal is starting its synchronized RTSP preview: " +
                         $"{LogRedactor.RedactRtspUrl(source)}");
-                    await _view.StartStreamAsync(source, username, password);
+                    await _view.StartStreamAsync(
+                        source,
+                        username,
+                        password,
+                        forceRestart: forceRestart);
                     return;
                 }
 
@@ -635,6 +645,7 @@ namespace AIWeather
         public ICommand StartStopMonitoringCommand { get; }
         public ICommand KeepDatasetSampleCommand { get; }
         public ICommand OpenDatasetReviewCommand { get; }
+        public ICommand RetryPreviewCommand { get; }
 
         public string RtspUrl
         {
@@ -671,6 +682,38 @@ namespace AIWeather
         public string ReplicaModeDescription => _safetyMonitor.IsReplicaFailoverActive
             ? UiLocalization.Text("Preview.ReplicaFailover")
             : UiLocalization.Text("Preview.ReplicaNoVideo");
+
+        internal void SetPreviewStreamStatus(string? text, bool retryAvailable = false)
+        {
+            _previewStreamStatusText = text ?? string.Empty;
+            _previewStreamRetryAvailable = retryAvailable;
+            RaisePropertyChanged(nameof(PreviewStreamStatusText));
+            RaisePropertyChanged(nameof(IsPreviewStreamStatusVisible));
+            RaisePropertyChanged(nameof(IsPreviewStreamRetryAvailable));
+        }
+
+        private async Task RetryPreviewAsync()
+        {
+            SetPreviewStreamStatus(UiLocalization.Text("Preview.VideoConnecting"));
+            if (IsClusterReplica)
+            {
+                await SynchronizeReplicaPreviewAsync(forceRestart: true);
+                return;
+            }
+
+            var source = Sources?.FirstOrDefault(candidate => candidate.IsRunning)
+                         ?? Sources?.FirstOrDefault();
+            if (_view != null
+                && source != null
+                && CurrentCaptureMode == Models.CaptureMode.RTSPStream)
+            {
+                await _view.StartStreamAsync(
+                    source.FullUrl,
+                    source.Username,
+                    source.Password,
+                    forceRestart: true);
+            }
+        }
 
         public BitmapImage? CurrentImage
         {
