@@ -45,6 +45,11 @@ namespace AIWeather
         private int _previewUnhealthy;
         private IDisposable? _sharedPreviewFrameRegistration;
 
+        internal bool IsPreviewStreamHealthy =>
+            _videoHost?.Player?.IsPlaying == true
+            && _videoSurfaceReady
+            && Volatile.Read(ref _previewUnhealthy) == 0;
+
         public AIWeatherPreviewView()
         {
             InitializeComponent();
@@ -558,6 +563,7 @@ namespace AIWeather
                     // can use its independent OpenCV path on the next analysis cycle.
                     await StopStreamCoreAsync();
                     ReportPreviewFailure(UiLocalization.Text("Preview.VideoOpenFailed"));
+                    return;
                 }
                 else
                 {

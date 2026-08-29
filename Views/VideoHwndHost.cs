@@ -55,11 +55,13 @@ namespace AIWeather.Views
 
         internal void ShowVideoSurface()
         {
-            // Never region-clip the HwndHost while VLC is building its Direct3D output.
-            // Some Windows/GPU backends treat a 1x1 visible region as the actual render
-            // target and consequently never publish video dimensions. The full-size native
-            // theme cover below already hides VLC's startup paint without starving vout.
-            RemoveLegacyHostClip();
+            // Remove the startup clip only after the caller has confirmed a decoded video
+            // surface. Until this point WPF remains visible through the native airspace,
+            // instead of exposing either the target Static control or LibVLC's white vout.
+            if (_hwnd != IntPtr.Zero)
+            {
+                SetWindowRgn(_hwnd, IntPtr.Zero, true);
+            }
 
             if (_videoHwnd != IntPtr.Zero)
             {
@@ -70,7 +72,7 @@ namespace AIWeather.Views
 
         internal void ShowStartupCover()
         {
-            RemoveLegacyHostClip();
+            ApplyStartupClip();
 
             if (_themeHwnd != IntPtr.Zero)
             {
@@ -80,18 +82,29 @@ namespace AIWeather.Views
             }
         }
 
-        private void RemoveLegacyHostClip()
+        private void ApplyStartupClip()
         {
             if (_hwnd == IntPtr.Zero)
             {
                 return;
             }
 
-            // 1.26-1.29 used a 1x1 window region here to prevent a white startup flash.
-            // That also clipped the nested VLC target and deadlocked vout on some machines.
-            // Clearing a possible legacy region is harmless for a newly-created host and
-            // makes the cover, rather than the host region, the sole startup mask.
-            SetWindowRgn(_hwnd, IntPtr.Zero, true);
+            // Keep a single native pixel available so LibVLC/Direct3D still sees a visible,
+            // normally sized on-screen target. The rest of the HwndHost is clipped out and
+            // therefore shows the real WPF/N.I.N.A. theme beneath it. The 1.30 field log
+            // proved that its blank preview was a TCP connection failure before Vout, not a
+            // region-induced decoder failure; removing this clip merely exposed VLC's white
+            // connection surface.
+            var startupRegion = CreateRectRgn(0, 0, 1, 1);
+            if (startupRegion == IntPtr.Zero)
+            {
+                return;
+            }
+
+            if (SetWindowRgn(_hwnd, startupRegion, true) == 0)
+            {
+                DeleteObject(startupRegion);
+            }
         }
 
         internal bool TryGetRenderedVideoSize(out double width, out double height)
@@ -291,9 +304,7 @@ namespace AIWeather.Views
                 throw new Win32Exception(error, "CreateWindowEx failed for native theme cover");
             }
 
-            // Keep the full native surface available to LibVLC. _themeHwnd is positioned
-            // above _videoHwnd until the first decoded frame is proven ready.
-            RemoveLegacyHostClip();
+            ApplyStartupClip();
             InvalidateRect(_hwnd, IntPtr.Zero, true);
 
             return new HandleRef(this, _hwnd);
@@ -456,6 +467,9 @@ namespace AIWeather.Views
 
         [DllImport("gdi32.dll")]
         private static extern IntPtr CreateSolidBrush(uint colorRef);
+
+        [DllImport("gdi32.dll")]
+        private static extern IntPtr CreateRectRgn(int left, int top, int right, int bottom);
 
         [DllImport("gdi32.dll")]
         [return: MarshalAs(UnmanagedType.Bool)]

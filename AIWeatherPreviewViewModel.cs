@@ -42,6 +42,8 @@ namespace AIWeather
         private DispatcherTimer _refreshTimer;
         private readonly SemaphoreSlim _refreshGate = new SemaphoreSlim(1, 1);
         private readonly SemaphoreSlim _replicaPreviewGate = new SemaphoreSlim(1, 1);
+        private static readonly TimeSpan ReplicaPreviewRetryDelay = TimeSpan.FromMinutes(1);
+        private readonly ReplicaPreviewRetryGate _replicaPreviewRetryGate = new ReplicaPreviewRetryGate();
         private CommunityToolkit.Mvvm.Input.RelayCommand? _saveImageCommand;
         private CommunityToolkit.Mvvm.Input.AsyncRelayCommand? _keepDatasetSampleCommand;
         private DatasetLabelReviewWindow? _datasetReviewWindow;
@@ -492,6 +494,7 @@ namespace AIWeather
                         out var username,
                         out var password))
                 {
+                    _replicaPreviewRetryGate.Clear();
                     await _view.StopStreamAsync();
                     CurrentImage = null;
                     return;
@@ -499,6 +502,18 @@ namespace AIWeather
 
                 if (captureMode == Models.CaptureMode.RTSPStream)
                 {
+                    var sourceIdentity = SharedRtspPreviewFrameProvider.CreateSourceIdentity(source);
+                    if (!_replicaPreviewRetryGate.ShouldAttempt(
+                            sourceIdentity,
+                            DateTime.UtcNow,
+                            forceRestart))
+                    {
+                        Logger.Debug(
+                            $"Replica RTSP preview retry suppressed until " +
+                            $"{_replicaPreviewRetryGate.RetryAfterUtc:O} after the previous connection failure");
+                        return;
+                    }
+
                     Logger.Info(
                         $"Replica terminal is starting its synchronized RTSP preview: " +
                         $"{LogRedactor.RedactRtspUrl(source)}");
@@ -507,6 +522,22 @@ namespace AIWeather
                         username,
                         password,
                         forceRestart: forceRestart);
+
+                    if (_view.IsPreviewStreamHealthy)
+                    {
+                        _replicaPreviewRetryGate.Clear();
+                    }
+                    else
+                    {
+                        _replicaPreviewRetryGate.RecordFailure(
+                            sourceIdentity,
+                            DateTime.UtcNow,
+                            ReplicaPreviewRetryDelay);
+                        Logger.Warning(
+                            $"Replica RTSP preview connection failed; automatic retries for this " +
+                            $"source are paused until {_replicaPreviewRetryGate.RetryAfterUtc:O}. The manual " +
+                            $"retry button bypasses this delay.");
+                    }
                     return;
                 }
 

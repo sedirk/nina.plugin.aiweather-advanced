@@ -52,6 +52,7 @@ internal static class Program
             VerifyDatasetDefaults();
             VerifyLatestRtspFrameBuffer();
             VerifyReplicaPreviewSourcePolicy();
+            VerifyReplicaPreviewRetryGate();
             await VerifySharedRtspPreviewFrameProviderAsync();
             await VerifyUnifiedCapturePrefersSharedPreviewAsync();
             VerifyRtspPreviewFit();
@@ -544,6 +545,29 @@ internal static class Program
                 out _,
                 out _),
             "A non-replica node incorrectly resolved the replica-only preview source");
+    }
+
+    private static void VerifyReplicaPreviewRetryGate()
+    {
+        var gate = new ReplicaPreviewRetryGate();
+        var now = new DateTime(2026, 8, 29, 8, 0, 0, DateTimeKind.Utc);
+        const string firstSource = "camera-a:554/live";
+        const string secondSource = "camera-b:554/live";
+
+        Assert(gate.ShouldAttempt(firstSource, now, forceRestart: false),
+            "A fresh replica preview source was incorrectly held in retry backoff");
+
+        gate.RecordFailure(firstSource, now, TimeSpan.FromMinutes(1));
+        Assert(!gate.ShouldAttempt(firstSource, now.AddSeconds(5), forceRestart: false),
+            "Repeated cluster notifications bypassed replica preview failure backoff");
+        Assert(gate.ShouldAttempt(secondSource, now.AddSeconds(5), forceRestart: false),
+            "Changing the synchronized RTSP source did not bypass stale-source backoff");
+        Assert(gate.ShouldAttempt(firstSource, now.AddSeconds(5), forceRestart: true),
+            "Manual replica preview retry did not bypass automatic backoff");
+
+        gate.RecordFailure(firstSource, now, TimeSpan.FromMinutes(1));
+        Assert(gate.ShouldAttempt(firstSource, now.AddMinutes(1), forceRestart: false),
+            "Replica preview did not become retryable after the backoff expired");
     }
 
     private static async Task VerifySharedRtspPreviewFrameProviderAsync()
