@@ -13,7 +13,7 @@ namespace AIWeather.Services
     /// (playground, model catalog, inference API and BYOK): the endpoint this service
     /// called returns 404 unconditionally. Instead of paying a failed network round-trip
     /// and a confusing error on every monitoring cycle, the analysis goes straight to the
-    /// local heuristic fallback and the result says why. The type is kept so stored
+    /// bundled local ONNX fallback and the result says why. The type is kept so stored
     /// configurations that still select this provider keep loading.
     /// </summary>
     [System.Runtime.Versioning.SupportedOSPlatform("windows")]

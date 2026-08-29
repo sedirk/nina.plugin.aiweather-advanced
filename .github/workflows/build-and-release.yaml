@@ -84,6 +84,23 @@ jobs:
           Rename-Item -Path "manifest.json" -NewName "${{ env.PLUGIN_DLL_NAME }}.${{ github.ref_name }}.manifest.json"
           Rename-Item -Path "${{ env.PLUGIN_DLL_NAME }}.zip" -NewName "${{ env.PLUGIN_DLL_NAME }}.${{ github.ref_name }}.zip"
 
+          $archive = Get-Item "${{ env.PLUGIN_DLL_NAME }}.${{ github.ref_name }}.zip"
+          $archiveLimit = 180MB
+          if ($archive.Length -gt $archiveLimit) {
+            throw ("Release archive is {0:N2} MiB; the 180 MiB guard prevents accidental environment/cache packaging" -f ($archive.Length / 1MB))
+          }
+
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $entries = [System.IO.Compression.ZipFile]::OpenRead($archive.FullName).Entries
+          $forbidden = $entries | Where-Object {
+            $_.FullName -match '(^|/)(bin|obj|packages|dataset|datasets|checkpoints|runs|wandb)/' -or
+            ($_.FullName -match '(^|/)(runtimes|libvlc)/([^/]+)/' -and $Matches[3] -ne 'win-x64')
+          }
+          if ($forbidden) {
+            throw "Release archive contains forbidden build, training, or non-x64 runtime paths: $($forbidden.FullName -join ', ')"
+          }
+          Write-Host ("Audited release archive: {0:N2} MiB, {1} entries" -f ($archive.Length / 1MB), $entries.Count)
+
       - name: Create Release
         id: create_release
         uses: softprops/action-gh-release@v2
@@ -94,6 +111,7 @@ jobs:
           name: Release ${{ github.ref_name }}
           draft: false
           prerelease: false
+          generate_release_notes: true
           files: |
             ./${{ env.PLUGIN_DLL_NAME }}.${{ github.ref_name }}.zip
             ./${{ env.PLUGIN_DLL_NAME }}.${{ github.ref_name }}.manifest.json

@@ -35,8 +35,8 @@ namespace AIWeather.Services
             }
 
             // The first student is intentionally sequential for now. GDI+ does not promise
-            // that Bitmap.Save (teacher upload) and LockBits (student features) are safe on
-            // the same Bitmap concurrently. The heuristic normally takes only milliseconds.
+            // that Bitmap.Save (teacher upload) and LockBits (student preprocessing) are safe
+            // on the same Bitmap concurrently. Local ONNX inference takes only milliseconds.
             var student = await _student.AnalyzeImageAsync(image, astroContext, cancellationToken);
             EnsureLocalProvenance(student);
 
@@ -98,7 +98,7 @@ namespace AIWeather.Services
                 $"Teacher analysis did not produce an online result (" +
                 $"{teacherAttempt.Provenance.Provider}/{teacherAttempt.Provenance.Model}, " +
                 $"{teacherAttempt.Provenance.FailureCategory}{retrySummary}); " +
-                "using explicit local heuristic fallback";
+                "using explicit local ONNX fallback";
             if (teacherAttempt.Provenance.FailureCategory == AnalysisFailureCategory.ScheduledLocal)
             {
                 Logger.Debug(fallbackLog);
@@ -121,7 +121,7 @@ namespace AIWeather.Services
         {
             if (result.Provenance.Origin == AnalysisOrigin.Unknown)
             {
-                result.Provenance = AnalysisMetadata.Local(0);
+                result.Provenance = AnalysisMetadata.LocalOnnx(0);
             }
         }
 

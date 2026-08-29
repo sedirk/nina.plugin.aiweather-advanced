@@ -707,7 +707,7 @@ namespace AIWeather.Services
         private static bool MustRetainNearDuplicate(IReadOnlyList<string> reasons)
         {
             // Persistent disagreement or low confidence can last for hours, especially
-            // while the heuristic student is still a weak baseline. Do not let those
+            // while a local student may still be a weak baseline. Do not let those
             // unchanged frames dominate the dataset. A near-duplicate is retained only
             // when a human requested it or when the label/operational state actually
             // changed, matching the design's event-deduplication rule.

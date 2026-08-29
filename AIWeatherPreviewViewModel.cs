@@ -62,6 +62,7 @@ namespace AIWeather
         }
 
         public bool IsClusterReplica => ClusterNodeModeParser.Parse(Properties.Settings.Default.ClusterNodeMode) == ClusterNodeMode.Replica;
+        public bool IsReplicaStopControlVisible => ShouldShowReplicaStopControl(IsClusterReplica, IsConnected);
         public bool IsReplicaFailoverActive => IsClusterReplica && _safetyMonitor.IsReplicaFailoverActive;
         public bool IsReplicaFollowingPrimary => IsClusterReplica && !IsReplicaFailoverActive;
         private bool HasReplicaPreviewSource =>
@@ -90,6 +91,11 @@ namespace AIWeather
         public string PreviewStreamStatusText => _previewStreamStatusText;
         public bool IsPreviewStreamStatusVisible => !string.IsNullOrWhiteSpace(_previewStreamStatusText);
         public bool IsPreviewStreamRetryAvailable => _previewStreamRetryAvailable;
+
+        internal static bool ShouldShowReplicaStopControl(bool isClusterReplica, bool isConnected)
+        {
+            return isClusterReplica && isConnected;
+        }
 
         private static Dispatcher? UiDispatcher => Application.Current?.Dispatcher;
 
@@ -459,6 +465,7 @@ namespace AIWeather
         {
             RaisePropertyChanged(nameof(CurrentCaptureMode));
             RaisePropertyChanged(nameof(IsClusterReplica));
+            RaisePropertyChanged(nameof(IsReplicaStopControlVisible));
             RaisePropertyChanged(nameof(IsReplicaFailoverActive));
             RaisePropertyChanged(nameof(IsReplicaFollowingPrimary));
             RaisePropertyChanged(nameof(IsReplicaPreviewUnavailable));
@@ -772,6 +779,7 @@ namespace AIWeather
                 RaisePropertyChanged(nameof(ReplicaConnectButtonText));
                 RaisePropertyChanged(nameof(ReplicaConnectionStatusText));
                 RaisePropertyChanged(nameof(ReplicaModeDescription));
+                RaisePropertyChanged(nameof(IsReplicaStopControlVisible));
             }
         }
 

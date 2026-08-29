@@ -43,7 +43,7 @@ Choose how the plugin acquires sky images based on your camera setup:
 
 | Provider | Models | Requirements |
 |----------|--------|--------------|
-| **Local** | Built-in heuristic analysis | None (works offline) |
+| **Local** | Bundled site-trained MobileNetV3 ONNX model | None (works offline on CPU) |
 | **GitHub Models** | ⚠️ Retired by GitHub on July 30, 2026 — no longer works; analyses fall back to Local | — |
 | **OpenAI** | GPT-4o, GPT-4o Mini | API key |
 | **Google Gemini** | Dynamically discovered vision-capable Gemini models | API key |
@@ -120,10 +120,10 @@ In the plugin options, choose the capture mode that matches your camera:
 
 ### 2. Choose an AI Provider
 
-- **Local** requires no setup and works offline. It uses image processing heuristics (brightness, color distribution, pattern detection) to estimate cloud coverage.
+- **Local** requires no setup and works offline. It runs the bundled site-trained MobileNetV3 ONNX model on CPU to estimate cloud coverage and classify weather conditions. This first feasibility model is camera/site-specific and is not a substitute for an independent physical rain or humidity sensor.
 - **Google Gemini** is recommended for getting started: it has a free API tier with strong vision models — get a key at [Google AI Studio](https://aistudio.google.com/apikey).
 - **OpenAI** and **Anthropic** require their respective API keys from each provider's developer portal.
-- **GitHub Models** was retired by GitHub on July 30, 2026 and no longer works for anyone; if selected, analyses fall back to the Local heuristic.
+- **GitHub Models** was retired by GitHub on July 30, 2026 and no longer works for anyone; if selected, analyses fall back to the bundled Local ONNX model.
 - **Ollama / Custom** runs fully local: point it to your server URL (default `http://localhost:11434/v1`) and pick a vision model (e.g. `llava`, `qwen2.5vl`). Works with Ollama, LM Studio, llama.cpp, and LocalAI — no API key needed. Thinking-capable models (Gemma 4, Qwen 3.x, DeepSeek) reason at length before answering by default, which can multiply analysis times past the timeout: the "Disable model thinking" option (on by default) turns that off. Uncheck it only on fast hardware.
 
 For Gemini, **Gemini online request: once every N weather checks** controls API pacing. `1` keeps the original behavior. A larger value spends fewer requests without reducing camera capture or local safety freshness. For example, a 2-minute weather interval over an 8-hour night contains about 240 checks, so `N=12` schedules roughly 20 Gemini calls. Only those online-call checks can create teacher labels.

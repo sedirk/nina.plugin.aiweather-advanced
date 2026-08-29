@@ -1,0 +1,143 @@
+{
+  "formatVersion": 1,
+  "purpose": "AI Weather feasibility test; not production safety certified",
+  "architecture": "MobileNetV3-Large multitask",
+  "input": {
+    "name": "image",
+    "layout": "NCHW",
+    "shape": [
+      "batch",
+      3,
+      216,
+      384
+    ],
+    "colorOrder": "RGB",
+    "resize": "bilinear",
+    "scale": "uint8 to float32 [0,1]",
+    "normalizationMean": [
+      0.485,
+      0.456,
+      0.406
+    ],
+    "normalizationStd": [
+      0.229,
+      0.224,
+      0.225
+    ]
+  },
+  "outputs": {
+    "cloud_coverage_pct": {
+      "shape": [
+        "batch"
+      ],
+      "description": "sigmoid regression output scaled to 0..100"
+    },
+    "ordinal_logits": {
+      "shape": [
+        "batch",
+        5
+      ],
+      "thresholdsPct": [
+        10.0,
+        30.0,
+        50.0,
+        70.0,
+        90.0
+      ],
+      "description": "sigmoid probability means cloud coverage >= threshold"
+    },
+    "condition_logits": {
+      "shape": [
+        "batch",
+        6
+      ],
+      "classOrder": [
+        "Clear",
+        "PartlyCloudy",
+        "MostlyCloudy",
+        "Overcast",
+        "Foggy",
+        "Rainy"
+      ]
+    },
+    "rain_fog_logits": {
+      "shape": [
+        "batch",
+        2
+      ],
+      "classOrder": [
+        "rain",
+        "fog"
+      ]
+    }
+  },
+  "dataset": {
+    "usableSamples": 307,
+    "trainSamples": 245,
+    "validationSamples": 62,
+    "humanReviewRequired": false,
+    "allUsableSamplesIncluded": true
+  },
+  "bestEpoch": 15,
+  "finalValidationMetrics": {
+    "cloud_mae_pct": 8.706581508440356,
+    "cloud_rmse_pct": 12.458610452143008,
+    "condition_accuracy": 0.7096774193548387,
+    "ordinal_bin_accuracy": 0.6774193548387096,
+    "rain_accuracy": 0.967741935483871,
+    "fog_accuracy": 0.9516129032258065,
+    "loss": 1.5398777415675502,
+    "cloud_loss": 0.06536391930234048,
+    "ordinal_loss": 0.296275895449423,
+    "condition_loss": 1.0181611737897318,
+    "flag_loss": 0.15221559112110444
+  },
+  "checkpoint": {
+    "artifact": "best_model.pt (not included in the plugin package)",
+    "bytes": 14095119,
+    "sha256": "84abb40d74c8b6472cef2626033554547675aab1f60d0311ad304ed85c82a2b6"
+  },
+  "onnx": {
+    "file": "aiweather_mobilenetv3_test_v1.onnx",
+    "bytes": 13878997,
+    "sha256": "c9283c12cea58889e3411a2e3fc6041a440b8b1311c99c126e43265ab3916630",
+    "opset": 18,
+    "providers": [
+      "CPUExecutionProvider"
+    ],
+    "comparisons": {
+      "cloud_coverage_pct": {
+        "shape": [
+          1
+        ],
+        "maxAbsDiff": 3.0517578125e-05,
+        "allClose": true
+      },
+      "ordinal_logits": {
+        "shape": [
+          1,
+          5
+        ],
+        "maxAbsDiff": 1.1205673217773438e-05,
+        "allClose": true
+      },
+      "condition_logits": {
+        "shape": [
+          1,
+          6
+        ],
+        "maxAbsDiff": 1.0386109352111816e-05,
+        "allClose": true
+      },
+      "rain_fog_logits": {
+        "shape": [
+          1,
+          2
+        ],
+        "maxAbsDiff": 5.841255187988281e-06,
+        "allClose": true
+      }
+    },
+    "allOutputsClose": true
+  }
+}

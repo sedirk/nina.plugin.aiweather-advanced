@@ -4,6 +4,7 @@ using AIWeather.Localization;
 using AIWeather.Equipment;
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Drawing;
 using System.Globalization;
 using System.IO;
@@ -39,6 +40,22 @@ internal static class Program
             return await RunLiveRtspFreshnessCheckAsync();
         }
 
+        var localOnnxIndex = Array.FindIndex(
+            args,
+            value => string.Equals(value, "--local-onnx", StringComparison.OrdinalIgnoreCase));
+        if (localOnnxIndex >= 0)
+        {
+            var datasetRoot = args.ElementAtOrDefault(localOnnxIndex + 1)
+                ?? Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                    "NINA",
+                    "AIWeather",
+                    "dataset",
+                    "v1");
+            var pythonPredictions = args.ElementAtOrDefault(localOnnxIndex + 2);
+            return await RunLocalOnnxDatasetCheckAsync(datasetRoot, pythonPredictions);
+        }
+
         var runRoot = Path.Combine(
             Path.GetTempPath(),
             "AIWeatherDatasetSmoke",
@@ -52,6 +69,7 @@ internal static class Program
             VerifyDatasetDefaults();
             VerifyLatestRtspFrameBuffer();
             VerifyReplicaPreviewSourcePolicy();
+            VerifyReplicaStopControlPolicy();
             VerifyReplicaPreviewRetryGate();
             await VerifySharedRtspPreviewFrameProviderAsync();
             await VerifyUnifiedCapturePrefersSharedPreviewAsync();
@@ -115,6 +133,22 @@ internal static class Program
         var stableAfterRefresh = provider.GetClient();
         Assert(ReferenceEquals(refreshed, stableAfterRefresh) && createdClients == 2,
             "Gemini transport did not stabilize after the proxy refresh");
+    }
+
+    private static void VerifyReplicaStopControlPolicy()
+    {
+        Assert(AIWeatherPreviewViewModel.ShouldShowReplicaStopControl(
+                isClusterReplica: true,
+                isConnected: true),
+            "connected replica did not expose its local stop control");
+        Assert(!AIWeatherPreviewViewModel.ShouldShowReplicaStopControl(
+                isClusterReplica: true,
+                isConnected: false),
+            "disconnected replica exposed a duplicate stop control");
+        Assert(!AIWeatherPreviewViewModel.ShouldShowReplicaStopControl(
+                isClusterReplica: false,
+                isConnected: true),
+            "primary node unexpectedly exposed the replica stop control");
     }
 
     private static async Task VerifyAIWeatherClusterProtocolAsync()
@@ -1925,6 +1959,262 @@ internal static class Program
                 Content = new StringContent(_responseBody)
             });
         }
+    }
+
+    [System.Runtime.Versioning.SupportedOSPlatform("windows")]
+    private static async Task<int> RunLocalOnnxDatasetCheckAsync(
+        string datasetRoot,
+        string? pythonPredictionsPath)
+    {
+        try
+        {
+            var labelsRoot = Path.Combine(datasetRoot, "labels");
+            var labels = Directory
+                .EnumerateFiles(labelsRoot, "*.json", SearchOption.AllDirectories)
+                .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            Assert(labels.Length > 0, $"no labels found under {labelsRoot}");
+
+            var pythonCloudBySample = new Dictionary<string, double>(StringComparer.Ordinal);
+            if (!string.IsNullOrWhiteSpace(pythonPredictionsPath))
+            {
+                foreach (var line in File.ReadLines(pythonPredictionsPath).Skip(1))
+                {
+                    var fields = line.Split(',');
+                    if (fields.Length >= 5
+                        && double.TryParse(
+                            fields[4],
+                            NumberStyles.Float,
+                            CultureInfo.InvariantCulture,
+                            out var cloud))
+                    {
+                        pythonCloudBySample[fields[0]] = cloud;
+                    }
+                }
+            }
+
+            var service = new LocalWeatherAnalysisService();
+            Assert(await service.InitializeAsync(), "Local ONNX service initialization failed");
+
+            var absoluteErrors = new List<double>(labels.Length);
+            var latencies = new List<double>(labels.Length);
+            var pythonDeltas = new List<double>();
+            var validationAbsoluteErrors = new List<double>();
+            var conditionCorrect = 0;
+            var validationConditionCorrect = 0;
+            var rainCorrect = 0;
+            var fogCorrect = 0;
+            var teacherRainCount = 0;
+            var predictedRainCount = 0;
+            var rainTruePositiveCount = 0;
+            var teacherFogCount = 0;
+            var predictedFogCount = 0;
+            var fogTruePositiveCount = 0;
+            var safetyTrueSafeModelSafe = 0;
+            var safetyTrueUnsafeModelUnsafe = 0;
+            var safetyTrueUnsafeModelSafe = 0;
+            var safetyTrueSafeModelUnsafe = 0;
+            var safetyThresholdMatrix = new Dictionary<string, int[]>();
+            foreach (var threshold in new[] { 50, 70, 80 })
+            {
+                foreach (var margin in new[] { 0, 5, 10 })
+                {
+                    safetyThresholdMatrix[$"threshold{threshold}_margin{margin}"] = new int[4];
+                }
+            }
+
+            foreach (var labelPath in labels)
+            {
+                using var document = JsonDocument.Parse(File.ReadAllText(labelPath));
+                var root = document.RootElement;
+                var sampleId = root.GetProperty("sampleId").GetString()
+                    ?? throw new InvalidDataException($"sample id is missing in {labelPath}");
+                var relativeImagePath = root
+                    .GetProperty("image")
+                    .GetProperty("relativePath")
+                    .GetString()
+                    ?? throw new InvalidDataException($"image path is missing in {labelPath}");
+                var teacher = root.GetProperty("teacher").GetProperty("result");
+                var teacherCloud = teacher.GetProperty("cloudCoverage").GetDouble();
+                var teacherCondition = teacher.GetProperty("condition").GetString() ?? "Unknown";
+                var teacherRain = teacher.GetProperty("rainDetected").GetBoolean();
+                var teacherFog = teacher.GetProperty("fogDetected").GetBoolean();
+                var imagePath = Path.Combine(
+                    datasetRoot,
+                    relativeImagePath.Replace('/', Path.DirectorySeparatorChar));
+
+                using var image = new Bitmap(imagePath);
+                var stopwatch = Stopwatch.StartNew();
+                var result = await service.AnalyzeImageAsync(image);
+                stopwatch.Stop();
+
+                Assert(result.Condition != WeatherCondition.Unknown, $"Unknown result for {sampleId}");
+                Assert(result.Confidence > 0, $"non-positive confidence for {sampleId}");
+                Assert(result.CloudCoverage >= 0 && result.CloudCoverage <= 100,
+                    $"cloud coverage outside 0-100 for {sampleId}");
+                Assert(result.Provenance.Origin == AnalysisOrigin.LocalOnnx,
+                    $"wrong provenance origin for {sampleId}: {result.Provenance.Origin}");
+                Assert(result.Provenance.Model == AnalysisMetadata.LocalOnnxModelVersion,
+                    $"wrong provenance model for {sampleId}: {result.Provenance.Model}");
+
+                absoluteErrors.Add(Math.Abs(result.CloudCoverage - teacherCloud));
+                latencies.Add(stopwatch.Elapsed.TotalMilliseconds);
+                conditionCorrect += string.Equals(
+                    result.Condition.ToString(),
+                    teacherCondition,
+                    StringComparison.Ordinal) ? 1 : 0;
+                rainCorrect += result.RainDetected == teacherRain ? 1 : 0;
+                fogCorrect += result.FogDetected == teacherFog ? 1 : 0;
+                teacherRainCount += teacherRain ? 1 : 0;
+                predictedRainCount += result.RainDetected ? 1 : 0;
+                rainTruePositiveCount += result.RainDetected && teacherRain ? 1 : 0;
+                teacherFogCount += teacherFog ? 1 : 0;
+                predictedFogCount += result.FogDetected ? 1 : 0;
+                fogTruePositiveCount += result.FogDetected && teacherFog ? 1 : 0;
+
+                var teacherSafeAt70 = !teacherRain && !teacherFog && teacherCloud < 70.0;
+                var modelSafeAt70 = result.IsSafeForImaging;
+                if (teacherSafeAt70 && modelSafeAt70)
+                {
+                    safetyTrueSafeModelSafe++;
+                }
+                else if (!teacherSafeAt70 && !modelSafeAt70)
+                {
+                    safetyTrueUnsafeModelUnsafe++;
+                }
+                else if (!teacherSafeAt70 && modelSafeAt70)
+                {
+                    safetyTrueUnsafeModelSafe++;
+                }
+                else
+                {
+                    safetyTrueSafeModelUnsafe++;
+                }
+
+                foreach (var threshold in new[] { 50, 70, 80 })
+                {
+                    foreach (var margin in new[] { 0, 5, 10 })
+                    {
+                        var teacherSafe = !teacherRain && !teacherFog && teacherCloud < threshold;
+                        var modelSafe = !result.RainDetected
+                            && !result.FogDetected
+                            && result.CloudCoverage + margin < threshold;
+                        var counts = safetyThresholdMatrix[$"threshold{threshold}_margin{margin}"];
+                        var outcomeIndex = teacherSafe
+                            ? modelSafe ? 0 : 3
+                            : modelSafe ? 2 : 1;
+                        counts[outcomeIndex]++;
+                    }
+                }
+
+                if (pythonCloudBySample.TryGetValue(sampleId, out var pythonCloud))
+                {
+                    pythonDeltas.Add(Math.Abs(result.CloudCoverage - pythonCloud));
+                    validationAbsoluteErrors.Add(Math.Abs(result.CloudCoverage - teacherCloud));
+                    validationConditionCorrect += string.Equals(
+                        result.Condition.ToString(),
+                        teacherCondition,
+                        StringComparison.Ordinal) ? 1 : 0;
+                }
+            }
+
+            absoluteErrors.Sort();
+            latencies.Sort();
+            pythonDeltas.Sort();
+            var output = new
+            {
+                status = "PASS",
+                labels = labels.Length,
+                model = AnalysisMetadata.LocalOnnxModelVersion,
+                cloudMaePctPoints = absoluteErrors.Average(),
+                cloudMedianAbsoluteErrorPctPoints = Percentile(absoluteErrors, 0.50),
+                cloudP90AbsoluteErrorPctPoints = Percentile(absoluteErrors, 0.90),
+                conditionAccuracy = conditionCorrect / (double)labels.Length,
+                validationCloudMaePctPoints = validationAbsoluteErrors.Count > 0
+                    ? validationAbsoluteErrors.Average()
+                    : (double?)null,
+                validationConditionAccuracy = validationAbsoluteErrors.Count > 0
+                    ? validationConditionCorrect / (double)validationAbsoluteErrors.Count
+                    : (double?)null,
+                rain = new
+                {
+                    accuracy = rainCorrect / (double)labels.Length,
+                    teacherPositive = teacherRainCount,
+                    predictedPositive = predictedRainCount,
+                    truePositive = rainTruePositiveCount,
+                    falsePositive = predictedRainCount - rainTruePositiveCount,
+                    falseNegative = teacherRainCount - rainTruePositiveCount
+                },
+                fog = new
+                {
+                    accuracy = fogCorrect / (double)labels.Length,
+                    teacherPositive = teacherFogCount,
+                    predictedPositive = predictedFogCount,
+                    truePositive = fogTruePositiveCount,
+                    falsePositive = predictedFogCount - fogTruePositiveCount,
+                    falseNegative = teacherFogCount - fogTruePositiveCount
+                },
+                safetyAt70PctCloud = new
+                {
+                    teacherSafeModelSafe = safetyTrueSafeModelSafe,
+                    teacherUnsafeModelUnsafe = safetyTrueUnsafeModelUnsafe,
+                    falseSafe = safetyTrueUnsafeModelSafe,
+                    falseUnsafe = safetyTrueSafeModelUnsafe,
+                    agreement = (safetyTrueSafeModelSafe + safetyTrueUnsafeModelUnsafe) /
+                        (double)labels.Length
+                },
+                safetyThresholdMatrix = safetyThresholdMatrix.ToDictionary(
+                    item => item.Key,
+                    item => new
+                    {
+                        teacherSafeModelSafe = item.Value[0],
+                        teacherUnsafeModelUnsafe = item.Value[1],
+                        falseSafe = item.Value[2],
+                        falseUnsafe = item.Value[3],
+                        agreement = (item.Value[0] + item.Value[1]) / (double)labels.Length
+                    }),
+                firstPassLatencyMeanMilliseconds = latencies.Average(),
+                firstPassLatencyP95Milliseconds = Percentile(latencies, 0.95),
+                pythonParitySamples = pythonDeltas.Count,
+                pythonParityCloudMeanDeltaPctPoints = pythonDeltas.Count > 0
+                    ? pythonDeltas.Average()
+                    : (double?)null,
+                pythonParityCloudMaxDeltaPctPoints = pythonDeltas.Count > 0
+                    ? pythonDeltas[^1]
+                    : (double?)null
+            };
+
+            Console.WriteLine(JsonSerializer.Serialize(output, new JsonSerializerOptions
+            {
+                WriteIndented = true
+            }));
+
+            Assert(absoluteErrors.Average() < 15.0,
+                $"Local ONNX cloud MAE is unexpectedly high: {absoluteErrors.Average():F3}");
+            Assert(conditionCorrect / (double)labels.Length >= 0.65,
+                $"Local ONNX condition accuracy is unexpectedly low: {conditionCorrect / (double)labels.Length:P2}");
+            Assert(pythonDeltas.Count == 0 ||
+                (pythonDeltas.Average() < 2.0 && pythonDeltas[^1] < 15.0),
+                $"C#/Python preprocessing parity drift is too high: {pythonDeltas.Average():F3}");
+
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"FAIL Local ONNX dataset check: {ex}");
+            return 1;
+        }
+    }
+
+    private static double Percentile(IReadOnlyList<double> sortedValues, double quantile)
+    {
+        if (sortedValues.Count == 0)
+        {
+            return double.NaN;
+        }
+
+        var index = (int)Math.Ceiling(quantile * sortedValues.Count) - 1;
+        return sortedValues[Math.Clamp(index, 0, sortedValues.Count - 1)];
     }
 
     private static void Assert(bool condition, string message)

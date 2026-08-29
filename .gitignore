@@ -62,3 +62,39 @@ user_settings.json
 appsettings.local.json
 
 .vscode/
+
+# Local ML training inputs and outputs. The deliberately bundled inference model
+# under ModelAssets/ is ONNX and remains trackable.
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ipynb_checkpoints/
+.conda/
+.venv/
+venv/
+conda-env/
+/work/
+/scratch/
+/training/
+/training-output/
+/training_outputs/
+/artifacts/
+/outputs/
+data/
+dataset/
+datasets/
+checkpoints/
+runs/
+wandb/
+mlruns/
+lightning_logs/
+tensorboard/
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.npy
+*.npz
+*.onnx
+*.onnx.data
+!ModelAssets/*.onnx

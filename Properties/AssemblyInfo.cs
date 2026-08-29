@@ -8,7 +8,7 @@ using System.Runtime.InteropServices;
 // set of attributes. Change these attribute values to modify the information
 // associated with an assembly.
 [assembly: AssemblyTitle("AI Weather")]
-[assembly: AssemblyDescription("AI-powered all-sky camera weather monitoring with automatic safety protection")]
+[assembly: AssemblyDescription("AI-powered all-sky camera weather monitoring with bundled site-trained ONNX inference")]
 [assembly: AssemblyConfiguration("")]
 [assembly: AssemblyCompany("Michele Bergo / sedirk")]
 [assembly: AssemblyProduct("NINA.Plugins")]
@@ -33,8 +33,9 @@ using System.Runtime.InteropServices;
 [assembly: AssemblyMetadata("Repository", "https://github.com/sedirk/nina.plugin.aiweather-advanced")]
 
 // Version information
-[assembly: AssemblyVersion("1.30.1.0")]
-[assembly: AssemblyFileVersion("1.30.1.0")]
+[assembly: AssemblyVersion("1.31.0.0")]
+[assembly: AssemblyFileVersion("1.31.0.0")]
+[assembly: AssemblyInformationalVersion("1.31.0.0")]
 
 // The license your plugin code is using
 [assembly: AssemblyMetadata("License", "MIT")]
@@ -74,7 +75,7 @@ using System.Runtime.InteropServices;
 • Folder Watch: Monitors a local directory for the latest image saved by any camera software — perfect for USB cameras or custom setups
 
 🤖 5 AI PROVIDERS (Free to Advanced):
-• Local (FREE, Offline): Built-in heuristic analysis using brightness, color distribution, and edge detection — no internet needed, no API costs
+• Local (FREE, Offline): Bundled site-trained MobileNetV3 ONNX model — CPU inference, no internet needed, no API costs
 • Google Gemini (free API tier): fast and capable Flash/Pro vision models
 • Ollama / Custom (FREE, Local): Any vision model on a local OpenAI-compatible server (Ollama, LM Studio, llama.cpp, LocalAI) — no API key, full privacy
 • OpenAI: GPT-4o and GPT-4o Mini for high-accuracy cloud and weather analysis

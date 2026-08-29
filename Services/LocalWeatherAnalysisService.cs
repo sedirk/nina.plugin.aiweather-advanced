@@ -1,120 +1,291 @@
 using AIWeather.Models;
+using Microsoft.ML.OnnxRuntime;
+using Microsoft.ML.OnnxRuntime.Tensors;
 using NINA.Core.Utility;
 using System;
-using System.Drawing;
-using System.Drawing.Imaging;
+using System.Collections.Generic;
 using System.Diagnostics;
+using System.Drawing;
+using System.Drawing.Drawing2D;
+using System.Drawing.Imaging;
 using System.IO;
 using System.Linq;
+using System.Reflection;
+using System.Security.Cryptography;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+
 namespace AIWeather.Services
 {
     /// <summary>
-    /// Local AI-based weather analysis using image processing algorithms
-    /// This provides a basic implementation without requiring cloud services
+    /// Site-trained local weather analysis. The bundled ONNX model replaces the legacy
+    /// brightness/color heuristic for both the Local provider and online-provider fallback.
+    /// The N.I.N.A. safety monitor still owns cloud-threshold hysteresis and fail-safe expiry.
     /// </summary>
     [System.Runtime.Versioning.SupportedOSPlatform("windows")]
     public class LocalWeatherAnalysisService : IWeatherAnalysisService
     {
-        private bool _isInitialized = false;
+        internal const string ModelFileName = "aiweather_mobilenetv3_test_v1.onnx";
+        internal const string ModelSha256 = "C9283C12CEA58889E3411A2E3FC6041A440B8B1311C99C126E43265AB3916630";
+
+        private const string InputName = "image";
+        private const string CloudOutputName = "cloud_coverage_pct";
+        private const string OrdinalOutputName = "ordinal_logits";
+        private const string ConditionOutputName = "condition_logits";
+        private const string RainFogOutputName = "rain_fog_logits";
+        private const int InputWidth = 384;
+        private const int InputHeight = 216;
+        private const float RainFogThreshold = 0.5f;
+
+        private static readonly float[] ImageNetMean = { 0.485f, 0.456f, 0.406f };
+        private static readonly float[] ImageNetStd = { 0.229f, 0.224f, 0.225f };
+        private static readonly Lazy<InferenceSession> SharedSession = new(
+            CreateSession,
+            LazyThreadSafetyMode.ExecutionAndPublication);
+
+        private bool _isInitialized;
 
         public Task<bool> InitializeAsync(CancellationToken cancellationToken = default)
         {
-            _isInitialized = true;
-            Logger.Info("Local weather analysis service initialized");
-            return Task.FromResult(true);
+            cancellationToken.ThrowIfCancellationRequested();
+
+            try
+            {
+                _ = SharedSession.Value;
+                _isInitialized = true;
+                Logger.Info(
+                    $"Local ONNX weather analysis initialized: {AnalysisMetadata.LocalOnnxModelVersion} " +
+                    $"({InputWidth}x{InputHeight}, CPU)");
+                return Task.FromResult(true);
+            }
+            catch (Exception ex)
+            {
+                _isInitialized = false;
+                Logger.Error($"Local ONNX weather model could not be initialized: {ex.Message}", ex);
+                return Task.FromResult(false);
+            }
         }
 
-        public async Task<WeatherAnalysisResult> AnalyzeImageAsync(Bitmap image, AstroContext? astroContext = null, CancellationToken cancellationToken = default)
+        public async Task<WeatherAnalysisResult> AnalyzeImageAsync(
+            Bitmap image,
+            AstroContext? astroContext = null,
+            CancellationToken cancellationToken = default)
         {
+            ArgumentNullException.ThrowIfNull(image);
             var stopwatch = Stopwatch.StartNew();
-            if (!_isInitialized)
+
+            if (!_isInitialized && !await InitializeAsync(cancellationToken).ConfigureAwait(false))
             {
-                await InitializeAsync(cancellationToken);
+                return CreateFailureResult(
+                    "Local ONNX model is unavailable; analysis failed closed",
+                    AnalysisFailureCategory.ModelUnavailable,
+                    stopwatch.ElapsedMilliseconds);
             }
 
             try
             {
-                Logger.Debug("Starting local weather analysis");
+                var result = await Task.Run(
+                    () => AnalyzeCore(image, cancellationToken),
+                    cancellationToken).ConfigureAwait(false);
 
-                var result = await Task.Run(() =>
-                {
-                    // Analyze brightness and color distribution
-                    var (avgBrightness, avgBlue, cloudScore) = AnalyzeImageCharacteristics(image);
-
-                    // Detect rain patterns (look for streaks or water droplets)
-                    var rainDetected = DetectRainPatterns(image);
-
-                    // Detect fog (uniform grayness, low contrast)
-                    var fogDetected = DetectFog(avgBrightness, cloudScore);
-
-                    // Determine if it's nighttime from astro context
-                    bool isNighttime = astroContext != null && astroContext.SunAltitude < -6;
-
-                    // Determine cloud coverage based on brightness variance and color
-                    var cloudCoverage = CalculateCloudCoverage(avgBrightness, avgBlue, cloudScore, isNighttime);
-
-                    // Classify the weather condition
-                    var condition = ClassifyWeatherCondition(cloudCoverage, rainDetected, fogDetected);
-
-                    // Determine if it's safe for imaging
-                    var isSafe = DetermineSafety(condition, cloudCoverage, rainDetected);
-
-                    return new WeatherAnalysisResult
-                    {
-                        Timestamp = DateTime.UtcNow,
-                        Condition = condition,
-                        CloudCoverage = cloudCoverage,
-                        Confidence = CalculateConfidence(cloudScore),
-                        IsSafeForImaging = isSafe,
-                        Description = GenerateDescription(condition, cloudCoverage, rainDetected, fogDetected),
-                        Brightness = avgBrightness,
-                        RainDetected = rainDetected,
-                        FogDetected = fogDetected
-                    };
-                }, cancellationToken);
-
-                result.Provenance = AnalysisMetadata.Local(stopwatch.ElapsedMilliseconds);
-
-                Logger.Info($"Weather analysis complete: {result.Condition}, Cloud Coverage: {result.CloudCoverage:F1}%, Safe: {result.IsSafeForImaging}");
+                result.Provenance = AnalysisMetadata.LocalOnnx(stopwatch.ElapsedMilliseconds);
+                Logger.Debug(
+                    $"Local ONNX analysis complete: {result.Condition}, " +
+                    $"Cloud Coverage: {result.CloudCoverage:F1}%, " +
+                    $"Rain: {result.RainDetected}, Fog: {result.FogDetected}, " +
+                    $"Safe: {result.IsSafeForImaging}");
                 return result;
+            }
+            catch (OperationCanceledException)
+            {
+                return CreateFailureResult(
+                    "Local ONNX analysis was cancelled; analysis failed closed",
+                    AnalysisFailureCategory.Cancelled,
+                    stopwatch.ElapsedMilliseconds);
             }
             catch (Exception ex)
             {
-                Logger.Error($"Error analyzing image: {ex.Message}", ex);
-                return new WeatherAnalysisResult
-                {
-                    Timestamp = DateTime.UtcNow,
-                    Condition = WeatherCondition.Unknown,
-                    CloudCoverage = 0,
-                    Confidence = 0,
-                    IsSafeForImaging = false,
-                    Description = $"Analysis failed: {ex.Message}",
-                    Provenance = AnalysisMetadata.Local(stopwatch.ElapsedMilliseconds)
-                };
+                Logger.Error($"Local ONNX weather analysis failed: {ex.Message}", ex);
+                return CreateFailureResult(
+                    $"Local ONNX analysis failed closed: {ex.Message}",
+                    AnalysisFailureCategory.Unknown,
+                    stopwatch.ElapsedMilliseconds);
             }
         }
 
-        private (double brightness, double blue, double cloudScore) AnalyzeImageCharacteristics(Bitmap image)
+        internal static string ResolveModelPath()
         {
-            double totalBrightness = 0;
-            double totalBlue = 0;
-            double totalVariance = 0;
-            int pixelCount = 0;
+            var diagnosticOverride = Environment.GetEnvironmentVariable("AIWEATHER_ONNX_MODEL");
+            if (!string.IsNullOrWhiteSpace(diagnosticOverride))
+            {
+                return Path.GetFullPath(diagnosticOverride);
+            }
 
-            // Sample pixels (for performance, we don't analyze every pixel)
-            int stepSize = Math.Max(1, image.Width / 100); // Sample ~100x100 grid
+            var assemblyDirectory = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location)
+                ?? AppContext.BaseDirectory;
+            return Path.Combine(assemblyDirectory, "models", ModelFileName);
+        }
 
-            // Fisheye circle masking: only sample pixels within the inscribed circle
-            // to avoid black corners that bias averages downward
-            int centerX = image.Width / 2;
-            int centerY = image.Height / 2;
-            int radius = Math.Min(centerX, centerY);
-            int radiusSq = radius * radius;
+        private static InferenceSession CreateSession()
+        {
+            var modelPath = ResolveModelPath();
+            if (!File.Exists(modelPath))
+            {
+                throw new FileNotFoundException(
+                    $"Bundled Local ONNX model was not found at '{modelPath}'",
+                    modelPath);
+            }
 
-            BitmapData data = image.LockBits(
-                new Rectangle(0, 0, image.Width, image.Height),
+            var actualHash = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(modelPath)));
+            if (!string.Equals(actualHash, ModelSha256, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidDataException(
+                    $"Local ONNX model hash mismatch. Expected {ModelSha256}, got {actualHash}.");
+            }
+
+            using var options = new SessionOptions
+            {
+                GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_ALL,
+                ExecutionMode = ExecutionMode.ORT_SEQUENTIAL,
+                IntraOpNumThreads = 2,
+                InterOpNumThreads = 1,
+                EnableMemoryPattern = true
+            };
+
+            var session = new InferenceSession(modelPath, options);
+            var missingInputs = new[] { InputName }
+                .Where(name => !session.InputMetadata.ContainsKey(name))
+                .ToArray();
+            var missingOutputs = new[]
+                {
+                    CloudOutputName,
+                    OrdinalOutputName,
+                    ConditionOutputName,
+                    RainFogOutputName
+                }
+                .Where(name => !session.OutputMetadata.ContainsKey(name))
+                .ToArray();
+
+            if (missingInputs.Length > 0 || missingOutputs.Length > 0)
+            {
+                session.Dispose();
+                throw new InvalidDataException(
+                    $"Local ONNX signature mismatch. Missing inputs [{string.Join(", ", missingInputs)}], " +
+                    $"outputs [{string.Join(", ", missingOutputs)}].");
+            }
+
+            return session;
+        }
+
+        private static WeatherAnalysisResult AnalyzeCore(Bitmap image, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var (tensor, averageBrightness) = CreateInputTensor(image, cancellationToken);
+            var inputs = new List<NamedOnnxValue>
+            {
+                NamedOnnxValue.CreateFromTensor(InputName, tensor)
+            };
+
+            using var outputs = SharedSession.Value.Run(inputs);
+            var cloudOutput = GetOutput(outputs, CloudOutputName, 1);
+            var ordinalLogits = GetOutput(outputs, OrdinalOutputName, 5);
+            var conditionLogits = GetOutput(outputs, ConditionOutputName, 6);
+            var rainFogLogits = GetOutput(outputs, RainFogOutputName, 2);
+
+            var cloudCoverage = Math.Clamp((double)cloudOutput[0], 0.0, 100.0);
+            var conditionProbabilities = Softmax(conditionLogits);
+            var rainProbability = Sigmoid(rainFogLogits[0]);
+            var fogProbability = Sigmoid(rainFogLogits[1]);
+            var rainDetected = rainProbability >= RainFogThreshold;
+            var fogDetected = !rainDetected && fogProbability >= RainFogThreshold;
+
+            // Rain/Fog are decided by their dedicated binary heads. With only two rainy
+            // samples in this feasibility dataset, a six-way argmax can otherwise produce
+            // unsafe false alarms. Ordinary cloud labels are derived from the better-
+            // calibrated regression output (73% validation accuracy on the held-out split).
+            var condition = rainDetected
+                ? WeatherCondition.Rainy
+                : fogDetected
+                    ? WeatherCondition.Foggy
+                    : ConditionFromCloudCoverage(cloudCoverage);
+
+            var conditionIndex = condition switch
+            {
+                WeatherCondition.Clear => 0,
+                WeatherCondition.PartlyCloudy => 1,
+                WeatherCondition.MostlyCloudy => 2,
+                WeatherCondition.Overcast => 3,
+                WeatherCondition.Foggy => 4,
+                WeatherCondition.Rainy => 5,
+                _ => 0
+            };
+            var confidence = condition switch
+            {
+                WeatherCondition.Rainy => rainProbability * 100.0,
+                WeatherCondition.Foggy => fogProbability * 100.0,
+                _ => conditionProbabilities[conditionIndex] * 100.0
+            };
+            confidence = Math.Clamp(confidence, 1.0, 100.0);
+
+            var description = rainDetected
+                ? $"Local ONNX: rain detected - {cloudCoverage:F1}% cloud coverage"
+                : fogDetected
+                    ? $"Local ONNX: fog detected - {cloudCoverage:F1}% cloud coverage"
+                    : $"Local ONNX: {condition} - {cloudCoverage:F1}% cloud coverage";
+
+            return new WeatherAnalysisResult
+            {
+                Timestamp = DateTime.UtcNow,
+                Condition = condition,
+                CloudCoverage = cloudCoverage,
+                Confidence = confidence,
+                IsSafeForImaging = !rainDetected && !fogDetected && cloudCoverage < 70.0,
+                Description = description,
+                Brightness = averageBrightness,
+                RainDetected = rainDetected,
+                FogDetected = fogDetected,
+                RawAnalysisData = JsonSerializer.Serialize(new
+                {
+                    model = AnalysisMetadata.LocalOnnxModelVersion,
+                    modelSha256 = ModelSha256.ToLowerInvariant(),
+                    input = new[] { 1, 3, InputHeight, InputWidth },
+                    cloudCoveragePct = cloudCoverage,
+                    ordinalProbabilities = ordinalLogits.Select(Sigmoid).ToArray(),
+                    conditionProbabilities,
+                    rainProbability,
+                    fogProbability
+                })
+            };
+        }
+
+        private static (DenseTensor<float> Tensor, double AverageBrightness) CreateInputTensor(
+            Bitmap image,
+            CancellationToken cancellationToken)
+        {
+            using var resized = new Bitmap(InputWidth, InputHeight, PixelFormat.Format24bppRgb);
+            using (var graphics = Graphics.FromImage(resized))
+            {
+                graphics.CompositingMode = CompositingMode.SourceCopy;
+                graphics.CompositingQuality = CompositingQuality.HighQuality;
+                graphics.InterpolationMode = InterpolationMode.Bilinear;
+                graphics.SmoothingMode = SmoothingMode.None;
+                graphics.PixelOffsetMode = PixelOffsetMode.Half;
+                graphics.DrawImage(
+                    image,
+                    new Rectangle(0, 0, InputWidth, InputHeight),
+                    0,
+                    0,
+                    image.Width,
+                    image.Height,
+                    GraphicsUnit.Pixel);
+            }
+
+            var data = new float[3 * InputHeight * InputWidth];
+            long brightnessSum = 0;
+            var pixelCount = InputHeight * InputWidth;
+            var bitmapData = resized.LockBits(
+                new Rectangle(0, 0, InputWidth, InputHeight),
                 ImageLockMode.ReadOnly,
                 PixelFormat.Format24bppRgb);
 
@@ -122,181 +293,115 @@ namespace AIWeather.Services
             {
                 unsafe
                 {
-                    byte* ptr = (byte*)data.Scan0;
-                    int bytesPerPixel = 3;
-
-                    for (int y = 0; y < image.Height; y += stepSize)
+                    var scan0 = (byte*)bitmapData.Scan0;
+                    for (var y = 0; y < InputHeight; y++)
                     {
-                        byte* row = ptr + (y * data.Stride);
-                        int dy = y - centerY;
-                        for (int x = 0; x < image.Width; x += stepSize)
+                        if ((y & 31) == 0)
                         {
-                            // Skip pixels outside the inscribed circle (fisheye mask)
-                            int dx = x - centerX;
-                            if (dx * dx + dy * dy > radiusSq)
-                                continue;
+                            cancellationToken.ThrowIfCancellationRequested();
+                        }
 
-                            int offset = x * bytesPerPixel;
-                            byte b = row[offset];
-                            byte g = row[offset + 1];
-                            byte r = row[offset + 2];
+                        var row = scan0 + (y * bitmapData.Stride);
+                        for (var x = 0; x < InputWidth; x++)
+                        {
+                            var pixelOffset = x * 3;
+                            var b = row[pixelOffset];
+                            var g = row[pixelOffset + 1];
+                            var r = row[pixelOffset + 2];
+                            var index = (y * InputWidth) + x;
 
-                            // Skip very dark pixels (likely outside fisheye or lens obstruction)
-                            double brightness = (0.299 * r + 0.587 * g + 0.114 * b);
-                            if (brightness < 3)
-                                continue;
-
-                            totalBrightness += brightness;
-                            totalBlue += b;
-
-                            // Calculate variance (for cloud detection)
-                            totalVariance += Math.Abs(r - g) + Math.Abs(g - b) + Math.Abs(b - r);
-
-                            pixelCount++;
+                            data[index] = ((r / 255.0f) - ImageNetMean[0]) / ImageNetStd[0];
+                            data[pixelCount + index] = ((g / 255.0f) - ImageNetMean[1]) / ImageNetStd[1];
+                            data[(2 * pixelCount) + index] = ((b / 255.0f) - ImageNetMean[2]) / ImageNetStd[2];
+                            brightnessSum += (299L * r) + (587L * g) + (114L * b);
                         }
                     }
                 }
             }
             finally
             {
-                image.UnlockBits(data);
+                resized.UnlockBits(bitmapData);
             }
 
-            if (pixelCount == 0)
+            var averageBrightness = brightnessSum / (1000.0 * pixelCount);
+            return (
+                new DenseTensor<float>(data, new[] { 1, 3, InputHeight, InputWidth }),
+                averageBrightness);
+        }
+
+        private static float[] GetOutput(
+            IDisposableReadOnlyCollection<DisposableNamedOnnxValue> outputs,
+            string name,
+            int minimumLength)
+        {
+            var value = outputs.FirstOrDefault(item => item.Name == name)
+                ?? throw new InvalidDataException($"Local ONNX output '{name}' is missing.");
+            var values = value.AsTensor<float>().ToArray();
+            if (values.Length < minimumLength)
             {
-                return (0, 0, 0);
+                throw new InvalidDataException(
+                    $"Local ONNX output '{name}' has {values.Length} values; expected at least {minimumLength}.");
             }
 
-            double avgBrightness = totalBrightness / pixelCount;
-            double avgBlue = totalBlue / pixelCount;
-            double cloudScore = totalVariance / pixelCount;
-
-            return (avgBrightness, avgBlue, cloudScore);
-        }
-
-        private bool DetectRainPatterns(Bitmap image)
-        {
-            // Simple rain detection: look for vertical streaks or droplet patterns
-            // This is a basic implementation - could be enhanced with ML
-            
-            // For now, we'll use a placeholder that could be expanded
-            // In a real implementation, you'd analyze edge patterns and vertical gradients
-            
-            return false; // TODO: Implement advanced rain detection
-        }
-
-        private bool DetectFog(double brightness, double cloudScore)
-        {
-            // Fog typically shows:
-            // - Low contrast (low cloudScore)
-            // - Uniform grayness
-            // - Medium brightness
-            
-            return cloudScore < 15 && brightness > 80 && brightness < 180;
-        }
-
-        private double CalculateCloudCoverage(double brightness, double blue, double cloudScore, bool isNighttime)
-        {
-            double coverage = 0;
-
-            if (isNighttime)
+            if (values.Any(value => float.IsNaN(value) || float.IsInfinity(value)))
             {
-                // Nighttime analysis: clear sky is dark with low brightness.
-                // Clouds at night scatter light pollution and moonlight, making the sky BRIGHTER.
-                // Higher brightness = more clouds. Low brightness = clear.
-                
-                // Factor 1: Brightness is the primary indicator at night
-                // Clear night sky: brightness ~5-30, Cloudy night sky: brightness ~60-180
-                if (brightness > 20)
-                {
-                    coverage += Math.Min(60, (brightness - 20) * 0.5);
-                }
-
-                // Factor 2: Cloud structures create color variance
-                if (cloudScore > 15)
-                {
-                    coverage += Math.Min(25, (cloudScore - 15) * 0.8);
-                }
-
-                // Factor 3: Uniform gray (low variance + moderate brightness) suggests overcast
-                if (cloudScore < 10 && brightness > 80)
-                {
-                    coverage += 20;
-                }
-            }
-            else
-            {
-                // Daytime analysis: clouds are bright and reduce blue channel
-                
-                // Factor 1: Brightness (clouds reflect sunlight)
-                if (brightness > 100)
-                {
-                    coverage += (brightness - 100) / 1.55;
-                }
-
-                // Factor 2: Low blue relative to brightness indicates clouds
-                double blueRatio = blue / Math.Max(1, brightness);
-                if (blueRatio < 0.8)
-                {
-                    coverage += Math.Min(40, (0.8 - blueRatio) * 100);
-                }
-
-                // Factor 3: High variance suggests cloud structures
-                if (cloudScore > 20)
-                {
-                    coverage += Math.Min(30, cloudScore / 2);
-                }
+                throw new InvalidDataException($"Local ONNX output '{name}' contains a non-finite value.");
             }
 
-            return Math.Min(100, Math.Max(0, coverage));
+            return values;
         }
 
-        private WeatherCondition ClassifyWeatherCondition(double cloudCoverage, bool rainDetected, bool fogDetected)
+        private static WeatherCondition ConditionFromCloudCoverage(double cloudCoverage)
         {
-            if (rainDetected)
-                return WeatherCondition.Rainy;
-
-            if (fogDetected)
-                return WeatherCondition.Foggy;
-
-            if (cloudCoverage < 20)
+            if (cloudCoverage < 15.0)
+            {
                 return WeatherCondition.Clear;
-            else if (cloudCoverage < 50)
+            }
+
+            if (cloudCoverage < 50.0)
+            {
                 return WeatherCondition.PartlyCloudy;
-            else if (cloudCoverage < 80)
-                return WeatherCondition.MostlyCloudy;
-            else
-                return WeatherCondition.Overcast;
+            }
+
+            return cloudCoverage < 85.0
+                ? WeatherCondition.MostlyCloudy
+                : WeatherCondition.Overcast;
         }
 
-        private bool DetermineSafety(WeatherCondition condition, double cloudCoverage, bool rainDetected)
+        private static double[] Softmax(IReadOnlyList<float> logits)
         {
-            // Rain is never safe
-            if (rainDetected)
-                return false;
-
-            // Determine safety based on cloud coverage
-            // This threshold should be configurable via plugin settings
-            return cloudCoverage < 70; // Default: safe if less than 70% clouds
+            var maximum = logits.Max();
+            var exponentials = logits.Select(value => Math.Exp(value - maximum)).ToArray();
+            var sum = exponentials.Sum();
+            return exponentials.Select(value => value / sum).ToArray();
         }
 
-        private double CalculateConfidence(double cloudScore)
+        private static double Sigmoid(float value)
         {
-            // Confidence based on image quality metrics
-            // Higher variance in the image = more confident analysis
-            
-            return Math.Min(100, 50 + cloudScore);
+            return value >= 0
+                ? 1.0 / (1.0 + Math.Exp(-value))
+                : Math.Exp(value) / (1.0 + Math.Exp(value));
         }
 
-        private string GenerateDescription(WeatherCondition condition, double cloudCoverage, bool rain, bool fog)
+        private static WeatherAnalysisResult CreateFailureResult(
+            string description,
+            AnalysisFailureCategory failureCategory,
+            long elapsedMilliseconds)
         {
-            if (rain)
-                return "Rain detected - unsafe for imaging";
-
-            if (fog)
-                return "Fog detected - poor imaging conditions";
-
-            return $"{condition} - {cloudCoverage:F1}% cloud coverage";
+            return new WeatherAnalysisResult
+            {
+                Timestamp = DateTime.UtcNow,
+                Condition = WeatherCondition.Unknown,
+                CloudCoverage = 100,
+                Confidence = 0,
+                IsSafeForImaging = false,
+                Description = description,
+                RainDetected = false,
+                FogDetected = false,
+                Provenance = AnalysisMetadata.LocalOnnx(
+                    elapsedMilliseconds,
+                    upstreamFailure: failureCategory)
+            };
         }
     }
 }

@@ -263,6 +263,18 @@
                                         Command="{Binding OpenDatasetReviewCommand}"
                                         Padding="8,2" Margin="2,0"/>
                             </StackPanel>
+
+                            <!-- The source grid is intentionally hidden on a replica because its
+                                 configuration comes from the primary. Keep a local stop control in
+                                 the status panel while this replica is connected, otherwise a healthy
+                                 synchronized preview leaves no visible way to stop the replica. -->
+                            <Button Grid.Row="8"
+                                    Content="{i18n:Loc Preview.StopReplica}"
+                                    Command="{Binding ConnectCommand}"
+                                    Visibility="{Binding IsReplicaStopControlVisible, Converter={StaticResource BoolToVisibility}}"
+                                    ToolTip="{i18n:Loc Preview.StopReplicaHelp}"
+                                    HorizontalAlignment="Center"
+                                    Padding="10,3" Margin="0,5,0,0"/>
                         </Grid>
                     </Border>
                     

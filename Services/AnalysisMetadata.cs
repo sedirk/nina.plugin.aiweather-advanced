@@ -9,6 +9,7 @@ namespace AIWeather.Services
     internal static class AnalysisMetadata
     {
         public const string LocalHeuristicModelVersion = "local-heuristic-v1";
+        public const string LocalOnnxModelVersion = "aiweather-mobilenetv3-test-v1";
 
         public static AnalysisProvenance Local(
             long latencyMilliseconds,
@@ -20,6 +21,25 @@ namespace AIWeather.Services
                 Origin = AnalysisOrigin.LocalHeuristic,
                 Provider = "Local",
                 Model = LocalHeuristicModelVersion,
+                PromptVersion = "none",
+                OnlineSucceeded = false,
+                IsFallback = isFallback,
+                FailureCategory = upstreamFailure,
+                Attempts = 1,
+                LatencyMilliseconds = Math.Max(0, latencyMilliseconds)
+            };
+        }
+
+        public static AnalysisProvenance LocalOnnx(
+            long latencyMilliseconds,
+            bool isFallback = false,
+            AnalysisFailureCategory upstreamFailure = AnalysisFailureCategory.None)
+        {
+            return new AnalysisProvenance
+            {
+                Origin = AnalysisOrigin.LocalOnnx,
+                Provider = "Local",
+                Model = LocalOnnxModelVersion,
                 PromptVersion = "none",
                 OnlineSucceeded = false,
                 IsFallback = isFallback,
