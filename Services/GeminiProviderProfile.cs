@@ -29,12 +29,22 @@ namespace AIWeather.Services
             "gemini-3.7-flash",
             "gemini-3.6-flash",
             "gemini-3.5-flash",
-            "gemini-3-flash",
-            "gemini-2.5-flash",
-            "gemini-2.0-flash",
-            "gemini-2.5-flash-lite",
-            "gemini-2.0-flash-lite"
+            "gemini-3-flash"
         };
+
+        // These models were shipped in the original free-pool defaults. Gemini 2.0
+        // has since been shut down, while the current free project consistently
+        // reports the 2.5 aliases as unavailable. Remove only these known legacy
+        // defaults during settings normalization; user-added model names remain.
+        private static readonly HashSet<string> RemovedLegacyFreeDefaults = new(
+            new[]
+            {
+                "gemini-2.5-flash",
+                "gemini-2.0-flash",
+                "gemini-2.5-flash-lite",
+                "gemini-2.0-flash-lite"
+            },
+            StringComparer.OrdinalIgnoreCase);
 
         public static bool IsPaid(string? provider) =>
             string.Equals(provider?.Trim(), PaidProviderId, StringComparison.OrdinalIgnoreCase);
@@ -57,6 +67,7 @@ namespace AIWeather.Services
                 .Split(new[] { '\r', '\n', ',', ';' }, StringSplitOptions.RemoveEmptyEntries)
                 .Select(model => model.Trim())
                 .Where(model => model.StartsWith("gemini-", StringComparison.OrdinalIgnoreCase))
+                .Where(model => !RemovedLegacyFreeDefaults.Contains(model))
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToList();
 

@@ -1131,11 +1131,7 @@ internal static class Program
             "gemini-3.7-flash",
             "gemini-3.6-flash",
             "gemini-3.5-flash",
-            "gemini-3-flash",
-            "gemini-2.5-flash",
-            "gemini-2.0-flash",
-            "gemini-2.5-flash-lite",
-            "gemini-2.0-flash-lite"
+            "gemini-3-flash"
         };
         Assert(GeminiProviderProfile.DefaultFreeModelOrder.SequenceEqual(expected),
             "Gemini Free default model order differs from the operator-defined order");
@@ -1145,6 +1141,15 @@ internal static class Program
             GeminiProviderProfile.SerializeFreeModelOrder(reordered));
         Assert(roundTrip.SequenceEqual(reordered),
             "Gemini Free model order did not survive settings serialization");
+        var legacyOrder = string.Join("\n", expected.Concat(new[]
+        {
+            "gemini-2.5-flash",
+            "gemini-2.0-flash",
+            "gemini-2.5-flash-lite",
+            "gemini-2.0-flash-lite"
+        }));
+        Assert(GeminiProviderProfile.ParseFreeModelOrder(legacyOrder).SequenceEqual(expected),
+            "Retired Gemini 2.x defaults were not removed from saved free-pool settings");
         Assert(Properties.Settings.Default.GeminiFreeCycleCount == 2,
             "Gemini Free default cycle count must be two");
     }
