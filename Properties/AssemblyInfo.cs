@@ -33,9 +33,9 @@ using System.Runtime.InteropServices;
 [assembly: AssemblyMetadata("Repository", "https://github.com/sedirk/nina.plugin.aiweather-advanced")]
 
 // Version information
-[assembly: AssemblyVersion("1.31.0.0")]
-[assembly: AssemblyFileVersion("1.31.0.0")]
-[assembly: AssemblyInformationalVersion("1.31.0.0")]
+[assembly: AssemblyVersion("1.32.0.0")]
+[assembly: AssemblyFileVersion("1.32.0.0")]
+[assembly: AssemblyInformationalVersion("1.32.0.0")]
 
 // The license your plugin code is using
 [assembly: AssemblyMetadata("License", "MIT")]
@@ -74,9 +74,10 @@ using System.Runtime.InteropServices;
 • HTTP Image Download: Periodic image download from any URL — works with indi-allsky, AllSky, web cameras, and any HTTP-accessible image
 • Folder Watch: Monitors a local directory for the latest image saved by any camera software — perfect for USB cameras or custom setups
 
-🤖 5 AI PROVIDERS (Free to Advanced):
+🤖 6 AI PROVIDER POLICIES (Free to Advanced):
 • Local (FREE, Offline): Bundled site-trained MobileNetV3 ONNX model — CPU inference, no internet needed, no API costs
-• Google Gemini (free API tier): fast and capable Flash/Pro vision models
+• Google Gemini: one operator-selected model and one request, with no automatic switching, retry, downgrade or backoff; intended for billed projects
+• Google Gemini Free: reorderable Flash/Lite pool with per-model quota circuits and configurable complete cycles; intended for free-tier projects
 • Ollama / Custom (FREE, Local): Any vision model on a local OpenAI-compatible server (Ollama, LM Studio, llama.cpp, LocalAI) — no API key, full privacy
 • OpenAI: GPT-4o and GPT-4o Mini for high-accuracy cloud and weather analysis
 • Anthropic Claude: excellent at detailed image understanding
@@ -107,7 +108,7 @@ using System.Runtime.InteropServices;
 
 💡 BEGINNER-FRIENDLY:
 • Start with Local (offline) mode — no API keys needed, works out of the box
-• Upgrade to Google Gemini (free API tier) or a local Ollama vision model for AI-powered analysis
+• Use Google Gemini Free for a best-effort free-project pool, strict Google Gemini for one billed-project model, or a local Ollama vision model
 • Detailed activity log shows every analysis result for easy troubleshooting
 • Works with any all-sky camera that provides RTSP, HTTP, or file-based output
 

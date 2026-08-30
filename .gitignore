@@ -79,6 +79,7 @@ conda-env/
 /training-output/
 /training_outputs/
 /artifacts/
+/.artifacts/
 /outputs/
 data/
 dataset/

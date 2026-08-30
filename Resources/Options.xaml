@@ -377,9 +377,33 @@
                 <TextBlock Text="{i18n:Loc Options.UsedOpenAi}" Margin="0,4,0,0" FontSize="10" Foreground="#AAAAAA"/>
             </StackPanel>
 
-            <!-- Gemini Key -->
+            <!-- Billed Gemini project: one explicitly selected model, no model failover. -->
             <StackPanel Margin="0,10,0,0"
                         Visibility="{Binding IsGeminiProvider, Converter={StaticResource BoolToVisibility}}">
+                <TextBlock Text="{i18n:Loc Options.GeminiPaidKey}" Margin="0,0,0,2"/>
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Left">
+                    <PasswordBox Width="360"
+                                 HorizontalAlignment="Left"
+                                 Loaded="GeminiPaidKeyBox_Loaded"
+                                 PasswordChanged="GeminiPaidKeyBox_PasswordChanged"/>
+                    <Button Content="{i18n:Loc Common.Try}"
+                            Margin="8,0,0,0"
+                            Padding="10,2"
+                            Click="TryGeminiKey_Click"/>
+                </StackPanel>
+                <TextBlock Text="{Binding GeminiPaidKeyStatus}" Margin="0,4,0,0" FontSize="10" Foreground="#AAAAAA"/>
+                <TextBlock Text="{i18n:Loc Options.UsedGeminiPaid}" Margin="0,4,0,0" FontSize="10" Foreground="#AAAAAA" TextWrapping="Wrap" MaxWidth="440" HorizontalAlignment="Left"/>
+                <TextBlock Text="{i18n:Loc Options.GeminiRequestEveryChecks}" Margin="0,10,0,2"/>
+                <TextBox Text="{Binding GeminiPaidRequestEveryChecks, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
+                         Width="100" HorizontalAlignment="Left"/>
+                <TextBlock Text="{i18n:Loc Options.GeminiRequestEveryChecksHelp}"
+                           Margin="0,4,0,0" FontSize="10" Foreground="#AAAAAA"
+                           TextWrapping="Wrap" MaxWidth="440" HorizontalAlignment="Left"/>
+            </StackPanel>
+
+            <!-- Free Gemini project: ordered model pool with per-model quota circuits. -->
+            <StackPanel Margin="0,10,0,0"
+                        Visibility="{Binding IsGeminiFreeProvider, Converter={StaticResource BoolToVisibility}}">
                 <TextBlock Text="{i18n:Loc Options.GeminiKey}" Margin="0,0,0,2"/>
                 <StackPanel Orientation="Horizontal" HorizontalAlignment="Left">
                     <PasswordBox Width="360"
@@ -392,11 +416,39 @@
                             Click="TryGeminiKey_Click"/>
                 </StackPanel>
                 <TextBlock Text="{Binding GeminiKeyStatus}" Margin="0,4,0,0" FontSize="10" Foreground="#AAAAAA"/>
-                <TextBlock Text="{i18n:Loc Options.UsedGemini}" Margin="0,4,0,0" FontSize="10" Foreground="#AAAAAA"/>
+                <TextBlock Text="{i18n:Loc Options.UsedGemini}" Margin="0,4,0,0" FontSize="10" Foreground="#AAAAAA" TextWrapping="Wrap" MaxWidth="440" HorizontalAlignment="Left"/>
                 <TextBlock Text="{i18n:Loc Options.GeminiRequestEveryChecks}" Margin="0,10,0,2"/>
                 <TextBox Text="{Binding GeminiRequestEveryChecks, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
                          Width="100" HorizontalAlignment="Left"/>
                 <TextBlock Text="{i18n:Loc Options.GeminiRequestEveryChecksHelp}"
+                           Margin="0,4,0,0" FontSize="10" Foreground="#AAAAAA"
+                           TextWrapping="Wrap" MaxWidth="440" HorizontalAlignment="Left"/>
+
+                <TextBlock Text="{i18n:Loc Options.GeminiFreeModelOrder}" Margin="0,10,0,2"/>
+                <Grid Width="440" HorizontalAlignment="Left">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <ListBox x:Name="GeminiFreeModelList"
+                             ItemsSource="{Binding GeminiFreeModels}"
+                             SelectedItem="{Binding SelectedGeminiFreeModel, Mode=TwoWay}"
+                             Height="170"
+                             ScrollViewer.VerticalScrollBarVisibility="Auto"
+                             ScrollViewer.HorizontalScrollBarVisibility="Auto"/>
+                    <StackPanel Grid.Column="1" Margin="8,0,0,0" VerticalAlignment="Top">
+                        <Button Content="{i18n:Loc Common.MoveUp}" Padding="10,3" Margin="0,0,0,5" Click="MoveGeminiFreeModelUp_Click"/>
+                        <Button Content="{i18n:Loc Common.MoveDown}" Padding="10,3" Margin="0,0,0,5" Click="MoveGeminiFreeModelDown_Click"/>
+                        <Button Content="{i18n:Loc Common.Reset}" Padding="10,3" Click="ResetGeminiFreeModels_Click"/>
+                    </StackPanel>
+                </Grid>
+                <TextBlock Text="{i18n:Loc Options.GeminiFreeModelOrderHelp}"
+                           Margin="0,4,0,0" FontSize="10" Foreground="#AAAAAA"
+                           TextWrapping="Wrap" MaxWidth="440" HorizontalAlignment="Left"/>
+                <TextBlock Text="{i18n:Loc Options.GeminiFreeCycles}" Margin="0,10,0,2"/>
+                <TextBox Text="{Binding GeminiFreeCycleCount, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
+                         Width="100" HorizontalAlignment="Left"/>
+                <TextBlock Text="{i18n:Loc Options.GeminiFreeCyclesHelp}"
                            Margin="0,4,0,0" FontSize="10" Foreground="#AAAAAA"
                            TextWrapping="Wrap" MaxWidth="440" HorizontalAlignment="Left"/>
             </StackPanel>
@@ -439,7 +491,7 @@
             
                 <!-- Model Selection (non-local providers) -->
                 <StackPanel Margin="0,10,0,0"
-                    Visibility="{Binding IsNonLocalProvider, Converter={StaticResource BoolToVisibility}}">
+                    Visibility="{Binding IsModelSelectionVisible, Converter={StaticResource BoolToVisibility}}">
                 <TextBlock Text="{i18n:Loc Options.AiModel}" Margin="0,0,0,2"/>
                 <StackPanel Orientation="Horizontal" HorizontalAlignment="Left">
                     <ComboBox x:Name="ModelComboBox"
@@ -610,6 +662,7 @@
                 <TextBlock Text="{i18n:Loc Options.ProviderGitHub}" Margin="0,3"/>
                 <TextBlock Text="{i18n:Loc Options.ProviderOpenAi}" Margin="0,3"/>
                 <TextBlock Text="{i18n:Loc Options.ProviderGemini}" Margin="0,3"/>
+                <TextBlock Text="{i18n:Loc Options.ProviderGeminiFree}" Margin="0,3"/>
                 <TextBlock Text="{i18n:Loc Options.ProviderAnthropic}" Margin="0,3"/>
                 <TextBlock Text="{i18n:Loc Options.ProviderOllama}" Margin="0,3"/>
             </StackPanel>

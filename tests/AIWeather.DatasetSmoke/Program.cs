@@ -75,13 +75,15 @@ internal static class Program
             await VerifyUnifiedCapturePrefersSharedPreviewAsync();
             VerifyRtspPreviewFit();
             VerifyRtspPreviewHealthWatchdog();
+            await VerifyRtspPreviewSurfaceRecoveryAsync();
             VerifyGeminiQuotaPolicy();
+            VerifyGeminiProviderTierSplit();
             VerifyGeminiTransportRefreshesAfterProxyChange();
             await VerifyAIWeatherClusterProtocolAsync();
             await VerifyGeminiRequestPacingAsync();
             await VerifyGeminiServiceSuppressesQuotaRetriesAsync();
-            await VerifyGeminiTemporaryFailoverReturnsToPrimaryAsync();
-            await VerifyGeminiQuotaPausedAlternateReturnsToPrimaryAsync();
+            await VerifyPaidGeminiDoesNotSwitchModelsAsync();
+            await VerifyGeminiFreePoolOrderCyclesAndQuotaSkipAsync();
             await VerifyGemini503DiagnosticsSurviveRetryBudgetAsync();
             await VerifyQuotaFallbackMetadataAsync();
             await VerifyTrainableDedupPrivacyAndManualReviewAsync(
@@ -215,10 +217,14 @@ internal static class Program
             SunAltitudeLimitDegrees = -6,
             CloudCoverageThreshold = 70,
             CloudCoverageSafeThreshold = 40,
-            AnalysisProvider = "Gemini",
-            SelectedModel = "gemini-test",
+            AnalysisProvider = GeminiProviderProfile.FreeProviderId,
+            SelectedModel = "gemini-paid-test",
             GeminiKey = "gemini-secret",
-            GeminiRequestEveryChecks = 2
+            GeminiRequestEveryChecks = 2,
+            GeminiFreeModelOrder = string.Join("\n", GeminiProviderProfile.DefaultFreeModelOrder),
+            GeminiFreeCycleCount = 3,
+            GeminiPaidKey = "gemini-paid-secret",
+            GeminiPaidRequestEveryChecks = 4
         };
         var encrypted = AIWeatherClusterProtocol.EncryptFailoverConfiguration(
             failoverConfiguration,
@@ -229,15 +235,20 @@ internal static class Program
         var decrypted = AIWeatherClusterProtocol.DecryptFailoverConfiguration(encrypted, token);
         Assert(decrypted.RtspUrl == failoverConfiguration.RtspUrl
                && decrypted.RtspPassword == failoverConfiguration.RtspPassword
-               && decrypted.GeminiKey == failoverConfiguration.GeminiKey,
+               && decrypted.GeminiKey == failoverConfiguration.GeminiKey
+               && decrypted.GeminiPaidKey == failoverConfiguration.GeminiPaidKey
+               && decrypted.GeminiFreeCycleCount == 3,
             "encrypted failover configuration round trip");
         var replicaSummary = AIWeatherReplicaConfigurationSummary.FromConfiguration(
             decrypted,
             encrypted.Revision,
             encrypted.GeneratedUtc);
         var serializedSummary = JsonSerializer.Serialize(replicaSummary);
-        Assert(replicaSummary.AnalysisProvider == "Gemini"
-               && replicaSummary.SelectedModel == "gemini-test"
+        Assert(replicaSummary.AnalysisProvider == GeminiProviderProfile.FreeProviderId
+               && replicaSummary.GeminiFreeCycleCount == 3
+               && replicaSummary.GeminiFreeModelOrder.StartsWith(
+                   "gemini-3.5-flash-lite",
+                   StringComparison.Ordinal)
                && replicaSummary.ApiCredentialRequired
                && replicaSummary.ApiCredentialConfigured,
             "replica synchronized configuration summary omitted provider state");
@@ -246,7 +257,8 @@ internal static class Program
                && !serializedSummary.Contains("camera-secret", StringComparison.Ordinal)
                && !serializedSummary.Contains("embedded-secret", StringComparison.Ordinal)
                && !serializedSummary.Contains("query-secret", StringComparison.Ordinal)
-               && !serializedSummary.Contains("gemini-secret", StringComparison.Ordinal),
+               && !serializedSummary.Contains("gemini-secret", StringComparison.Ordinal)
+               && !serializedSummary.Contains("gemini-paid-secret", StringComparison.Ordinal),
             "replica synchronized configuration summary exposed a secret");
         var cachedSummary = AIWeatherReplicaConfigurationSummary.FromEncryptedCache(
             JsonSerializer.Serialize(encrypted),
@@ -342,7 +354,8 @@ internal static class Program
             CancellationToken.None);
         var fetchedConfiguration = client.DecryptFailoverConfiguration(fetchedEnvelope);
         Assert(fetchedConfiguration.RtspPassword == failoverConfiguration.RtspPassword
-               && fetchedConfiguration.GeminiKey == failoverConfiguration.GeminiKey,
+               && fetchedConfiguration.GeminiKey == failoverConfiguration.GeminiKey
+               && fetchedConfiguration.GeminiPaidKey == failoverConfiguration.GeminiPaidKey,
             "cluster encrypted failover configuration exchange");
 
         using (var rawClient = new HttpClient(new HttpClientHandler { UseProxy = false }))
@@ -782,6 +795,44 @@ internal static class Program
             "A quiet gap did not reset the RTSP preview late-frame burst");
     }
 
+    private static async Task VerifyRtspPreviewSurfaceRecoveryAsync()
+    {
+        var probes = 0;
+        var recovery = new RtspPreviewSurfaceRecovery(
+            probeInterval: TimeSpan.Zero,
+            maximumProbes: 5);
+
+        var recovered = await recovery.WaitForSurfaceAsync(
+            _ => Task.FromResult(++probes == 3));
+        Assert(recovered && probes == 3,
+            "Delayed RTSP surface recovery did not accept a later frame from the same player");
+
+        probes = 0;
+        var exhausted = await recovery.WaitForSurfaceAsync(
+            _ =>
+            {
+                probes++;
+                return Task.FromResult(false);
+            });
+        Assert(!exhausted && probes == 5,
+            "RTSP surface recovery did not stop after its bounded same-session probes");
+
+        using var canceled = new CancellationTokenSource();
+        canceled.Cancel();
+        try
+        {
+            await recovery.WaitForSurfaceAsync(
+                _ => Task.FromResult(false),
+                canceled.Token);
+            throw new InvalidOperationException(
+                "Canceled RTSP surface recovery unexpectedly completed");
+        }
+        catch (OperationCanceledException)
+        {
+            // Expected: replacing or stopping the player must stop the old probe loop.
+        }
+    }
+
     private static async Task<int> RunLiveRtspFreshnessCheckAsync()
     {
         var rtspUrl = Environment.GetEnvironmentVariable("AIWEATHER_RTSP_TEST_URL");
@@ -880,12 +931,16 @@ internal static class Program
                 "English review status localization failed");
             Assert(UiLocalization.Text("Review.Delete") == "Delete sample permanently",
                 "English permanent-delete localization failed");
+            Assert(UiLocalization.FailureCategory(AnalysisFailureCategory.ServiceUnavailable)
+                   == "service temporarily unavailable",
+                "English service-unavailable localization failed");
 
             CultureInfo.CurrentUICulture = CultureInfo.GetCultureInfo("zh-CN");
             Assert(UiLocalization.Text("Preview.ActivityLog") == "活动日志",
                 "Chinese localization was not selected for zh-CN");
             Assert(UiLocalization.Text("Preview.VideoRetry") == "重试本机视频"
-                   && UiLocalization.Text("Preview.VideoSurfaceUnavailable").Contains("无法显示", StringComparison.Ordinal),
+                   && UiLocalization.Text("Preview.VideoSurfaceUnavailable").Contains("无法显示", StringComparison.Ordinal)
+                   && UiLocalization.Text("Preview.VideoSurfaceWaiting").Contains("同一连接", StringComparison.Ordinal),
                 "Chinese local-preview diagnostics were not localized");
             var fallback = new WeatherAnalysisResult
             {
@@ -900,14 +955,27 @@ internal static class Program
                 }
             };
             fallback.Provenance.Provider = "Local";
-            Assert(UiLocalization.AnalysisDescription(fallback, "Gemini") == "[回退：本地] Gemini 失败（超时）。阴天——云量 100.0%",
+            Assert(UiLocalization.AnalysisDescription(fallback, "Gemini") == "在线 Gemini 调用失败（超时），已回退到本地模型。阴天——云量 100.0%",
                 "Fallback analysis description was not localized for zh-CN");
+            Assert(UiLocalization.AnalysisDescription(fallback, GeminiProviderProfile.FreeProviderId)
+                   == "在线 Gemini 免费 调用失败（超时），已回退到本地模型。阴天——云量 100.0%",
+                "Gemini Free fallback description did not distinguish the free policy in zh-CN");
             Assert(UiLocalization.Condition(WeatherCondition.MostlyCloudy) == "大部多云",
                 "Chinese weather condition localization failed");
             Assert(UiLocalization.ReviewStatus(DatasetReviewStatuses.Accepted) == "已接受",
                 "Chinese review status localization failed");
             Assert(UiLocalization.Text("Review.Delete") == "永久删除样本",
                 "Chinese permanent-delete localization failed");
+
+            fallback.Provenance.FailureCategory = AnalysisFailureCategory.ServiceUnavailable;
+            fallback.Provenance.HttpStatus = 503;
+            Assert(UiLocalization.AnalysisDescription(fallback, "Gemini")
+                   == "在线 Gemini 调用失败（服务暂不可用，HTTP 503），已回退到本地模型。阴天——云量 100.0%",
+                "Service-unavailable fallback description did not retain HTTP status for zh-CN");
+            Assert(UiLocalization.FallbackStatus(fallback.Provenance)
+                       .Contains("在线教师调用失败（服务暂不可用，HTTP 503），当前使用本地模型", StringComparison.Ordinal),
+                "Service-unavailable fallback status did not retain HTTP status for zh-CN");
+            fallback.Provenance.HttpStatus = null;
 
             fallback.Provenance.FailureCategory = AnalysisFailureCategory.QuotaExhausted;
             fallback.Provenance.RetryAfterUtc = DateTime.UtcNow.AddMinutes(10);
@@ -1047,6 +1115,40 @@ internal static class Program
             "Gemini quota circuit remained open after a successful-response reset");
     }
 
+    private static void VerifyGeminiProviderTierSplit()
+    {
+        Assert(GeminiProviderProfile.MigrateLegacyProvider("Gemini", migrationCompleted: false)
+                   == GeminiProviderProfile.FreeProviderId,
+            "Legacy free-tier Gemini provider was not migrated to GeminiFree");
+        Assert(GeminiProviderProfile.MigrateLegacyProvider("Gemini", migrationCompleted: true)
+                   == GeminiProviderProfile.PaidProviderId,
+            "One-time Gemini tier migration would overwrite a later paid selection");
+
+        var expected = new[]
+        {
+            "gemini-3.5-flash-lite",
+            "gemini-3.1-flash-lite",
+            "gemini-3.7-flash",
+            "gemini-3.6-flash",
+            "gemini-3.5-flash",
+            "gemini-3-flash",
+            "gemini-2.5-flash",
+            "gemini-2.0-flash",
+            "gemini-2.5-flash-lite",
+            "gemini-2.0-flash-lite"
+        };
+        Assert(GeminiProviderProfile.DefaultFreeModelOrder.SequenceEqual(expected),
+            "Gemini Free default model order differs from the operator-defined order");
+
+        var reordered = expected.Reverse().ToArray();
+        var roundTrip = GeminiProviderProfile.ParseFreeModelOrder(
+            GeminiProviderProfile.SerializeFreeModelOrder(reordered));
+        Assert(roundTrip.SequenceEqual(reordered),
+            "Gemini Free model order did not survive settings serialization");
+        Assert(Properties.Settings.Default.GeminiFreeCycleCount == 2,
+            "Gemini Free default cycle count must be two");
+    }
+
     private static async Task VerifyQuotaFallbackMetadataAsync()
     {
         var retryAfterUtc = DateTime.UtcNow.AddMinutes(10);
@@ -1105,7 +1207,8 @@ internal static class Program
             "gemini-test",
             http,
             breaker,
-            () => now);
+            () => now,
+            serviceTier: GeminiServiceTier.Free);
         Assert(await service.InitializeAsync(), "Injected Gemini service failed to initialize");
 
         using var frame = CreateFrame();
@@ -1192,7 +1295,8 @@ internal static class Program
             probeHttp,
             probeBreaker,
             () => probeNow,
-            requestEveryChecks: 3);
+            requestEveryChecks: 3,
+            serviceTier: GeminiServiceTier.Free);
         Assert(await probeService.InitializeAsync(), "Quota-probe Gemini service failed to initialize");
         Assert((await probeService.TryAnalyzeOnlineOnlyAsync(frame)).Success,
             "Quota-probe setup call failed");
@@ -1211,75 +1315,79 @@ internal static class Program
             "An expired Gemini quota pause did not force an immediate probe between paced calls");
     }
 
-    private static async Task VerifyGeminiTemporaryFailoverReturnsToPrimaryAsync()
+    private static async Task VerifyPaidGeminiDoesNotSwitchModelsAsync()
     {
-        const string primary = "gemini-3.5-flash-lite";
-        const string alternate = "gemini-3.5-flash";
+        const string primary = "gemini-paid-selected";
+        const string alternate = "gemini-should-never-run";
         var handler = new ScriptedGeminiResponseHandler(
             new Dictionary<string, Queue<HttpStatusCode>>(StringComparer.OrdinalIgnoreCase)
             {
-                [primary] = new Queue<HttpStatusCode>(new[]
-                {
-                    HttpStatusCode.ServiceUnavailable,
-                    HttpStatusCode.OK
-                }),
-                [alternate] = new Queue<HttpStatusCode>(new[]
-                {
-                    HttpStatusCode.OK,
-                    HttpStatusCode.OK
-                })
+                [primary] = new Queue<HttpStatusCode>(new[] { HttpStatusCode.ServiceUnavailable }),
+                [alternate] = new Queue<HttpStatusCode>(new[] { HttpStatusCode.OK })
             });
         using var http = new HttpClient(handler);
         var service = new GeminiAnalysisService(
-            "test-key-never-sent-to-network",
+            "paid-test-key-never-sent-to-network",
             primary,
             http,
             new GeminiQuotaCircuitBreaker(),
-            () => new DateTimeOffset(2026, 8, 29, 0, 0, 0, TimeSpan.Zero),
-            failoverCandidates: new[] { alternate });
-        Assert(await service.InitializeAsync(), "Failover Gemini service failed to initialize");
+            () => new DateTimeOffset(2026, 8, 30, 0, 0, 0, TimeSpan.Zero),
+            requestEveryChecks: 1,
+            serviceTier: GeminiServiceTier.Paid);
+        Assert(await service.InitializeAsync(), "Paid Gemini service failed to initialize");
 
         using var frame = CreateFrame();
-        var first = await service.TryAnalyzeOnlineOnlyAsync(frame);
-        var second = await service.TryAnalyzeOnlineOnlyAsync(frame);
-        var third = await service.TryAnalyzeOnlineOnlyAsync(frame);
+        var failure = await service.TryAnalyzeOnlineOnlyAsync(frame);
+        Assert(!failure.Success
+               && failure.Provenance.Provider == "Gemini"
+               && failure.Provenance.Model == primary
+               && failure.Provenance.HttpStatus == 503,
+            "Paid Gemini did not retain its selected-model failure");
+        Assert(handler.RequestedModels.SequenceEqual(new[] { primary }),
+            "Paid Gemini switched, reordered or retried models after the selected model failed");
 
-        Assert(first.Success && first.Provenance.Model == alternate,
-            "HTTP 503 did not temporarily fail over to the configured same-family alternate");
-        Assert(first.Provenance.AttemptDiagnostics.Count == 2
-               && first.Provenance.AttemptDiagnostics[0].Model == primary
-               && first.Provenance.AttemptDiagnostics[0].HttpStatus == 503
-               && first.Provenance.AttemptDiagnostics[1].Model == alternate
-               && first.Provenance.AttemptDiagnostics[1].HttpStatus == 200,
-            "Failover provenance did not retain the primary 503 and alternate success");
-        Assert(second.Success && second.Provenance.Model == alternate,
-            "Temporary alternate was not held for the requested short backoff window");
-        Assert(third.Success && third.Provenance.Model == primary,
-            "Gemini service did not probe and return to the configured primary after two alternate successes");
-        Assert(handler.RequestedModels.SequenceEqual(new[] { primary, alternate, alternate, primary }),
-            "Gemini failover/return request order was not deterministic");
-    }
-
-    private static async Task VerifyGeminiQuotaPausedAlternateReturnsToPrimaryAsync()
-    {
-        const string primary = "gemini-3.5-flash-lite";
-        const string alternate = "gemini-3.5-flash";
-        var handler = new ScriptedGeminiResponseHandler(
+        var quotaHandler = new ScriptedGeminiResponseHandler(
             new Dictionary<string, Queue<HttpStatusCode>>(StringComparer.OrdinalIgnoreCase)
             {
                 [primary] = new Queue<HttpStatusCode>(new[]
                 {
-                    HttpStatusCode.ServiceUnavailable,
-                    HttpStatusCode.OK
-                }),
-                [alternate] = new Queue<HttpStatusCode>(new[]
-                {
+                    (HttpStatusCode)429,
                     (HttpStatusCode)429
                 })
             });
-        using var http = new HttpClient(handler);
-        var circuits = new Dictionary<string, GeminiQuotaCircuitBreaker>(StringComparer.OrdinalIgnoreCase);
-        GeminiQuotaCircuitBreaker CircuitFor(string model)
+        using var quotaHttp = new HttpClient(quotaHandler);
+        var quotaService = new GeminiAnalysisService(
+            "paid-test-key-never-sent-to-network",
+            primary,
+            quotaHttp,
+            new GeminiQuotaCircuitBreaker(),
+            () => new DateTimeOffset(2026, 8, 30, 0, 0, 0, TimeSpan.Zero),
+            requestEveryChecks: 1,
+            serviceTier: GeminiServiceTier.Paid);
+        Assert(await quotaService.InitializeAsync(), "Paid Gemini quota test service failed to initialize");
+        var firstQuotaFailure = await quotaService.TryAnalyzeOnlineOnlyAsync(frame);
+        var secondQuotaFailure = await quotaService.TryAnalyzeOnlineOnlyAsync(frame);
+        Assert(!firstQuotaFailure.Success
+               && !secondQuotaFailure.Success
+               && !firstQuotaFailure.Provenance.RequestSuppressed
+               && !secondQuotaFailure.Provenance.RequestSuppressed
+               && firstQuotaFailure.Provenance.RetryAfterUtc == null
+               && secondQuotaFailure.Provenance.RetryAfterUtc == null,
+            "Paid Gemini retained a quota backoff state instead of its strict selected-model policy");
+        Assert(quotaHandler.RequestedModels.SequenceEqual(new[] { primary, primary }),
+            "Paid Gemini quota handling skipped, retried or switched away from the selected model");
+    }
+
+    private static async Task VerifyGeminiFreePoolOrderCyclesAndQuotaSkipAsync()
+    {
+        var models = GeminiProviderProfile.DefaultFreeModelOrder.ToArray();
+        var now = new DateTimeOffset(2026, 8, 30, 0, 0, 0, TimeSpan.Zero);
+
+        Dictionary<string, GeminiQuotaCircuitBreaker> CreateCircuits() =>
+            new Dictionary<string, GeminiQuotaCircuitBreaker>(StringComparer.OrdinalIgnoreCase);
+        GeminiQuotaCircuitBreaker CircuitFor(
+            IDictionary<string, GeminiQuotaCircuitBreaker> circuits,
+            string model)
         {
             if (!circuits.TryGetValue(model, out var circuit))
             {
@@ -1289,27 +1397,99 @@ internal static class Program
             return circuit;
         }
 
-        var service = new GeminiAnalysisService(
-            "test-key-never-sent-to-network",
-            primary,
-            http,
-            CircuitFor,
-            () => new DateTimeOffset(2026, 8, 29, 0, 0, 0, TimeSpan.Zero),
-            failoverCandidates: new[] { alternate });
-        Assert(await service.InitializeAsync(), "Quota-aware failover Gemini service failed to initialize");
+        var successHandler = new ScriptedGeminiResponseHandler(
+            new Dictionary<string, Queue<HttpStatusCode>>(StringComparer.OrdinalIgnoreCase)
+            {
+                [models[0]] = new Queue<HttpStatusCode>(new[] { HttpStatusCode.ServiceUnavailable }),
+                [models[1]] = new Queue<HttpStatusCode>(new[] { HttpStatusCode.OK })
+            });
+        using (var successHttp = new HttpClient(successHandler))
+        {
+            var circuits = CreateCircuits();
+            var pool = new GeminiFreePoolAnalysisService(
+                "free-test-key-never-sent-to-network",
+                models,
+                cycles: 2,
+                requestEveryChecks: 1,
+                new FixedHttpClientProvider(successHttp),
+                model => CircuitFor(circuits, model),
+                () => now);
+            Assert(await pool.InitializeAsync(), "Gemini Free ordered pool failed to initialize");
+            using var frame = CreateFrame();
+            var success = await pool.TryAnalyzeOnlineOnlyAsync(frame);
+            Assert(success.Success
+                   && success.Provenance.Provider == "Gemini Free"
+                   && success.Provenance.Model == models[1],
+                "Gemini Free pool did not return the first successful ordered model");
+            Assert(successHandler.RequestedModels.SequenceEqual(models.Take(2)),
+                "Gemini Free pool did not follow the configured model order");
+        }
 
-        using var frame = CreateFrame();
-        var alternateQuota = await service.TryAnalyzeOnlineOnlyAsync(frame);
-        var primaryRecovery = await service.TryAnalyzeOnlineOnlyAsync(frame);
+        var quotaSkipHandler = new ScriptedGeminiResponseHandler(
+            new Dictionary<string, Queue<HttpStatusCode>>(StringComparer.OrdinalIgnoreCase)
+            {
+                [models[1]] = new Queue<HttpStatusCode>(new[] { HttpStatusCode.OK })
+            });
+        using (var quotaSkipHttp = new HttpClient(quotaSkipHandler))
+        {
+            var circuits = CreateCircuits();
+            CircuitFor(circuits, models[0]).RecordFailure(now, new GeminiQuotaInfo
+            {
+                IsQuotaFailure = true,
+                ProviderFailureCode = "quota_exhausted",
+                QuotaId = "model-zero-daily",
+                RetryDelay = TimeSpan.FromHours(1),
+                IsDailyQuota = false
+            });
+            var pool = new GeminiFreePoolAnalysisService(
+                "free-test-key-never-sent-to-network",
+                models,
+                cycles: 2,
+                requestEveryChecks: 1,
+                new FixedHttpClientProvider(quotaSkipHttp),
+                model => CircuitFor(circuits, model),
+                () => now);
+            Assert(await pool.InitializeAsync(), "Quota-skip Gemini Free pool failed to initialize");
+            using var frame = CreateFrame();
+            var success = await pool.TryAnalyzeOnlineOnlyAsync(frame);
+            Assert(success.Success
+                   && quotaSkipHandler.RequestedModels.SequenceEqual(new[] { models[1] }),
+                "Gemini Free pool issued a request for a quota-paused model");
+            Assert(success.Provenance.AttemptDiagnostics.Any(item =>
+                    item.Model == models[0]
+                    && item.Outcome == "quota_circuit_skipped"),
+                "Gemini Free pool did not preserve its per-model quota skip diagnostic");
+        }
 
-        Assert(!alternateQuota.Success
-               && alternateQuota.Provenance.Model == alternate
-               && alternateQuota.Provenance.FailureCategory == AnalysisFailureCategory.QuotaExhausted,
-            "The alternate model's independent quota failure was not retained");
-        Assert(primaryRecovery.Success && primaryRecovery.Provenance.Model == primary,
-            "A quota-paused temporary alternate pinned the service instead of probing the configured primary");
-        Assert(handler.RequestedModels.SequenceEqual(new[] { primary, alternate, primary }),
-            "Quota-aware failover did not return to the configured primary on the next check");
+        var exhaustedResponses = models.ToDictionary(
+            model => model,
+            _ => new Queue<HttpStatusCode>(new[]
+            {
+                HttpStatusCode.NotFound,
+                HttpStatusCode.NotFound
+            }),
+            StringComparer.OrdinalIgnoreCase);
+        var exhaustedHandler = new ScriptedGeminiResponseHandler(exhaustedResponses);
+        using (var exhaustedHttp = new HttpClient(exhaustedHandler))
+        {
+            var circuits = CreateCircuits();
+            var pool = new GeminiFreePoolAnalysisService(
+                "free-test-key-never-sent-to-network",
+                models,
+                cycles: 2,
+                requestEveryChecks: 1,
+                new FixedHttpClientProvider(exhaustedHttp),
+                model => CircuitFor(circuits, model),
+                () => now);
+            Assert(await pool.InitializeAsync(), "Exhaustion Gemini Free pool failed to initialize");
+            using var frame = CreateFrame();
+            var failure = await pool.TryAnalyzeOnlineOnlyAsync(frame);
+            var expectedOrder = models.Concat(models).ToArray();
+            Assert(!failure.Success
+                   && failure.Provenance.Attempts == expectedOrder.Length
+                   && exhaustedHandler.RequestedModels.SequenceEqual(expectedOrder),
+                "Gemini Free pool returned before completing every configured model cycle");
+        }
     }
 
     private static async Task VerifyGemini503DiagnosticsSurviveRetryBudgetAsync()
@@ -1324,7 +1504,7 @@ internal static class Program
             http,
             new GeminiQuotaCircuitBreaker(),
             () => new DateTimeOffset(2026, 8, 29, 0, 0, 0, TimeSpan.Zero),
-            failoverCandidates: Array.Empty<string>());
+            serviceTier: GeminiServiceTier.Paid);
         Assert(await service.InitializeAsync(), "503 diagnostic Gemini service failed to initialize");
 
         using var frame = CreateFrame();
@@ -1334,9 +1514,9 @@ internal static class Program
                && failure.Provenance.HttpStatus == 503
                && failure.Provenance.ProviderFailureCode == "service_unavailable",
             "Gemini final failure hid the concrete HTTP 503 behind a generic timeout/unknown result");
-        Assert(failure.Provenance.AttemptDiagnostics.Count == 3
+        Assert(failure.Provenance.AttemptDiagnostics.Count == 1
                && failure.Provenance.AttemptDiagnostics.All(item => item.HttpStatus == 503),
-            "Gemini per-attempt diagnostics did not retain all HTTP 503 responses");
+            "Paid Gemini diagnostics did not retain the selected model's single HTTP 503 response");
     }
 
     private static async Task VerifyTrainableDedupPrivacyAndManualReviewAsync(string root)

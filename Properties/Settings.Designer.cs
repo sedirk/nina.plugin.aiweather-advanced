@@ -216,6 +216,66 @@ namespace AIWeather.Properties {
         [global::System.Configuration.UserScopedSettingAttribute()]
         [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
         [global::System.Configuration.DefaultSettingValueAttribute("")]
+        public string GeminiFreeModelOrder {
+            get {
+                return ((string)(this["GeminiFreeModelOrder"]));
+            }
+            set {
+                this["GeminiFreeModelOrder"] = value;
+            }
+        }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("2")]
+        public int GeminiFreeCycleCount {
+            get {
+                return ((int)(this["GeminiFreeCycleCount"]));
+            }
+            set {
+                this["GeminiFreeCycleCount"] = value;
+            }
+        }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("")]
+        public string GeminiPaidKey {
+            get {
+                return ((string)(this["GeminiPaidKey"]));
+            }
+            set {
+                this["GeminiPaidKey"] = value;
+            }
+        }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("1")]
+        public int GeminiPaidRequestEveryChecks {
+            get {
+                return ((int)(this["GeminiPaidRequestEveryChecks"]));
+            }
+            set {
+                this["GeminiPaidRequestEveryChecks"] = value;
+            }
+        }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("False")]
+        public bool GeminiTierSplitMigrated {
+            get {
+                return ((bool)(this["GeminiTierSplitMigrated"]));
+            }
+            set {
+                this["GeminiTierSplitMigrated"] = value;
+            }
+        }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("")]
         public string AnthropicKey {
             get {
                 return ((string)(this["AnthropicKey"]));

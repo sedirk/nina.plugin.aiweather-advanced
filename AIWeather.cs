@@ -68,7 +68,10 @@ namespace AIWeather
                 new("Local", UiLocalization.Text("Options.ProviderNameLocal")),
                 new("GitHubModels", UiLocalization.Text("Options.ProviderNameGitHub")),
                 new("OpenAI", "OpenAI"),
-                new("Gemini", "Google Gemini"),
+                new(Services.GeminiProviderProfile.PaidProviderId,
+                    UiLocalization.Text("Options.ProviderNameGeminiPaid")),
+                new(Services.GeminiProviderProfile.FreeProviderId,
+                    UiLocalization.Text("Options.ProviderNameGeminiFree")),
                 new("Anthropic", "Anthropic Claude"),
                 new("Ollama", UiLocalization.Text("Options.ProviderNameOllama"))
             };
@@ -163,6 +166,19 @@ namespace AIWeather
                     "gemini-2.5-flash",
                     "gemini-2.5-pro",
                 },
+                ["GeminiFree"] = new[]
+                {
+                    "gemini-3.5-flash-lite",
+                    "gemini-3.1-flash-lite",
+                    "gemini-3.7-flash",
+                    "gemini-3.6-flash",
+                    "gemini-3.5-flash",
+                    "gemini-3-flash",
+                    "gemini-2.5-flash",
+                    "gemini-2.0-flash",
+                    "gemini-2.5-flash-lite",
+                    "gemini-2.0-flash-lite",
+                },
                 ["Anthropic"] = new[]
                 {
                     "claude-sonnet-4-5-20250929",
@@ -189,6 +205,25 @@ namespace AIWeather
 
         public ObservableCollection<string> AvailableModels { get; } = new ObservableCollection<string>(
             DefaultModelsByProvider.TryGetValue("GitHubModels", out var init) ? init : Array.Empty<string>());
+
+        public ObservableCollection<string> GeminiFreeModels { get; } = new ObservableCollection<string>(
+            Services.GeminiProviderProfile.ParseFreeModelOrder(
+                Properties.Settings.Default.GeminiFreeModelOrder));
+
+        private string? _selectedGeminiFreeModel;
+        public string? SelectedGeminiFreeModel
+        {
+            get => _selectedGeminiFreeModel;
+            set
+            {
+                if (string.Equals(_selectedGeminiFreeModel, value, StringComparison.OrdinalIgnoreCase))
+                {
+                    return;
+                }
+                _selectedGeminiFreeModel = value;
+                RaisePropertyChanged();
+            }
+        }
 
         private string _gitHubTokenStatus = string.Empty;
         public string GitHubTokenStatus
@@ -219,6 +254,17 @@ namespace AIWeather
             private set
             {
                 _geminiKeyStatus = value;
+                RaisePropertyChanged();
+            }
+        }
+
+        private string _geminiPaidKeyStatus = string.Empty;
+        public string GeminiPaidKeyStatus
+        {
+            get => _geminiPaidKeyStatus;
+            private set
+            {
+                _geminiPaidKeyStatus = value;
                 RaisePropertyChanged();
             }
         }
@@ -313,8 +359,20 @@ namespace AIWeather
                 changed = true;
             }
 
+            // The pre-split Gemini option was explicitly documented as the free API tier.
+            // Preserve that meaning exactly once; the marker prevents a user-selected paid
+            // provider from being changed again on future starts.
+            var provider = Services.GeminiProviderProfile.MigrateLegacyProvider(
+                Properties.Settings.Default.AnalysisProvider,
+                Properties.Settings.Default.GeminiTierSplitMigrated);
+            if (!Properties.Settings.Default.GeminiTierSplitMigrated)
+            {
+                Properties.Settings.Default.AnalysisProvider = provider;
+                Properties.Settings.Default.GeminiTierSplitMigrated = true;
+                changed = true;
+            }
+
             // Keep legacy flag aligned for existing logic and older UI bindings.
-            var provider = Properties.Settings.Default.AnalysisProvider?.Trim();
             var shouldUseGitHubModels = string.Equals(provider, "GitHubModels", StringComparison.OrdinalIgnoreCase);
             if (Properties.Settings.Default.UseGitHubModels != shouldUseGitHubModels)
             {
@@ -339,6 +397,34 @@ namespace AIWeather
             if (Properties.Settings.Default.GeminiRequestEveryChecks != normalizedGeminiRequestEveryChecks)
             {
                 Properties.Settings.Default.GeminiRequestEveryChecks = normalizedGeminiRequestEveryChecks;
+                changed = true;
+            }
+
+            var normalizedGeminiFreeCycleCount = Math.Clamp(
+                Properties.Settings.Default.GeminiFreeCycleCount, 1, 10);
+            if (Properties.Settings.Default.GeminiFreeCycleCount != normalizedGeminiFreeCycleCount)
+            {
+                Properties.Settings.Default.GeminiFreeCycleCount = normalizedGeminiFreeCycleCount;
+                changed = true;
+            }
+
+            var normalizedGeminiFreeModelOrder = Services.GeminiProviderProfile.SerializeFreeModelOrder(
+                Services.GeminiProviderProfile.ParseFreeModelOrder(
+                    Properties.Settings.Default.GeminiFreeModelOrder));
+            if (!string.Equals(
+                    Properties.Settings.Default.GeminiFreeModelOrder,
+                    normalizedGeminiFreeModelOrder,
+                    StringComparison.Ordinal))
+            {
+                Properties.Settings.Default.GeminiFreeModelOrder = normalizedGeminiFreeModelOrder;
+                changed = true;
+            }
+
+            var normalizedGeminiPaidRequestEveryChecks = Math.Clamp(
+                Properties.Settings.Default.GeminiPaidRequestEveryChecks, 1, 10000);
+            if (Properties.Settings.Default.GeminiPaidRequestEveryChecks != normalizedGeminiPaidRequestEveryChecks)
+            {
+                Properties.Settings.Default.GeminiPaidRequestEveryChecks = normalizedGeminiPaidRequestEveryChecks;
                 changed = true;
             }
 
@@ -397,11 +483,14 @@ namespace AIWeather
 
         public bool IsGitHubModelsProvider => string.Equals(AnalysisProvider, "GitHubModels", StringComparison.OrdinalIgnoreCase);
         public bool IsOpenAIProvider => string.Equals(AnalysisProvider, "OpenAI", StringComparison.OrdinalIgnoreCase);
-        public bool IsGeminiProvider => string.Equals(AnalysisProvider, "Gemini", StringComparison.OrdinalIgnoreCase);
+        public bool IsGeminiProvider => Services.GeminiProviderProfile.IsPaid(AnalysisProvider);
+        public bool IsGeminiFreeProvider => Services.GeminiProviderProfile.IsFree(AnalysisProvider);
+        public bool IsAnyGeminiProvider => Services.GeminiProviderProfile.IsGemini(AnalysisProvider);
         public bool IsAnthropicProvider => string.Equals(AnalysisProvider, "Anthropic", StringComparison.OrdinalIgnoreCase);
         public bool IsOllamaProvider => string.Equals(AnalysisProvider, "Ollama", StringComparison.OrdinalIgnoreCase);
         public bool IsLocalProvider => string.Equals(AnalysisProvider, "Local", StringComparison.OrdinalIgnoreCase);
         public bool IsNonLocalProvider => !IsLocalProvider;
+        public bool IsModelSelectionVisible => IsNonLocalProvider && !IsGeminiFreeProvider;
 
         public async Task RefreshAvailableModelsAsync(bool forceRefresh = false)
         {
@@ -418,6 +507,18 @@ namespace AIWeather
                 return;
             }
 
+            if (Services.GeminiProviderProfile.IsFree(currentProvider))
+            {
+                RunOnUiThread(() =>
+                {
+                    ModelsStatus = UiLocalization.Text(
+                        "Runtime.GeminiFreePoolReady",
+                        GeminiFreeModels.Count,
+                        GeminiFreeCycleCount);
+                });
+                return;
+            }
+
             try
             {
                 // ── Check cache first (1-hour TTL) ──────────────────────────────
@@ -427,10 +528,6 @@ namespace AIWeather
                     cached.models.Length > 0)
                 {
                     Logger.Debug($"Returning {cached.models.Length} cached models for {currentProvider}");
-                    if (string.Equals(currentProvider, "Gemini", StringComparison.OrdinalIgnoreCase))
-                    {
-                        Services.GeminiModelFailoverCatalog.Update(cached.models);
-                    }
                     RunOnUiThread(() =>
                     {
                         SyncModelsCollection(cached.models);
@@ -506,11 +603,6 @@ namespace AIWeather
                 var statusMsg = liveModels != null && liveModels.Length > 0
                     ? UiLocalization.Text("Runtime.ModelsLoaded", finalModels.Count, currentProvider)
                     : UiLocalization.Text("Runtime.ModelsFallback", currentProvider, finalModels.Count);
-
-                if (string.Equals(currentProvider, "Gemini", StringComparison.OrdinalIgnoreCase))
-                {
-                    Services.GeminiModelFailoverCatalog.Update(finalModels);
-                }
 
                 RunOnUiThread(() =>
                 {
@@ -602,9 +694,11 @@ namespace AIWeather
             }
 
             // ── Gemini ──────────────────────────────────────────────────────────
-            if (string.Equals(provider, "Gemini", StringComparison.OrdinalIgnoreCase))
+            if (Services.GeminiProviderProfile.IsGemini(provider))
             {
-                var key = Properties.Settings.Default.GeminiKey;
+                var key = Services.GeminiProviderProfile.IsPaid(provider)
+                    ? Properties.Settings.Default.GeminiPaidKey
+                    : Properties.Settings.Default.GeminiKey;
                 if (string.IsNullOrWhiteSpace(key)) return null;
 
                 return await FetchGeminiModelsAsync(key.Trim());
@@ -883,16 +977,33 @@ namespace AIWeather
 
         public async Task TryGeminiKeyAsync()
         {
+            var provider = AnalysisProvider;
+            var isPaid = Services.GeminiProviderProfile.IsPaid(provider);
+
+            void SetStatus(string value)
+            {
+                if (isPaid)
+                {
+                    GeminiPaidKeyStatus = value;
+                }
+                else
+                {
+                    GeminiKeyStatus = value;
+                }
+            }
+
             try
             {
-                var key = Properties.Settings.Default.GeminiKey;
+                var key = isPaid
+                    ? Properties.Settings.Default.GeminiPaidKey
+                    : Properties.Settings.Default.GeminiKey;
                 if (string.IsNullOrWhiteSpace(key))
                 {
-                    GeminiKeyStatus = UiLocalization.Text("Runtime.KeyEmpty");
+                    SetStatus(UiLocalization.Text("Runtime.KeyEmpty"));
                     return;
                 }
 
-                GeminiKeyStatus = UiLocalization.Text("Runtime.KeyTesting");
+                SetStatus(UiLocalization.Text("Runtime.KeyTesting"));
 
                 using var http = new HttpClient();
                 http.DefaultRequestHeaders.UserAgent.ParseAdd("NINA-AIWeather/1.0");
@@ -903,7 +1014,10 @@ namespace AIWeather
 
                 if (!response.IsSuccessStatusCode)
                 {
-                    GeminiKeyStatus = UiLocalization.Text("Runtime.KeyHttpFailed", (int)response.StatusCode, response.StatusCode);
+                    SetStatus(UiLocalization.Text(
+                        "Runtime.KeyHttpFailed",
+                        (int)response.StatusCode,
+                        response.StatusCode));
                     return;
                 }
 
@@ -921,17 +1035,17 @@ namespace AIWeather
                     // ignore parse issues; success is enough
                 }
 
-                GeminiKeyStatus = count > 0
+                SetStatus(count > 0
                     ? UiLocalization.Text("Runtime.KeyOkModels", count)
-                    : UiLocalization.Text("Runtime.KeyOk");
+                    : UiLocalization.Text("Runtime.KeyOk"));
 
                 // Invalidate cache so next refresh fetches fresh models.
-                _modelCache.Remove("Gemini");
+                _modelCache.Remove(provider);
                 await RefreshAvailableModelsAsync();
             }
             catch (Exception ex)
             {
-                GeminiKeyStatus = UiLocalization.Text("Runtime.KeyFailed", ex.Message);
+                SetStatus(UiLocalization.Text("Runtime.KeyFailed", ex.Message));
             }
         }
 
@@ -1112,6 +1226,69 @@ namespace AIWeather
             }
         }
 
+        public int GeminiFreeCycleCount
+        {
+            get => Properties.Settings.Default.GeminiFreeCycleCount;
+            set
+            {
+                Properties.Settings.Default.GeminiFreeCycleCount = Math.Clamp(value, 1, 10);
+                CoreUtil.SaveSettings(Properties.Settings.Default);
+                RaisePropertyChanged();
+            }
+        }
+
+        public void MoveSelectedGeminiFreeModel(int offset)
+        {
+            if (offset == 0 || string.IsNullOrWhiteSpace(SelectedGeminiFreeModel))
+            {
+                return;
+            }
+
+            var currentIndex = GeminiFreeModels.IndexOf(SelectedGeminiFreeModel);
+            var targetIndex = currentIndex + offset;
+            if (currentIndex < 0 || targetIndex < 0 || targetIndex >= GeminiFreeModels.Count)
+            {
+                return;
+            }
+
+            GeminiFreeModels.Move(currentIndex, targetIndex);
+            PersistGeminiFreeModelOrder();
+        }
+
+        public void ResetGeminiFreeModelOrder()
+        {
+            GeminiFreeModels.Clear();
+            foreach (var model in Services.GeminiProviderProfile.DefaultFreeModelOrder)
+            {
+                GeminiFreeModels.Add(model);
+            }
+            SelectedGeminiFreeModel = GeminiFreeModels.FirstOrDefault();
+            PersistGeminiFreeModelOrder();
+        }
+
+        private void PersistGeminiFreeModelOrder()
+        {
+            Properties.Settings.Default.GeminiFreeModelOrder =
+                Services.GeminiProviderProfile.SerializeFreeModelOrder(GeminiFreeModels);
+            CoreUtil.SaveSettings(Properties.Settings.Default);
+            RaisePropertyChanged(nameof(GeminiFreeModels));
+        }
+
+        /// <summary>
+        /// Independent pacing for a billed Gemini project. The API endpoint is shared with
+        /// the free tier, but credentials and operator policy are intentionally separate.
+        /// </summary>
+        public int GeminiPaidRequestEveryChecks
+        {
+            get => Properties.Settings.Default.GeminiPaidRequestEveryChecks;
+            set
+            {
+                Properties.Settings.Default.GeminiPaidRequestEveryChecks = Math.Clamp(value, 1, 10000);
+                CoreUtil.SaveSettings(Properties.Settings.Default);
+                RaisePropertyChanged();
+            }
+        }
+
         /// <summary>
         /// Cloud coverage threshold percentage (0-100)
         /// </summary>
@@ -1161,6 +1338,9 @@ namespace AIWeather
                 RaisePropertyChanged(nameof(IsGitHubModelsProvider));
                 RaisePropertyChanged(nameof(IsOpenAIProvider));
                 RaisePropertyChanged(nameof(IsGeminiProvider));
+                RaisePropertyChanged(nameof(IsGeminiFreeProvider));
+                RaisePropertyChanged(nameof(IsAnyGeminiProvider));
+                RaisePropertyChanged(nameof(IsModelSelectionVisible));
                 RaisePropertyChanged(nameof(IsAnthropicProvider));
                 RaisePropertyChanged(nameof(IsOllamaProvider));
                 RaisePropertyChanged(nameof(IsLocalProvider));
@@ -1187,6 +1367,9 @@ namespace AIWeather
                 RaisePropertyChanged(nameof(IsGitHubModelsProvider));
                 RaisePropertyChanged(nameof(IsOpenAIProvider));
                 RaisePropertyChanged(nameof(IsGeminiProvider));
+                RaisePropertyChanged(nameof(IsGeminiFreeProvider));
+                RaisePropertyChanged(nameof(IsAnyGeminiProvider));
+                RaisePropertyChanged(nameof(IsModelSelectionVisible));
                 RaisePropertyChanged(nameof(IsAnthropicProvider));
                 RaisePropertyChanged(nameof(IsOllamaProvider));
                 RaisePropertyChanged(nameof(IsLocalProvider));
@@ -1314,6 +1497,17 @@ namespace AIWeather
             // labels before N.I.N.A. unloads the plugin.
             await Equipment.AIWeatherSafetyMonitor.Instance.ShutdownAsync();
             await base.Teardown();
+        }
+
+        public string GeminiPaidKey
+        {
+            get => Properties.Settings.Default.GeminiPaidKey;
+            set
+            {
+                Properties.Settings.Default.GeminiPaidKey = value;
+                CoreUtil.SaveSettings(Properties.Settings.Default);
+                RaisePropertyChanged();
+            }
         }
 
         public event PropertyChangedEventHandler? PropertyChanged;

@@ -25,6 +25,10 @@ namespace AIWeather.Services
         public string OpenAIKey { get; set; } = string.Empty;
         public string GeminiKey { get; set; } = string.Empty;
         public int GeminiRequestEveryChecks { get; set; } = 1;
+        public string GeminiFreeModelOrder { get; set; } = string.Empty;
+        public int GeminiFreeCycleCount { get; set; } = 2;
+        public string GeminiPaidKey { get; set; } = string.Empty;
+        public int GeminiPaidRequestEveryChecks { get; set; } = 1;
         public string AnthropicKey { get; set; } = string.Empty;
         public string OllamaBaseUrl { get; set; } = string.Empty;
         public bool OllamaDisableThinking { get; set; } = true;
@@ -53,6 +57,10 @@ namespace AIWeather.Services
                 OpenAIKey = settings.OpenAIKey ?? string.Empty,
                 GeminiKey = settings.GeminiKey ?? string.Empty,
                 GeminiRequestEveryChecks = settings.GeminiRequestEveryChecks,
+                GeminiFreeModelOrder = settings.GeminiFreeModelOrder ?? string.Empty,
+                GeminiFreeCycleCount = settings.GeminiFreeCycleCount,
+                GeminiPaidKey = settings.GeminiPaidKey ?? string.Empty,
+                GeminiPaidRequestEveryChecks = settings.GeminiPaidRequestEveryChecks,
                 AnthropicKey = settings.AnthropicKey ?? string.Empty,
                 OllamaBaseUrl = settings.OllamaBaseUrl ?? string.Empty,
                 OllamaDisableThinking = settings.OllamaDisableThinking
@@ -83,6 +91,11 @@ namespace AIWeather.Services
                 OpenAIKey = Clamp(OpenAIKey, 8192),
                 GeminiKey = Clamp(GeminiKey, 8192),
                 GeminiRequestEveryChecks = Math.Clamp(GeminiRequestEveryChecks, 1, 10000),
+                GeminiFreeModelOrder = GeminiProviderProfile.SerializeFreeModelOrder(
+                    GeminiProviderProfile.ParseFreeModelOrder(GeminiFreeModelOrder)),
+                GeminiFreeCycleCount = Math.Clamp(GeminiFreeCycleCount, 1, 10),
+                GeminiPaidKey = Clamp(GeminiPaidKey, 8192),
+                GeminiPaidRequestEveryChecks = Math.Clamp(GeminiPaidRequestEveryChecks, 1, 10000),
                 AnthropicKey = Clamp(AnthropicKey, 8192),
                 OllamaBaseUrl = Clamp(OllamaBaseUrl, 4096),
                 OllamaDisableThinking = OllamaDisableThinking

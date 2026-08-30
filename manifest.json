@@ -1,7 +1,7 @@
 {
   "Identifier": "AI Weather",
   "Name": "AI Weather - All Sky Camera Monitor",
-  "Version": "1.31.0.0",
+  "Version": "1.32.0.0",
   "MinimumApplicationVersion": "3.0.0.0",
   "Author": "Michele Bergo / sedirk",
   "Homepage": "https://github.com/sedirk/nina.plugin.aiweather-advanced",
@@ -24,6 +24,17 @@
     }
   },
   "ChangeLog": [
+    {
+      "Version": "1.32.0.0",
+      "Date": "2026-08-30",
+      "Changes": [
+        "Split Gemini into strict billed-project Gemini and best-effort Gemini Free, with separate credentials and request pacing",
+        "Removed every automatic model-order, downgrade, cross-model failover, retry, rotation and backoff path from ordinary Gemini; it now sends one request only to the selected model",
+        "Added a reorderable ten-model Gemini Free pool, configurable complete cycles (default two), per-model quota circuits, exact attempt diagnostics and encrypted primary/replica synchronization",
+        "Fixed a delayed LibVLC surface race where the shared RTSP player could later supply AI snapshots while the preview remained permanently covered after its initial six-second probe",
+        "Added bounded same-session surface recovery: later decoded dimensions or snapshots immediately reveal the existing player without opening a second RTSP decoder"
+      ]
+    },
     {
       "Version": "1.31.0.0",
       "Date": "2026-08-30",

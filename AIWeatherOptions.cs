@@ -221,16 +221,28 @@ namespace AIWeather
                         "Options.ReplicaMinutesValue",
                         _replicaConfigurationSummary.MaxDataAgeMinutes);
 
-        public string ReplicaConfigurationProvider =>
-            DisplayOrDash(_replicaConfigurationSummary?.AnalysisProvider);
+        public string ReplicaConfigurationProvider
+        {
+            get
+            {
+                var provider = _replicaConfigurationSummary?.AnalysisProvider;
+                if (Services.GeminiProviderProfile.IsPaid(provider))
+                {
+                    return UiLocalization.Text("Options.ProviderNameGeminiPaid");
+                }
+                if (Services.GeminiProviderProfile.IsFree(provider))
+                {
+                    return UiLocalization.Text("Options.ProviderNameGeminiFree");
+                }
+                return DisplayOrDash(provider);
+            }
+        }
 
         public string ReplicaConfigurationModel =>
             _replicaConfigurationSummary == null
                 ? "—"
-                : string.Equals(
-                    _replicaConfigurationSummary.AnalysisProvider,
-                    "Local",
-                    StringComparison.OrdinalIgnoreCase)
+                : string.Equals(_replicaConfigurationSummary.AnalysisProvider, "Local", StringComparison.OrdinalIgnoreCase)
+                  || Services.GeminiProviderProfile.IsFree(_replicaConfigurationSummary.AnalysisProvider)
                     ? UiLocalization.Text("Options.ReplicaNotApplicable")
                     : DisplayOrDash(_replicaConfigurationSummary.SelectedModel);
 
@@ -261,10 +273,17 @@ namespace AIWeather
                 {
                     return "—";
                 }
-                if (string.Equals(
-                        _replicaConfigurationSummary.AnalysisProvider,
-                        "Gemini",
-                        StringComparison.OrdinalIgnoreCase))
+                if (Services.GeminiProviderProfile.IsFree(
+                        _replicaConfigurationSummary.AnalysisProvider))
+                {
+                    return UiLocalization.Text(
+                        "Options.ReplicaGeminiFreeDetailsValue",
+                        _replicaConfigurationSummary.GeminiRequestEveryChecks,
+                        _replicaConfigurationSummary.GeminiFreeCycleCount,
+                        _replicaConfigurationSummary.GeminiFreeModelOrder);
+                }
+                if (Services.GeminiProviderProfile.IsPaid(
+                        _replicaConfigurationSummary.AnalysisProvider))
                 {
                     return UiLocalization.Text(
                         "Options.ReplicaGeminiPacingValue",

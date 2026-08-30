@@ -115,6 +115,10 @@ namespace AIWeather.Equipment
                     || e.PropertyName == nameof(Properties.Settings.Default.OpenAIKey)
                     || e.PropertyName == nameof(Properties.Settings.Default.GeminiKey)
                     || e.PropertyName == nameof(Properties.Settings.Default.GeminiRequestEveryChecks)
+                    || e.PropertyName == nameof(Properties.Settings.Default.GeminiFreeModelOrder)
+                    || e.PropertyName == nameof(Properties.Settings.Default.GeminiFreeCycleCount)
+                    || e.PropertyName == nameof(Properties.Settings.Default.GeminiPaidKey)
+                    || e.PropertyName == nameof(Properties.Settings.Default.GeminiPaidRequestEveryChecks)
                     || e.PropertyName == nameof(Properties.Settings.Default.AnthropicKey))
                 {
                     UpdateAnalysisService();
@@ -187,12 +191,28 @@ namespace AIWeather.Equipment
                 return;
             }
 
-            if (string.Equals(provider, "Gemini", StringComparison.OrdinalIgnoreCase))
+            if (GeminiProviderProfile.IsFree(provider))
+            {
+                _analysisService = new GeminiFreePoolAnalysisService(
+                    failover?.GeminiKey ?? Properties.Settings.Default.GeminiKey,
+                    GeminiProviderProfile.ParseFreeModelOrder(
+                        failover?.GeminiFreeModelOrder
+                        ?? Properties.Settings.Default.GeminiFreeModelOrder),
+                    failover?.GeminiFreeCycleCount
+                        ?? Properties.Settings.Default.GeminiFreeCycleCount,
+                    failover?.GeminiRequestEveryChecks
+                        ?? Properties.Settings.Default.GeminiRequestEveryChecks);
+                return;
+            }
+
+            if (GeminiProviderProfile.IsPaid(provider))
             {
                 _analysisService = new GeminiAnalysisService(
-                    failover?.GeminiKey ?? Properties.Settings.Default.GeminiKey,
+                    failover?.GeminiPaidKey ?? Properties.Settings.Default.GeminiPaidKey,
                     model,
-                    failover?.GeminiRequestEveryChecks ?? Properties.Settings.Default.GeminiRequestEveryChecks);
+                    failover?.GeminiPaidRequestEveryChecks
+                        ?? Properties.Settings.Default.GeminiPaidRequestEveryChecks,
+                    GeminiServiceTier.Paid);
                 return;
             }
 

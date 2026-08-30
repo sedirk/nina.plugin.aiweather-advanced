@@ -74,6 +74,10 @@ jobs:
 
           $packageBytes = (Get-ChildItem $packageRoot -File -Recurse |
             Measure-Object Length -Sum).Sum
+          $packageLimit = 260MB
+          if ($packageBytes -gt $packageLimit) {
+            throw ("Prepared package is {0:N2} MiB; the 260 MiB unpacked-size guard prevents accidental multi-platform/environment packaging" -f ($packageBytes / 1MB))
+          }
           Write-Host ("Prepared x64-only package: {0:N2} MiB" -f ($packageBytes / 1MB))
 
       - name: Create Plugin archives and manifests

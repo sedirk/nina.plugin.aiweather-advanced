@@ -46,13 +46,14 @@ Choose how the plugin acquires sky images based on your camera setup:
 | **Local** | Bundled site-trained MobileNetV3 ONNX model | None (works offline on CPU) |
 | **GitHub Models** | ⚠️ Retired by GitHub on July 30, 2026 — no longer works; analyses fall back to Local | — |
 | **OpenAI** | GPT-4o, GPT-4o Mini | API key |
-| **Google Gemini** | Dynamically discovered vision-capable Gemini models | API key |
+| **Google Gemini** | One operator-selected model; no automatic switching, retry, rotation, downgrade or backoff | Billed-project API key |
+| **Google Gemini Free** | Reorderable Flash/Lite model pool with per-model quota circuits and configurable full-pool cycles | Free-tier API key |
 | **Anthropic Claude** | Claude 3.5 Sonnet, Claude 3.5 Haiku, Claude 3 Opus | API key |
 | **Ollama / Custom** | Any vision model served by Ollama, LM Studio, llama.cpp or LocalAI (e.g. LLaVA, Qwen2.5-VL) | Local server URL (no API key) |
 
 If a cloud AI provider fails or times out (60-second limit), the orchestration layer explicitly falls back to local analysis so that safety monitoring is never interrupted. A fallback remains machine-identifiable and can never be recorded as a successful online teacher label.
 
-Gemini has additional quota and availability protection. The plugin distinguishes short-window rate limits from explicit quota exhaustion, honors Google's retry guidance, and suppresses repeated traffic while the same quota window is active. Daily quota exhaustion pauses online requests until the Pacific-time reset. HTTP 429 never rotates models. An explicit HTTP 503 from the configured primary may temporarily fail over to another dynamically discovered Flash-family model inside the existing 60-second total budget. The alternate handles only two successful online checks before the primary is probed again; recovery immediately returns to the saved primary and never changes the user's model setting. Per-attempt model/status/duration metadata preserves the original 503 even if a later attempt times out. The options panel can also call Gemini only once every `N` weather checks while the local safety analyzer still runs on every check. See the [Gemini availability and temporary failover design](docs/GEMINI_AVAILABILITY_FAILOVER.zh-CN.md).
+Gemini is split into two explicit operator policies. **Google Gemini** uses a separate billed-project key and exactly one selected model: one analysis sends one request and never reorders, downgrades, rotates, retries, or opens a cross-check backoff circuit. **Google Gemini Free** hides the single-model selector and instead walks a reorderable model pool; each model has its own quota circuit, and the complete pool is repeated for the configured number of cycles (default two) before online failure is returned. Both choices retain exact per-attempt model/status/duration diagnostics and independent “once every `N` weather checks” pacing. See the [Gemini tier and availability design](docs/GEMINI_AVAILABILITY_FAILOVER.zh-CN.md).
 
 ### Safety Monitor Integration
 
@@ -94,6 +95,8 @@ The preview panel in NINA shows:
 
 The engineering records for the two independent RTSP failure modes are available in Chinese: [stale analysis frames](docs/RTSP_STALE_FRAME_INCIDENT.zh-CN.md) and [white/blank native live preview airspace](docs/RTSP_PREVIEW_NATIVE_AIRSPACE_INCIDENT.zh-CN.md). A working preview does not prove that the analysis frame is fresh, and a successful analysis does not prove that LibVLC is visibly presenting its HWND; the two paths are tested separately.
 
+If LibVLC enters `Playing` before its first displayable frame is exposed, the preview now keeps the same RTSP player alive and performs bounded delayed-surface probes. A later decoded size or shared AI snapshot immediately uncovers that existing native surface; recovery does not open a second RTSP session.
+
 ### Dataset Label Reviewer
 
 The built-in reviewer flattens the sharded teacher-student dataset into a searchable list. It can accept the teacher label, save a separate human correction, reject a sample while retaining its evidence, reset the review state, or permanently delete a useless sample to release disk space. Permanent deletion requires an explicit confirmation and removes the selected label, review sidecar and its image; if another label references the same content-addressed image, that shared image is retained. A compact deletion tombstone records the sample ID, time, number of deleted files and released bytes without retaining the discarded weather data.
@@ -121,12 +124,12 @@ In the plugin options, choose the capture mode that matches your camera:
 ### 2. Choose an AI Provider
 
 - **Local** requires no setup and works offline. It runs the bundled site-trained MobileNetV3 ONNX model on CPU to estimate cloud coverage and classify weather conditions. This first feasibility model is camera/site-specific and is not a substitute for an independent physical rain or humidity sensor.
-- **Google Gemini** is recommended for getting started: it has a free API tier with strong vision models — get a key at [Google AI Studio](https://aistudio.google.com/apikey).
+- **Google Gemini Free** is the best-effort free-tier choice: enter a free-project key and tune the ordered model pool if needed. **Google Gemini** is the strict single-model choice for a billed project. Keys can be created in [Google AI Studio](https://aistudio.google.com/apikey).
 - **OpenAI** and **Anthropic** require their respective API keys from each provider's developer portal.
 - **GitHub Models** was retired by GitHub on July 30, 2026 and no longer works for anyone; if selected, analyses fall back to the bundled Local ONNX model.
 - **Ollama / Custom** runs fully local: point it to your server URL (default `http://localhost:11434/v1`) and pick a vision model (e.g. `llava`, `qwen2.5vl`). Works with Ollama, LM Studio, llama.cpp, and LocalAI — no API key needed. Thinking-capable models (Gemma 4, Qwen 3.x, DeepSeek) reason at length before answering by default, which can multiply analysis times past the timeout: the "Disable model thinking" option (on by default) turns that off. Uncheck it only on fast hardware.
 
-For Gemini, **Gemini online request: once every N weather checks** controls API pacing. `1` keeps the original behavior. A larger value spends fewer requests without reducing camera capture or local safety freshness. For example, a 2-minute weather interval over an 8-hour night contains about 240 checks, so `N=12` schedules roughly 20 Gemini calls. Only those online-call checks can create teacher labels.
+Each Gemini choice has its own **online request: once every N weather checks** setting and API key. `1` calls that policy on every eligible weather check. A larger value spends fewer requests without reducing camera capture or local safety freshness. For example, a 2-minute weather interval over an 8-hour night contains about 240 checks, so `N=12` schedules roughly 20 online pool/single-model runs. Only successful online calls can create teacher labels.
 
 ### Shared knowledge wiki
 
@@ -157,7 +160,7 @@ local models. Leave it empty and nothing changes.
 ### 4. Set Monitoring Parameters
 
 - **Check Interval** (minutes): How often the plugin captures and analyzes an image. 5-10 minutes is recommended for active monitoring.
-- **Gemini online request ratio**: when Gemini is selected, call it once every `N` weather checks. Local safety analysis still runs on each intervening check.
+- **Gemini / Gemini Free online request ratio**: each policy has independent pacing; local safety analysis still runs on each intervening check.
 - **Cloud Coverage Threshold** (%): The maximum cloud coverage considered safe for imaging. Default is 70%. Lower values are more conservative.
 
 ### 5. Fail-safe

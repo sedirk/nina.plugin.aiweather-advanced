@@ -1,4 +1,5 @@
 using AIWeather.Models;
+using AIWeather.Services;
 using System;
 using System.Collections.Generic;
 using System.Globalization;
@@ -25,6 +26,9 @@ namespace AIWeather.Localization
                 ["Common.Try"] = new("Try", "测试"),
                 ["Common.Refresh"] = new("Refresh", "刷新"),
                 ["Common.Choose"] = new("Choose...", "选择…"),
+                ["Common.MoveUp"] = new("Move up", "上移"),
+                ["Common.MoveDown"] = new("Move down", "下移"),
+                ["Common.Reset"] = new("Reset", "恢复默认"),
                 ["Common.Unknown"] = new("Unknown", "未知"),
                 ["Common.Invalid"] = new("invalid", "无效"),
                 ["Common.True"] = new("yes", "是"),
@@ -61,6 +65,7 @@ namespace AIWeather.Localization
                 ["Preview.VideoConnecting"] = new("Connecting to the local camera stream…", "正在连接本机相机视频流……"),
                 ["Preview.VideoLibVlcUnavailable"] = new("The local video engine could not be initialized.", "本机视频引擎初始化失败。"),
                 ["Preview.VideoViewUnavailable"] = new("The video panel is not ready.", "视频面板尚未就绪。"),
+                ["Preview.VideoSurfaceWaiting"] = new("The camera stream is connected; waiting for the first displayable frame while same-session recovery continues…", "相机视频流已连接；正在等待首个可显示画面，并继续使用同一连接恢复……"),
                 ["Preview.VideoSurfaceUnavailable"] = new("The camera is decoding, but the local video surface could not be displayed.", "相机视频正在解码，但本机画面无法显示。"),
                 ["Preview.VideoOpenFailed"] = new("The local camera stream could not be opened. Check this computer's N.I.N.A. log for details.", "本机无法打开相机视频流，请查看这台电脑的 N.I.N.A. 日志了解详情。"),
                 ["Preview.VideoUrlInvalid"] = new("The synchronized camera URL is invalid.", "同步得到的相机地址格式无效。"),
@@ -127,6 +132,7 @@ namespace AIWeather.Localization
                 ["Options.ReplicaThresholdsValue"] = new("Unsafe at ≥ {0}% / Safe below {1}%", "≥ {0}% 时不安全 / 低于 {1}% 时安全"),
                 ["Options.ReplicaAutomatic"] = new("Automatic", "自动"),
                 ["Options.ReplicaGeminiPacingValue"] = new("One Gemini request every {0} weather check(s)", "每 {0} 次天气检查调用一次 Gemini"),
+                ["Options.ReplicaGeminiFreeDetailsValue"] = new("One free-pool run every {0} check(s); {1} cycle(s); order: {2}", "每 {0} 次检查运行一次免费模型池；共 {1} 轮；顺序：{2}"),
                 ["Options.ReplicaOllamaDetailsValue"] = new("Endpoint: {0}; disable thinking: {1}", "服务地址：{0}；禁用思考：{1}"),
 
                 ["Cluster.Waiting"] = new("Waiting for the first authenticated primary status", "正在等待第一份通过认证的主节点状态"),
@@ -164,6 +170,8 @@ namespace AIWeather.Localization
                 ["Options.Provider"] = new("Analysis Provider:", "分析服务："),
                 ["Options.ProviderNameLocal"] = new("Local (site-trained ONNX)", "本地（本站训练 ONNX）"),
                 ["Options.ProviderNameGitHub"] = new("GitHub Models (RETIRED)", "GitHub Models（已停止服务）"),
+                ["Options.ProviderNameGeminiPaid"] = new("Google Gemini (billed project)", "Google Gemini（已启用结算）"),
+                ["Options.ProviderNameGeminiFree"] = new("Google Gemini Free (free tier)", "Google Gemini 免费（免费层）"),
                 ["Options.ProviderNameOllama"] = new("Ollama / Custom (local server)", "Ollama / 自定义（本地服务）"),
                 ["Options.Interval"] = new("Check Interval (minutes):", "检查间隔（分钟）："),
                 ["Options.SolarGuard"] = new("Night-only analysis", "仅夜间分析"),
@@ -186,12 +194,18 @@ namespace AIWeather.Localization
                 ["Options.GitHubRetired"] = new("GitHub retired this service on July 30, 2026 — it no longer works for anyone. Analyses fall back to the bundled Local ONNX model; switch to Ollama/Custom (local, free), Google Gemini or OpenAI.", "GitHub 已于 2026 年 7 月 30 日停止此服务，现已无法使用。分析会回退到内置的本地 ONNX 模型；也可改用 Ollama/自定义服务（本地、免费）、Google Gemini 或 OpenAI。"),
                 ["Options.GitHubToken"] = new("GitHub Personal Access Token:", "GitHub 个人访问令牌："),
                 ["Options.OpenAiKey"] = new("OpenAI API Key:", "OpenAI API 密钥："),
-                ["Options.GeminiKey"] = new("Google Gemini API Key:", "Google Gemini API 密钥："),
-                ["Options.GeminiRequestEveryChecks"] = new("Gemini online request: once every N weather checks:", "Gemini 在线调用：每 N 次天气检查调用一次："),
-                ["Options.GeminiRequestEveryChecksHelp"] = new("The local safety analysis still runs on every weather check. 1 preserves the current behavior; a larger N saves API quota. Example: with a 2-minute check interval and an 8-hour night, N=12 makes about 20 online calls per night. Only checks that actually call Gemini can produce teacher labels.", "本地安全分析仍会在每次天气检查时运行。设为 1 保持原有行为；增大 N 可节省 API 配额。例如：检查间隔为 2 分钟、每晚运行 8 小时时，N=12 约为每晚调用 20 次。只有实际调用 Gemini 的检查才能生成教师标签。"),
+                ["Options.GeminiKey"] = new("Google Gemini Free API Key:", "Google Gemini 免费层 API 密钥："),
+                ["Options.GeminiPaidKey"] = new("Google Gemini billed-project API Key:", "Google Gemini 结算项目 API 密钥："),
+                ["Options.GeminiRequestEveryChecks"] = new("Online request: once every N weather checks:", "在线调用：每 N 次天气检查调用一次："),
+                ["Options.GeminiRequestEveryChecksHelp"] = new("The local safety analysis still runs on every weather check. 1 calls the selected Gemini tier on every check; a larger N reduces quota or cost. Only checks that actually call Gemini can produce teacher labels.", "本地安全分析仍会在每次天气检查时运行。设为 1 会在每次检查时调用所选 Gemini 层级；增大 N 可节省免费配额或付费成本。只有实际调用 Gemini 的检查才能生成教师标签。"),
+                ["Options.GeminiFreeModelOrder"] = new("Free-tier model order:", "免费层模型尝试顺序："),
+                ["Options.GeminiFreeModelOrderHelp"] = new("Select a model and move it up or down. Every model has its own quota circuit; a quota-paused model is skipped until its retry time.", "选择模型后可上移或下移。每个模型都有独立的配额状态机；处于配额暂停期的模型会直接跳过，直到允许重试。"),
+                ["Options.GeminiFreeCycles"] = new("Full model-pool cycles before fallback (1–10):", "回退前完整轮询模型池次数（1–10）："),
+                ["Options.GeminiFreeCyclesHelp"] = new("Default 2. The plugin walks the list from top to bottom and repeats it this many times. It returns an online failure only after no model succeeds in all configured cycles.", "默认 2。插件会从上到下尝试整个列表，并按此次数重复；仅当全部轮次均无模型成功时才返回在线失败。"),
                 ["Options.AnthropicKey"] = new("Anthropic API Key:", "Anthropic API 密钥："),
                 ["Options.UsedOpenAi"] = new("Used with https://api.openai.com", "用于 https://api.openai.com"),
-                ["Options.UsedGemini"] = new("Used with Generative Language API", "用于 Generative Language API"),
+                ["Options.UsedGemini"] = new("Free-tier project on the Generative Language API. Availability and rate limits are not production guarantees.", "用于 Generative Language API 免费层项目；可用性与速率限制不提供生产级保证。"),
+                ["Options.UsedGeminiPaid"] = new("Strict single-model policy for a billed project: one request to the selected model, with no ordering, downgrade, retry, rotation or backoff. The plugin cannot detect billing; verify this key's project in Google AI Studio.", "结算项目的严格单模型策略：每次只请求所选模型一次，不排序、不降级、不重试、不轮换、不退避。插件无法自行识别结算状态；请在 Google AI Studio 中确认该密钥所属项目。"),
                 ["Options.UsedAnthropic"] = new("Used with https://api.anthropic.com", "用于 https://api.anthropic.com"),
                 ["Options.OllamaUrl"] = new("Ollama Base URL:", "Ollama 基础 URL："),
                 ["Options.OllamaDefault"] = new("Default: http://localhost:11434/v1", "默认：http://localhost:11434/v1"),
@@ -237,7 +251,8 @@ namespace AIWeather.Localization
                 ["Options.ProviderLocal"] = new("○   Local - bundled site-trained MobileNetV3 ONNX model; offline CPU inference", "○   本地——内置本站训练的 MobileNetV3 ONNX 模型，使用 CPU 离线推理"),
                 ["Options.ProviderGitHub"] = new("○   GitHub Models - RETIRED by GitHub on July 30, 2026; analyses fall back to Local", "○   GitHub Models——GitHub 已于 2026 年 7 月 30 日停止服务，分析会回退到本地"),
                 ["Options.ProviderOpenAi"] = new("○   OpenAI - GPT-4o, GPT-4.1, o1, o3, o4-mini (models fetched live)", "○   OpenAI——GPT-4o、GPT-4.1、o1、o3、o4-mini（实时获取模型列表）"),
-                ["Options.ProviderGemini"] = new("○   Google Gemini - free API tier, Flash/Pro vision models (fetched live)", "○   Google Gemini——提供免费 API 配额及 Flash/Pro 视觉模型（实时获取模型列表）"),
+                ["Options.ProviderGemini"] = new("○   Google Gemini - strict billed-project single model; no ordering, downgrade, retry, rotation or backoff", "○   Google Gemini——结算项目的严格单模型策略；不排序、不降级、不重试、不轮换、不退避"),
+                ["Options.ProviderGeminiFree"] = new("○   Google Gemini Free - free tier; lower limits and best-effort availability, with independent pacing and diagnostics", "○   Google Gemini 免费——免费层，限额较低且可用性为尽力而为，调用频率与诊断状态独立"),
                 ["Options.ProviderAnthropic"] = new("○   Anthropic Claude - Claude Sonnet 4.5, Sonnet 4, Haiku 4.5, 3.5 series (models fetched live)", "○   Anthropic Claude——Sonnet 4.5、Sonnet 4、Haiku 4.5、3.5 系列（实时获取模型列表）"),
                 ["Options.ProviderOllama"] = new("○   Ollama - local OpenAI-compatible server, no API key (LM Studio, llama.cpp, LocalAI also work)", "○   Ollama——本地 OpenAI 兼容服务，无需 API 密钥（也支持 LM Studio、llama.cpp、LocalAI）"),
                 ["Options.SafetyFeatures"] = new("Safety Features", "安全功能"),
@@ -326,14 +341,14 @@ namespace AIWeather.Localization
                 ["Runtime.SourceSolarSuspended"] = new("Source: suspended by Sun altitude", "来源：因太阳高度暂停"),
                 ["Runtime.Source"] = new("Source: {0}/{1}{2}", "来源：{0}/{1}{2}"),
                 ["Runtime.OnlineTeacher"] = new("online teacher", "在线教师"),
-                ["Runtime.Fallback"] = new(" | fallback ({0})", "｜回退（{0}）"),
-                ["Runtime.FallbackDescription"] = new("[Fallback: Local] {0} failed ({1}). {2}", "[回退：本地] {0} 失败（{1}）。{2}"),
-                ["Runtime.FallbackQuota"] = new(" | API quota paused until {0}", "｜API 配额暂停至 {0}"),
-                ["Runtime.FallbackQuotaNoTime"] = new(" | API quota temporarily unavailable", "｜API 配额暂不可用"),
-                ["Runtime.FallbackQuotaDescription"] = new("[Fallback: Local] {0} API quota is temporarily unavailable; next online attempt after {1}. {2}", "[回退：本地] {0} API 配额暂不可用；下次在线尝试时间为 {1}。{2}"),
-                ["Runtime.FallbackQuotaDescriptionNoTime"] = new("[Fallback: Local] {0} API quota is temporarily unavailable. {1}", "[回退：本地] {0} API 配额暂不可用。{1}"),
-                ["Runtime.FallbackDailyQuota"] = new(" | daily API quota exhausted; reset expected at {0}", "｜每日 API 配额已用尽；预计于 {0} 重置"),
-                ["Runtime.FallbackDailyQuotaDescription"] = new("[Fallback: Local] {0} daily API quota is exhausted; Google resets RPD at Pacific midnight, expected at {1}. {2}", "[回退：本地] {0} 每日 API 配额已用尽；Google 按太平洋时间午夜重置 RPD，预计恢复时间为 {1}。{2}"),
+                ["Runtime.Fallback"] = new(" | online teacher request failed ({0}); local fallback active", "｜在线教师调用失败（{0}），当前使用本地模型"),
+                ["Runtime.FallbackDescription"] = new("Online {0} request failed ({1}); using the local model. {2}", "在线 {0} 调用失败（{1}），已回退到本地模型。{2}"),
+                ["Runtime.FallbackQuota"] = new(" | online API quota paused until {0}; local fallback active", "｜在线 API 配额暂停至 {0}，当前使用本地模型"),
+                ["Runtime.FallbackQuotaNoTime"] = new(" | online API quota temporarily unavailable; local fallback active", "｜在线 API 配额暂不可用，当前使用本地模型"),
+                ["Runtime.FallbackQuotaDescription"] = new("Online {0} API quota is temporarily unavailable; using the local model. The next online attempt is after {1}. {2}", "在线 {0} API 配额暂不可用，已回退到本地模型；下次在线尝试时间为 {1}。{2}"),
+                ["Runtime.FallbackQuotaDescriptionNoTime"] = new("Online {0} API quota is temporarily unavailable; using the local model. {1}", "在线 {0} API 配额暂不可用，已回退到本地模型。{1}"),
+                ["Runtime.FallbackDailyQuota"] = new(" | online daily API quota exhausted; reset expected at {0}; local fallback active", "｜在线每日 API 配额已用尽，预计于 {0} 重置；当前使用本地模型"),
+                ["Runtime.FallbackDailyQuotaDescription"] = new("Online {0} daily API quota is exhausted; using the local model. Google resets RPD at Pacific midnight, expected at {1}. {2}", "在线 {0} 每日 API 配额已用尽，已回退到本地模型；Google 按太平洋时间午夜重置 RPD，预计恢复时间为 {1}。{2}"),
                 ["Runtime.ScheduledLocal"] = new(" | scheduled local check (Gemini every {0} checks)", "｜按计划使用本地检查（Gemini 每 {0} 次调用一次）"),
                 ["Runtime.ScheduledLocalDescription"] = new("[Scheduled: Local] {0} is configured to run once every {1} weather checks; this check used local analysis. {2}", "[计划：本地] {0} 已设为每 {1} 次天气检查在线调用一次；本次使用本地分析。{2}"),
                 ["Runtime.LocalRainDescription"] = new("Rain detected - unsafe for imaging", "检测到降雨——不适合拍摄"),
@@ -380,6 +395,9 @@ namespace AIWeather.Localization
                 ["Runtime.ImageSaveError"] = new("Error saving image: {0}", "保存图像时出错：{0}"),
                 ["Runtime.ModelsBuiltIn"] = new("Using built-in model list", "正在使用内置模型列表"),
                 ["Runtime.ModelsLocal"] = new("Using bundled site-trained Local ONNX model", "正在使用内置的本站训练 ONNX 模型"),
+                ["Runtime.GeminiFreePoolReady"] = new("Gemini Free pool: {0} ordered models × {1} cycles", "Gemini 免费模型池：{0} 个有序模型 × {1} 轮"),
+                ["Runtime.ProviderNameGeminiPaid"] = new("Gemini", "Gemini"),
+                ["Runtime.ProviderNameGeminiFree"] = new("Gemini Free", "Gemini 免费"),
                 ["Runtime.ModelsCached"] = new("Loaded {0} models (cached)", "已加载 {0} 个模型（缓存）"),
                 ["Runtime.ModelsFetching"] = new("Fetching models from {0}...", "正在从 {0} 获取模型…"),
                 ["Runtime.ModelsLoaded"] = new("Loaded {0} vision-capable models from {1}", "已从 {1} 加载 {0} 个视觉模型"),
@@ -525,6 +543,7 @@ namespace AIWeather.Localization
                         : string.IsNullOrWhiteSpace(result.Provenance.Provider)
                             ? Text("Runtime.OnlineTeacher")
                             : result.Provenance.Provider;
+                provider = FriendlyRuntimeProviderName(provider);
 
                 if (result.Provenance.FailureCategory == AnalysisFailureCategory.QuotaExhausted)
                 {
@@ -562,13 +581,28 @@ namespace AIWeather.Localization
                 return Text(
                     "Runtime.FallbackDescription",
                     provider,
-                    FailureCategory(result.Provenance.FailureCategory),
+                    FailureCategory(result.Provenance),
                     localDescription);
             }
 
             return result.Provenance.Origin is AnalysisOrigin.LocalHeuristic or AnalysisOrigin.LocalOnnx
                 ? localDescription
                 : result.Description;
+        }
+
+        private static string FriendlyRuntimeProviderName(string provider)
+        {
+            if (GeminiProviderProfile.IsPaid(provider))
+            {
+                return Text("Runtime.ProviderNameGeminiPaid");
+            }
+
+            if (GeminiProviderProfile.IsFree(provider))
+            {
+                return Text("Runtime.ProviderNameGeminiFree");
+            }
+
+            return provider;
         }
 
         public static string FallbackStatus(AnalysisProvenance provenance)
@@ -593,7 +627,20 @@ namespace AIWeather.Localization
                     Math.Max(1, provenance.RequestEveryChecks));
             }
 
-            return Text("Runtime.Fallback", FailureCategory(provenance.FailureCategory));
+            return Text("Runtime.Fallback", FailureCategory(provenance));
+        }
+
+        public static string FailureCategory(AnalysisProvenance provenance)
+        {
+            var category = FailureCategory(provenance.FailureCategory);
+            if (provenance.HttpStatus is not int httpStatus)
+            {
+                return category;
+            }
+
+            return IsChineseCulture()
+                ? $"{category}，HTTP {httpStatus}"
+                : $"{category}, HTTP {httpStatus}";
         }
 
         public static string FailureCategory(AnalysisFailureCategory category)
@@ -604,6 +651,7 @@ namespace AIWeather.Localization
                 {
                     AnalysisFailureCategory.QuotaExhausted => "API quota temporarily unavailable",
                     AnalysisFailureCategory.ScheduledLocal => "scheduled local check",
+                    AnalysisFailureCategory.ServiceUnavailable => "service temporarily unavailable",
                     _ => category.ToString()
                 };
             }
@@ -622,6 +670,7 @@ namespace AIWeather.Localization
                 AnalysisFailureCategory.ServiceRetired => "服务已停止",
                 AnalysisFailureCategory.QuotaExhausted => "API 配额暂不可用",
                 AnalysisFailureCategory.ScheduledLocal => "按计划使用本地检查",
+                AnalysisFailureCategory.ServiceUnavailable => "服务暂不可用",
                 _ => "未知错误"
             };
         }

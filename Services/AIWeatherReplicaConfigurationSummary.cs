@@ -26,6 +26,8 @@ namespace AIWeather.Services
         public bool ApiCredentialRequired { get; init; }
         public bool ApiCredentialConfigured { get; init; }
         public int GeminiRequestEveryChecks { get; init; } = 1;
+        public int GeminiFreeCycleCount { get; init; } = 2;
+        public string GeminiFreeModelOrder { get; init; } = string.Empty;
         public string ProviderEndpoint { get; init; } = string.Empty;
         public bool OllamaDisableThinking { get; init; }
         public string Revision { get; init; } = string.Empty;
@@ -90,7 +92,12 @@ namespace AIWeather.Services
                 SelectedModel = normalized.SelectedModel,
                 ApiCredentialRequired = credentialRequired,
                 ApiCredentialConfigured = credentialConfigured,
-                GeminiRequestEveryChecks = normalized.GeminiRequestEveryChecks,
+                GeminiRequestEveryChecks = GeminiProviderProfile.IsPaid(provider)
+                    ? normalized.GeminiPaidRequestEveryChecks
+                    : normalized.GeminiRequestEveryChecks,
+                GeminiFreeCycleCount = normalized.GeminiFreeCycleCount,
+                GeminiFreeModelOrder = string.Join(" → ",
+                    GeminiProviderProfile.ParseFreeModelOrder(normalized.GeminiFreeModelOrder)),
                 ProviderEndpoint = string.Equals(provider, "Ollama", StringComparison.OrdinalIgnoreCase)
                     ? RedactUrlForDisplay(normalized.OllamaBaseUrl)
                     : string.Empty,
@@ -143,7 +150,11 @@ namespace AIWeather.Services
             {
                 return (true, !string.IsNullOrWhiteSpace(configuration.OpenAIKey));
             }
-            if (string.Equals(provider, "Gemini", StringComparison.OrdinalIgnoreCase))
+            if (GeminiProviderProfile.IsPaid(provider))
+            {
+                return (true, !string.IsNullOrWhiteSpace(configuration.GeminiPaidKey));
+            }
+            if (GeminiProviderProfile.IsFree(provider))
             {
                 return (true, !string.IsNullOrWhiteSpace(configuration.GeminiKey));
             }

@@ -41,7 +41,9 @@ namespace AIWeather
         private double _decodedVideoHeight;
         private int _voutObserved;
         private readonly RtspPreviewHealthMonitor _previewHealthMonitor = new RtspPreviewHealthMonitor();
+        private readonly RtspPreviewSurfaceRecovery _surfaceRecovery = new RtspPreviewSurfaceRecovery();
         private int _previewRecoveryScheduled;
+        private int _surfaceRecoveryScheduled;
         private int _previewUnhealthy;
         private IDisposable? _sharedPreviewFrameRegistration;
 
@@ -576,7 +578,12 @@ namespace AIWeather
                     }
                     else
                     {
-                        ReportPreviewFailure(UiLocalization.Text("Preview.VideoSurfaceUnavailable"));
+                        // Some cameras resume decoding only after LibVLC has reported Playing
+                        // for several seconds. Keep the same player/session alive and continue
+                        // probing; tearing it down here was the source of a permanent black
+                        // preview even though later AI snapshots from this player succeeded.
+                        ReportPreviewStatus(UiLocalization.Text("Preview.VideoSurfaceWaiting"));
+                        ScheduleSurfaceRecovery(player, startToken);
                     }
                 }
 
@@ -627,6 +634,7 @@ namespace AIWeather
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     TryDeleteSnapshot(tempPath);
+                    MediaPlayer? requestedPlayer = null;
 
                     var requested = await Dispatcher.InvokeAsync(
                         () =>
@@ -639,6 +647,7 @@ namespace AIWeather
                                 return false;
                             }
 
+                            requestedPlayer = player;
                             return player.TakeSnapshot(0, tempPath, 0, 0);
                         },
                         DispatcherPriority.Background,
@@ -658,6 +667,11 @@ namespace AIWeather
                             cancellationToken);
                         if (frame != null)
                         {
+                            await PromoteDecodedFrameToPreviewAsync(
+                                requestedPlayer,
+                                frame.Width,
+                                frame.Height,
+                                "shared AI snapshot");
                             Logger.Debug(
                                 $"Captured current AI frame from existing LibVLC preview: " +
                                 $"{frame.Width}x{frame.Height}");
@@ -676,6 +690,138 @@ namespace AIWeather
             {
                 TryDeleteSnapshot(tempPath);
             }
+        }
+
+        private void ScheduleSurfaceRecovery(MediaPlayer player, CancellationToken cancellationToken)
+        {
+            if (Interlocked.CompareExchange(ref _surfaceRecoveryScheduled, 1, 0) != 0)
+            {
+                return;
+            }
+
+            _ = ContinueSurfaceRecoveryAsync(player, cancellationToken);
+        }
+
+        private async Task ContinueSurfaceRecoveryAsync(
+            MediaPlayer player,
+            CancellationToken cancellationToken)
+        {
+            try
+            {
+                Logger.Info(
+                    "RTSP player is connected without a displayable surface; continuing " +
+                    "same-session decoded-frame probes for up to one minute");
+
+                var recovered = await _surfaceRecovery.WaitForSurfaceAsync(
+                    async token =>
+                    {
+                        if (_videoHost == null
+                            || !ReferenceEquals(_videoHost.Player, player)
+                            || player.IsPlaying != true)
+                        {
+                            return false;
+                        }
+
+                        if (_videoSurfaceReady)
+                        {
+                            return true;
+                        }
+
+                        if (TryGetCurrentVideoSize(player, out var width, out var height)
+                            && await PromoteDecodedFrameToPreviewAsync(
+                                player,
+                                (int)Math.Round(width),
+                                (int)Math.Round(height),
+                                "delayed video surface"))
+                        {
+                            return true;
+                        }
+
+                        if (await TryProbeDecodedFrameSizeAsync(player, token))
+                        {
+                            return await PromoteDecodedFrameToPreviewAsync(
+                                player,
+                                (int)Math.Round(_decodedVideoWidth),
+                                (int)Math.Round(_decodedVideoHeight),
+                                "delayed same-session snapshot");
+                        }
+
+                        return false;
+                    },
+                    cancellationToken);
+
+                if (!recovered
+                    && _videoHost != null
+                    && ReferenceEquals(_videoHost.Player, player)
+                    && !_videoSurfaceReady)
+                {
+                    Logger.Warning(
+                        "RTSP player remained connected but no displayable frame became " +
+                        "available during the one-minute same-session recovery window");
+                    ReportPreviewFailure(UiLocalization.Text("Preview.VideoSurfaceUnavailable"));
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                // Stream teardown or replacement cancels the old player's recovery loop.
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"RTSP delayed surface recovery failed: {ex.Message}", ex);
+                ReportPreviewFailure(UiLocalization.Text("Preview.VideoSurfaceUnavailable"));
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _surfaceRecoveryScheduled, 0);
+            }
+        }
+
+        private async Task<bool> PromoteDecodedFrameToPreviewAsync(
+            MediaPlayer? player,
+            int width,
+            int height,
+            string evidence)
+        {
+            if (player == null || width <= 1 || height <= 1)
+            {
+                return false;
+            }
+
+            if (!Dispatcher.CheckAccess())
+            {
+                if (Dispatcher.HasShutdownStarted || Dispatcher.HasShutdownFinished)
+                {
+                    return false;
+                }
+
+                return await Dispatcher.InvokeAsync(
+                    () => PromoteDecodedFrameToPreviewAsync(player, width, height, evidence))
+                    .Task.Unwrap();
+            }
+
+            if (_videoHost == null
+                || !ReferenceEquals(_videoHost.Player, player)
+                || player.IsPlaying != true)
+            {
+                return false;
+            }
+
+            _decodedVideoWidth = width;
+            _decodedVideoHeight = height;
+            _videoSurfaceReady = true;
+            if (!TryUpdateVideoHostLayoutToFit(allowBeforeReady: true))
+            {
+                _videoSurfaceReady = false;
+                return false;
+            }
+
+            _videoHost.ShowVideoSurface();
+            Volatile.Write(ref _previewUnhealthy, 0);
+            ReportPreviewStatus(null);
+            Logger.Info(
+                $"RTSP preview surface recovered from {evidence}: {width}x{height}; " +
+                "the existing player was retained and no second RTSP session was opened");
+            return true;
         }
 
         private void ReportPreviewStatus(string? text, bool retryAvailable = false)

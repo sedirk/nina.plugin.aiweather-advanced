@@ -448,6 +448,53 @@ namespace AIWeather
             }
         }
 
+        private void GeminiPaidKeyBox_Loaded(object sender, RoutedEventArgs e)
+        {
+            if (sender is PasswordBox pb && pb.DataContext is AIWeather plugin)
+            {
+                var current = plugin.GeminiPaidKey ?? string.Empty;
+                if (!string.Equals(pb.Password, current))
+                {
+                    pb.Password = current;
+                }
+            }
+        }
+
+        private void GeminiPaidKeyBox_PasswordChanged(object sender, RoutedEventArgs e)
+        {
+            if (sender is PasswordBox pb && pb.DataContext is AIWeather plugin)
+            {
+                if (!string.Equals(plugin.GeminiPaidKey ?? string.Empty, pb.Password))
+                {
+                    plugin.GeminiPaidKey = pb.Password;
+                }
+            }
+        }
+
+        private void MoveGeminiFreeModelUp_Click(object sender, RoutedEventArgs e)
+        {
+            if (sender is FrameworkElement fe && fe.DataContext is AIWeather plugin)
+            {
+                plugin.MoveSelectedGeminiFreeModel(-1);
+            }
+        }
+
+        private void MoveGeminiFreeModelDown_Click(object sender, RoutedEventArgs e)
+        {
+            if (sender is FrameworkElement fe && fe.DataContext is AIWeather plugin)
+            {
+                plugin.MoveSelectedGeminiFreeModel(1);
+            }
+        }
+
+        private void ResetGeminiFreeModels_Click(object sender, RoutedEventArgs e)
+        {
+            if (sender is FrameworkElement fe && fe.DataContext is AIWeather plugin)
+            {
+                plugin.ResetGeminiFreeModelOrder();
+            }
+        }
+
         private void OpenDatasetFolder_Click(object sender, RoutedEventArgs e)
         {
             try
