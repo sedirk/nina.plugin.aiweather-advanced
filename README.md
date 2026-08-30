@@ -161,7 +161,19 @@ local models. Leave it empty and nothing changes.
 
 - **Check Interval** (minutes): How often the plugin captures and analyzes an image. 5-10 minutes is recommended for active monitoring.
 - **Gemini / Gemini Free online request ratio**: each policy has independent pacing; local safety analysis still runs on each intervening check.
-- **Cloud Coverage Threshold** (%): The maximum cloud coverage considered safe for imaging. Default is 70%. Lower values are more conservative.
+- **Cloud Coverage High Threshold** (%): while the status is **Safe**, cloud coverage at or above this value turns it **Unsafe**. Default is 70%.
+- **Cloud Coverage Low Threshold** (%): while the status is **Unsafe**, cloud coverage must drop below this value before it returns to **Safe**. Default is 60%.
+
+These are the two edges of a hysteresis band. Between them the status does not
+change: with 70 / 60, a reading of 65% preserves the previous state. This stops
+a sky sitting near one threshold from repeatedly flipping a sequence between
+Safe and Unsafe.
+
+The Low threshold controls when imaging may resume. If it is set far below the
+site's normal clear-sky reading, the state can turn Unsafe and never recover.
+Keep Low below High; equal values remove the hysteresis, while an excessively
+wide band can leave the state stuck. A difference of 5 to 15 percentage points
+is a useful starting range.
 
 ### 5. Fail-safe
 

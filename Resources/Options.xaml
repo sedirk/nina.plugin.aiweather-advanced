@@ -277,11 +277,20 @@
             <TextBlock Text="{i18n:Loc Options.HighThreshold}" Margin="0,10,0,2"/>
             <TextBox Text="{Binding CloudCoverageThreshold, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" 
                      Width="100" HorizontalAlignment="Left"/>
+            <TextBlock Text="{i18n:Loc Options.HighThresholdHelp}"
+                       FontSize="10" Foreground="#AAAAAA" Margin="0,2,0,0"
+                       TextWrapping="Wrap" MaxWidth="440" HorizontalAlignment="Left"/>
 
             <!-- Cloud Coverage Safe Threshold -->
             <TextBlock Text="{i18n:Loc Options.LowThreshold}" Margin="0,10,0,2"/>
             <TextBox Text="{Binding CloudCoverageSafeThreshold, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" 
                      Width="100" HorizontalAlignment="Left"/>
+            <TextBlock Text="{i18n:Loc Options.LowThresholdHelp}"
+                       FontSize="10" Foreground="#AAAAAA" Margin="0,2,0,0"
+                       TextWrapping="Wrap" MaxWidth="440" HorizontalAlignment="Left"/>
+            <TextBlock Text="{i18n:Loc Options.ThresholdBandHelp}"
+                       FontSize="10" Foreground="#AAAAAA" Margin="0,2,0,0"
+                       TextWrapping="Wrap" MaxWidth="440" HorizontalAlignment="Left"/>
             </StackPanel>
 
                     <!-- Generic File SafetyMonitor output file -->

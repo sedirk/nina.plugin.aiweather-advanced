@@ -1,7 +1,7 @@
 {
   "Identifier": "AI Weather",
   "Name": "AI Weather - All Sky Camera Monitor",
-  "Version": "1.32.0.0",
+  "Version": "1.33.0.0",
   "MinimumApplicationVersion": "3.0.0.0",
   "Author": "Michele Bergo / sedirk",
   "Homepage": "https://github.com/sedirk/nina.plugin.aiweather-advanced",
@@ -24,6 +24,16 @@
     }
   },
   "ChangeLog": [
+    {
+      "Version": "1.33.0.0",
+      "Date": "2026-08-31",
+      "Changes": [
+        "Removed Gemini 2.0 and 2.5 Flash/Flash-Lite from the Gemini Free default pool after repeated HTTP 404 results; saved legacy default orders are migrated automatically to the six-model Gemini 3.x pool",
+        "Merged the useful upstream 1.15.2 threshold guidance while preserving the ADVANCED implementation, version history, site-trained ONNX fallback and LAN primary/replica behavior",
+        "Added bilingual inline explanations for the High and Low cloud thresholds, their hysteresis behavior, and the recommended 5–15 percentage-point band",
+        "Documented that the Low threshold controls recovery to Safe and that an excessively wide band can leave the monitor stuck Unsafe"
+      ]
+    },
     {
       "Version": "1.32.0.0",
       "Date": "2026-08-30",

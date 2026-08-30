@@ -33,9 +33,9 @@ using System.Runtime.InteropServices;
 [assembly: AssemblyMetadata("Repository", "https://github.com/sedirk/nina.plugin.aiweather-advanced")]
 
 // Version information
-[assembly: AssemblyVersion("1.32.0.0")]
-[assembly: AssemblyFileVersion("1.32.0.0")]
-[assembly: AssemblyInformationalVersion("1.32.0.0")]
+[assembly: AssemblyVersion("1.33.0.0")]
+[assembly: AssemblyFileVersion("1.33.0.0")]
+[assembly: AssemblyInformationalVersion("1.33.0.0")]
 
 // The license your plugin code is using
 [assembly: AssemblyMetadata("License", "MIT")]
@@ -102,7 +102,7 @@ using System.Runtime.InteropServices;
 ⚙️ EASY SETUP:
 1. Configure your all-sky camera source (RTSP URL, HTTP URL, or watched folder path)
 2. Choose an AI provider and enter your API key (or use Local for zero-config offline analysis)
-3. Set your cloud coverage safety threshold
+3. Set both cloud coverage thresholds: High turns the state Unsafe, Low lets it return to Safe, and between them the state does not change
 4. Connect the safety monitor under Equipment → Safety Monitor → All Sky Camera Safety Monitor
 5. Start monitoring — the plugin automatically protects your sequences
 
