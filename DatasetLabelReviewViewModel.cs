@@ -557,24 +557,14 @@ namespace AIWeather
         public string TeacherCondition => Entry.Record?.Teacher.Result == null
             ? UiLocalization.Text("Common.Invalid")
             : UiLocalization.Condition(Entry.Record.Teacher.Result.Condition);
-        public string TeacherCloud => Entry.Record?.Teacher.Result == null
-            ? "—"
-            : Entry.Record.Teacher.Result.CloudCoverage.ToString("F0", CultureInfo.CurrentCulture) + "%";
-        public string StudentCloud => Entry.Record?.Student.Result == null
-            ? "—"
-            : Entry.Record.Student.Result.CloudCoverage.ToString("F0", CultureInfo.CurrentCulture) + "%";
-        public string Difference
-        {
-            get
-            {
-                var teacher = Entry.Record?.Teacher.Result;
-                var student = Entry.Record?.Student.Result;
-                return teacher == null || student == null
-                    ? "—"
-                    : Math.Abs(teacher.CloudCoverage - student.CloudCoverage)
-                        .ToString("F0", CultureInfo.CurrentCulture) + "%";
-            }
-        }
+        public double? TeacherCloudValue => Entry.Record?.Teacher.Result?.CloudCoverage;
+        public double? StudentCloudValue => Entry.Record?.Student.Result?.CloudCoverage;
+        public double? DifferenceValue => TeacherCloudValue.HasValue && StudentCloudValue.HasValue
+            ? Math.Abs(TeacherCloudValue.Value - StudentCloudValue.Value)
+            : null;
+        public string TeacherCloud => FormatPercentage(TeacherCloudValue);
+        public string StudentCloud => FormatPercentage(StudentCloudValue);
+        public string Difference => FormatPercentage(DifferenceValue);
         public string Reasons => Entry.Record == null
             ? Entry.LoadError ?? UiLocalization.Text("Common.Invalid")
             : string.Join(", ", Entry.Record.Selection.Reason.Select(UiLocalization.SelectionReason));
@@ -717,6 +707,13 @@ namespace AIWeather
             return string.IsNullOrEmpty(value) || value.Length <= length
                 ? value
                 : value.Substring(0, length);
+        }
+
+        private static string FormatPercentage(double? value)
+        {
+            return value.HasValue
+                ? value.Value.ToString("F0", CultureInfo.CurrentCulture) + "%"
+                : "—";
         }
     }
 }

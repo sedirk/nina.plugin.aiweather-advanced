@@ -144,9 +144,9 @@
                         <DataGridTextColumn Header="{i18n:Loc Review.ColTime}" Binding="{Binding CapturedLocal}" Width="138"/>
                         <DataGridTextColumn Header="{i18n:Loc Review.ColReview}" Binding="{Binding ReviewStatusDisplay}" Width="82"/>
                         <DataGridTextColumn Header="{i18n:Loc Review.ColTeacher}" Binding="{Binding TeacherCondition}" Width="92"/>
-                        <DataGridTextColumn Header="{i18n:Loc Review.ColCloud}" Binding="{Binding TeacherCloud}" Width="55"/>
-                        <DataGridTextColumn Header="{i18n:Loc Review.ColStudent}" Binding="{Binding StudentCloud}" Width="55"/>
-                        <DataGridTextColumn Header="{i18n:Loc Review.ColDifference}" Binding="{Binding Difference}" Width="55"/>
+                        <DataGridTextColumn Header="{i18n:Loc Review.ColCloud}" Binding="{Binding TeacherCloud}" SortMemberPath="TeacherCloudValue" Width="55"/>
+                        <DataGridTextColumn Header="{i18n:Loc Review.ColStudent}" Binding="{Binding StudentCloud}" SortMemberPath="StudentCloudValue" Width="55"/>
+                        <DataGridTextColumn Header="{i18n:Loc Review.ColDifference}" Binding="{Binding Difference}" SortMemberPath="DifferenceValue" Width="55"/>
                         <DataGridTextColumn Header="{i18n:Loc Review.ColReason}" Binding="{Binding Reasons}" Width="*"/>
                     </DataGrid.Columns>
                 </DataGrid>

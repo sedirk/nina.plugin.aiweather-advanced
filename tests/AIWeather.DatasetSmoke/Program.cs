@@ -67,6 +67,7 @@ internal static class Program
             VerifyLocalizationSelection();
             VerifySolarAltitudeGuard();
             VerifyDatasetDefaults();
+            VerifyDatasetReviewNumericSortKeys();
             VerifyLatestRtspFrameBuffer();
             VerifyReplicaPreviewSourcePolicy();
             VerifyReplicaStopControlPolicy();
@@ -793,6 +794,51 @@ internal static class Program
         var afterGap = gapMonitor.Observe("late frames", started.AddSeconds(3));
         Assert(afterGap.LateMessageCount == 1 && !afterGap.ShouldRecover,
             "A quiet gap did not reset the RTSP preview late-frame burst");
+    }
+
+    private static void VerifyDatasetReviewNumericSortKeys()
+    {
+        var items = new[]
+        {
+            CreateDatasetReviewItem(100, 25),
+            CreateDatasetReviewItem(100, 40),
+            CreateDatasetReviewItem(80, 24),
+            CreateDatasetReviewItem(100, 94)
+        };
+
+        var sortedDifferences = items
+            .OrderBy(item => item.DifferenceValue)
+            .Select(item => item.Difference)
+            .ToArray();
+
+        Assert(sortedDifferences.SequenceEqual(new[] { "6%", "56%", "60%", "75%" }),
+            "dataset review percentage sort keys are not numeric");
+
+        var missing = new DatasetReviewItemViewModel(new DatasetReviewEntry());
+        Assert(missing.TeacherCloudValue == null
+               && missing.StudentCloudValue == null
+               && missing.DifferenceValue == null,
+            "dataset review missing values did not preserve null numeric sort keys");
+    }
+
+    private static DatasetReviewItemViewModel CreateDatasetReviewItem(
+        double teacherCloud,
+        double studentCloud)
+    {
+        return new DatasetReviewItemViewModel(new DatasetReviewEntry
+        {
+            Record = new DatasetSampleRecord
+            {
+                Teacher = new DatasetAnalysisRecord
+                {
+                    Result = new DatasetWeatherResult { CloudCoverage = teacherCloud }
+                },
+                Student = new DatasetAnalysisRecord
+                {
+                    Result = new DatasetWeatherResult { CloudCoverage = studentCloud }
+                }
+            }
+        });
     }
 
     private static async Task VerifyRtspPreviewSurfaceRecoveryAsync()
