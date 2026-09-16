@@ -282,3 +282,9 @@ Contributions are welcome. Please fork the repository, create a feature branch, 
 
 - **Issues**: [GitHub Issues](https://github.com/michelebergo/nina.plugin.aiweather/issues)
 - **NINA Community**: [NINA Discord](https://discord.gg/nighttime-imaging)
+
+### Pending ADVANCED update: upstream 1.15.5 integration (2026-09-16)
+
+The Gemini Free default order now inserts `gemini-3.8-flash` before `gemini-3.7-flash`, after the two Flash-Lite models. Existing customized relative ordering is preserved. Each model retains an independent quota circuit: a daily quota rejection on one model does not stop traversal of the others. Pool failures now report each model's outcome, and only advertise a pool-wide retry time when every entry is quota-paused.
+
+Upstream response parsing, Gemini request profiles, truncated-answer detection, provider testing, provider health diagnostics and frame identity logging have been adapted to ADVANCED's provenance and ONNX fallback. Preview lifecycle fixes use the existing shared RTSP session: off-screen starts are deferred, and unexpected playback loss reconnects with a bounded pause. Paid Gemini remains one request to the selected model per check. See [integration notes](docs/UPSTREAM_MERGE_20260916.zh-CN.md) for scope and validation.

@@ -304,6 +304,7 @@
                     <!-- Analysis Info -->
                     <Border Grid.Row="2" Background="{x:Null}" BorderThickness="0,1,0,0" Padding="10">
                         <StackPanel>
+                            <TextBlock Text="{Binding ProviderHealth}" TextWrapping="Wrap" FontSize="10" Foreground="{DynamicResource PrimaryBrush}" Margin="0,0,0,5"/>
                             <TextBlock Text="{Binding Description, Mode=OneWay}" FontSize="10" Foreground="{DynamicResource PrimaryBrush}" TextWrapping="Wrap" Margin="0,0,0,5"/>
                             <TextBlock FontSize="9" Foreground="{DynamicResource PrimaryBrush}">
                                 <Run Text="{i18n:Loc Preview.LastUpdate}"/>

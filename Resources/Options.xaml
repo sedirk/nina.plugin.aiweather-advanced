@@ -247,6 +247,12 @@
                       SelectedValue="{Binding AnalysisProvider, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
                       Width="300" HorizontalAlignment="Left"/>
             
+            <Button Content="{i18n:Loc Options.TestAnalysis}" Click="TestAnalysis_Click"
+                    Margin="0,6,0,0" Padding="10,2" HorizontalAlignment="Left"/>
+            <TextBlock Text="{Binding ProviderTestStatus}" TextWrapping="Wrap" MaxWidth="520"
+                       HorizontalAlignment="Left" Foreground="{DynamicResource PrimaryBrush}" Margin="0,4,0,6"/>
+            <TextBlock Text="{i18n:Loc Options.TestAnalysisHelp}" TextWrapping="Wrap" FontSize="10" Margin="0,0,0,8"/>
+
             <!-- Check Interval -->
             <TextBlock Text="{i18n:Loc Options.Interval}" Margin="0,0,0,2"/>
             <TextBox Text="{Binding CheckIntervalMinutes, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" 

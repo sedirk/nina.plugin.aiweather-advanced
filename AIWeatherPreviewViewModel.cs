@@ -865,6 +865,8 @@ namespace AIWeather
         }
 
         public bool DatasetEnabled => !IsClusterReplica && Properties.Settings.Default.DatasetEnabled;
+        public string ProviderHealth => _safetyMonitor.ProviderHealth;
+
         public string DatasetStatusText => _safetyMonitor.DatasetStatusText;
         public DateTime? CaptureTimestamp { get; private set; }
         public DateTime? LastUpdate { get; private set; }
@@ -1411,6 +1413,7 @@ namespace AIWeather
             RaisePropertyChanged(nameof(FogDetected));
             RaisePropertyChanged(nameof(Description));
             RaisePropertyChanged(nameof(AnalysisSourceSummary));
+            RaisePropertyChanged(nameof(ProviderHealth));
             RaisePropertyChanged(nameof(DatasetStatusText));
             RaisePropertyChanged(nameof(DatasetEnabled));
             RaisePropertyChanged(nameof(CaptureTimestamp));

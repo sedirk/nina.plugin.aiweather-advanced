@@ -230,18 +230,24 @@ namespace AIWeather.Services
                         return OnlineAnalysisAttempt.Succeeded(attempt.Result);
                     }
 
+                    Logger.Warning($"Gemini Free model {model} failed: {attempt.Provenance.FailureCategory}, HTTP {attempt.Provenance.HttpStatus?.ToString() ?? "none"}; continuing ordered pool");
                     failures.Add(attempt.Provenance.Clone());
                 }
             }
 
-            var strongest = SelectStrongestFailure(failures);
+            // A per-model quota must never become a pool-wide daily pause. Only
+            // advertise a retry time when every entry is currently quota-blocked.
+            var quotaStates = _models.Select(model =>
+                _quotaCircuitForModel(model).TryGetActive(_utcNow(), out var state) ? state : null).ToArray();
+            var allQuotaBlocked = quotaStates.All(state => state != null);
+            var allDailyBlocked = allQuotaBlocked && quotaStates.All(state => state!.IsDailyQuota);
+            var strongest = SelectStrongestFailure(allQuotaBlocked
+                ? failures
+                : failures.Where(item => item.FailureCategory != AnalysisFailureCategory.QuotaExhausted));
             var failureCategory = strongest?.FailureCategory ?? AnalysisFailureCategory.Unknown;
-            var failureModel = strongest?.Model ?? "ordered-pool";
-            var retryAfterUtc = failures
-                .Where(item => item.RetryAfterUtc.HasValue)
-                .Select(item => item.RetryAfterUtc)
-                .OrderBy(value => value)
-                .FirstOrDefault();
+            var failureModel = "ordered-pool";
+            DateTime? retryAfterUtc = allQuotaBlocked
+                ? quotaStates.Min(state => state!.RetryAfterUtc).UtcDateTime : null;
             var allSuppressed = actualRequests == 0;
 
             Logger.Warning(
@@ -258,10 +264,10 @@ namespace AIWeather.Services
                     actualRequests,
                     stopwatch.ElapsedMilliseconds,
                     strongest?.HttpStatus,
-                    providerFailureCode: strongest?.ProviderFailureCode ?? "free_pool_exhausted",
+                    providerFailureCode: allDailyBlocked ? "free_pool_daily_quota" : "free_pool_exhausted",
                     retryAfterUtc: retryAfterUtc,
-                    quotaMetric: strongest?.QuotaMetric,
-                    quotaId: strongest?.QuotaId,
+                    quotaMetric: allQuotaBlocked ? strongest?.QuotaMetric : null,
+                    quotaId: allQuotaBlocked ? strongest?.QuotaId : null,
                     consecutiveQuotaFailures: strongest?.ConsecutiveQuotaFailures ?? 0,
                     requestSuppressed: allSuppressed,
                     requestEveryChecks: _requestEveryChecks,

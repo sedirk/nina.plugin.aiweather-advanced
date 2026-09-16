@@ -975,6 +975,70 @@ namespace AIWeather
             }
         }
 
+        private string _providerTestStatus = string.Empty;
+        public string ProviderTestStatus
+        {
+            get => _providerTestStatus;
+            set { _providerTestStatus = value; RaisePropertyChanged(); }
+        }
+
+        public async Task TestAnalysisAsync()
+        {
+            try
+            {
+                ProviderTestStatus = UiLocalization.Text("Options.TestAnalysisRunning");
+                var service = Services.AnalysisServiceFactory.CreateFromSettings();
+                if (!await service.InitializeAsync())
+                {
+                    ProviderTestStatus = UiLocalization.Text("Options.TestAnalysisInitFailed");
+                    return;
+                }
+                using var sky = SyntheticTestSky();
+                if (service is Services.IOnlineWeatherAnalysisService online)
+                {
+                    var attempt = await online.TryAnalyzeOnlineOnlyAsync(sky);
+                    ProviderTestStatus = attempt.Success
+                        ? UiLocalization.Text("Options.TestAnalysisSucceeded", attempt.Provenance.Provider, attempt.Provenance.Model)
+                        : UiLocalization.Text("Options.TestAnalysisUnavailable",
+                            attempt.Provenance.ProviderFailureCode is "free_pool_exhausted" or "free_pool_daily_quota"
+                                ? UiLocalization.FreePoolFailureSummary(attempt.Provenance)
+                                : UiLocalization.FailureCategory(attempt.Provenance));
+                }
+                else
+                {
+                    var result = await service.AnalyzeImageAsync(sky);
+                    ProviderTestStatus = result.Provenance.IsFallback
+                        ? UiLocalization.FallbackStatus(result.Provenance)
+                        : UiLocalization.Text("Options.TestAnalysisSucceeded", result.Provenance.Provider, result.Provenance.Model);
+                }
+            }
+            catch (Exception ex)
+            {
+                // Never expose raw transport errors containing credentials in the options.
+                ProviderTestStatus = UiLocalization.Text("Options.TestAnalysisFailed", ex.GetType().Name);
+            }
+        }
+
+        private static System.Drawing.Bitmap SyntheticTestSky()
+        {
+            const int size = 256;
+            var bitmap = new System.Drawing.Bitmap(size, size);
+            using (var g = System.Drawing.Graphics.FromImage(bitmap))
+            {
+                g.Clear(System.Drawing.Color.FromArgb(6, 8, 18));
+                using var glow = new System.Drawing.Drawing2D.LinearGradientBrush(
+                    new System.Drawing.Rectangle(0, 0, size, size),
+                    System.Drawing.Color.FromArgb(6, 8, 18), System.Drawing.Color.FromArgb(18, 22, 40), 90f);
+                g.FillRectangle(glow, 0, size / 2, size, size / 2);
+                using var star = new System.Drawing.SolidBrush(System.Drawing.Color.FromArgb(230, 230, 240));
+                foreach (var (x, y) in new[] { (40, 30), (120, 70), (200, 45), (80, 150), (170, 190), (220, 130), (30, 210) })
+                {
+                    g.FillEllipse(star, x, y, 3, 3);
+                }
+            }
+            return bitmap;
+        }
+
         public async Task TryGeminiKeyAsync()
         {
             var provider = AnalysisProvider;

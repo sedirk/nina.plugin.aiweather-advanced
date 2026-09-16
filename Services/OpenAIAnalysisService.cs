@@ -119,7 +119,7 @@ namespace AIWeather.Services
                 var root = doc.RootElement;
                 var content = ExtractOpenAIMessageContent(root);
 
-                var result = PromptText.ParseAIResponse(content);
+                var result = WeatherResponseParser.Parse(content);
                 if (!WeatherAnalysisValidator.IsValidTeacherResult(result, out var validationReason))
                 {
                     failureCategory = AnalysisFailureCategory.SchemaRejected;
@@ -157,7 +157,9 @@ namespace AIWeather.Services
                         ? AnalysisFailureCategory.Network
                         : ex is InvalidDataException
                             ? AnalysisFailureCategory.SchemaRejected
-                            : AnalysisFailureCategory.Unknown;
+                            : ex is WeatherResponseParseException
+                                ? AnalysisFailureCategory.MalformedResponse
+                                : AnalysisFailureCategory.Unknown;
                 result.Provenance.HttpStatus = failureHttpStatus;
                 result.Description = $"[Fallback: Local] OpenAI error. {result.Description}";
                 return result;
@@ -212,70 +214,7 @@ namespace AIWeather.Services
         {
                         public static string SystemPrompt => WeatherAnalysisPrompts.DetailedSystemPrompt;
 
-            public static WeatherAnalysisResult ParseAIResponse(string jsonResponse)
-            {
-                try
-                {
-                    jsonResponse = jsonResponse.Trim();
-                    if (jsonResponse.StartsWith("```json", StringComparison.OrdinalIgnoreCase))
-                    {
-                        jsonResponse = jsonResponse.Substring(7);
-                    }
-                    if (jsonResponse.StartsWith("```", StringComparison.OrdinalIgnoreCase))
-                    {
-                        jsonResponse = jsonResponse.Substring(3);
-                    }
-                    if (jsonResponse.EndsWith("```", StringComparison.OrdinalIgnoreCase))
-                    {
-                        jsonResponse = jsonResponse.Substring(0, jsonResponse.Length - 3);
-                    }
-                    jsonResponse = jsonResponse.Trim();
 
-                    using var json = JsonDocument.Parse(jsonResponse);
-                    var root = json.RootElement;
-
-                    var conditionStr = root.GetProperty("condition").GetString() ?? "Unknown";
-                    var condition = Enum.TryParse<WeatherCondition>(conditionStr, true, out var parsedCondition)
-                        ? parsedCondition
-                        : WeatherCondition.Unknown;
-
-                    var cloudCoverage = root.GetProperty("cloudCoverage").GetDouble();
-                    var rainDetected = root.GetProperty("rainDetected").GetBoolean();
-                    var fogDetected = root.GetProperty("fogDetected").GetBoolean();
-                    var isSafe = root.GetProperty("isSafe").GetBoolean();
-                    var description = root.GetProperty("description").GetString() ?? string.Empty;
-                    var confidence = root.TryGetProperty("confidence", out var confProp) ? confProp.GetDouble() : 85.0;
-
-                    return new WeatherAnalysisResult
-                    {
-                        Timestamp = DateTime.UtcNow,
-                        Condition = condition,
-                        CloudCoverage = cloudCoverage,
-                        Confidence = confidence,
-                        IsSafeForImaging = isSafe,
-                        Description = description,
-                        RainDetected = rainDetected,
-                        FogDetected = fogDetected,
-                        RawAnalysisData = jsonResponse
-                    };
-                }
-                catch (Exception ex)
-                {
-                    Logger.Error($"Error parsing AI response: {ex.Message}", ex);
-                    Logger.Debug($"Raw response: {jsonResponse}");
-
-                    return new WeatherAnalysisResult
-                    {
-                        Timestamp = DateTime.UtcNow,
-                        Condition = WeatherCondition.Unknown,
-                        CloudCoverage = 50,
-                        Confidence = 0,
-                        IsSafeForImaging = false,
-                        Description = $"Failed to parse AI response: {ex.Message}",
-                        RawAnalysisData = jsonResponse
-                    };
-                }
-            }
         }
     }
 }

@@ -1,3 +1,4 @@
+using System.Linq;
 using AIWeather.Models;
 using AIWeather.Services;
 using System;
@@ -398,6 +399,16 @@ namespace AIWeather.Localization
                 ["Runtime.ImageSaveError"] = new("Error saving image: {0}", "保存图像时出错：{0}"),
                 ["Runtime.ModelsBuiltIn"] = new("Using built-in model list", "正在使用内置模型列表"),
                 ["Runtime.ModelsLocal"] = new("Using bundled site-trained Local ONNX model", "正在使用内置的本站训练 ONNX 模型"),
+                ["Options.TestAnalysis"] = new("Test selected provider", "测试当前分析服务"),
+                ["Options.TestAnalysisHelp"] = new("Sends a synthetic sky image using the selected provider or free pool. Consumes API quota; does not update safety or the dataset.", "发送合成天空图像，按当前服务或免费模型池设置测试；会消耗 API 配额，不改变安全状态或写入数据集。"),
+                ["Options.TestAnalysisRunning"] = new("Testing selected analysis service...", "正在测试当前分析服务…"),
+                ["Options.TestAnalysisInitFailed"] = new("Initialization failed; check credentials and configuration.", "初始化失败，请检查凭据和配置。"),
+                ["Options.TestAnalysisSucceeded"] = new("{0}/{1} answered successfully.", "{0}/{1} 已成功返回分析。"),
+                ["Options.TestAnalysisUnavailable"] = new("Provider test failed (safety state unchanged): {0}", "服务测试未成功（未改变安全状态）：{0}"),
+                ["Options.TestAnalysisFailed"] = new("Analysis test failed: {0}", "分析测试失败：{0}"),
+                ["Runtime.FreePoolFailed"] = new("Gemini Free: no model succeeded in this check.", "Gemini 免费模型池本轮均未成功。"),
+                ["Runtime.FreePoolRetry"] = new("All entries are quota-paused; earliest retry: {0}.", "所有模型均因配额暂停，最早重试：{0}。"),
+                ["Runtime.ProviderHealthCount"] = new("{0}: {1} consecutive online failures; local fallback active.", "{0} 已连续 {1} 次在线分析失败，正在使用本地回退。"),
                 ["Runtime.GeminiFreePoolReady"] = new("Gemini Free pool: {0} ordered models × {1} cycles", "Gemini 免费模型池：{0} 个有序模型 × {1} 轮"),
                 ["Runtime.ProviderNameGeminiPaid"] = new("Gemini", "Gemini"),
                 ["Runtime.ProviderNameGeminiFree"] = new("Gemini Free", "Gemini 免费"),
@@ -548,6 +559,11 @@ namespace AIWeather.Localization
                             : result.Provenance.Provider;
                 provider = FriendlyRuntimeProviderName(provider);
 
+                if (IsFreePoolFailure(result.Provenance))
+                {
+                    return FreePoolFailureSummary(result.Provenance) + " " + localDescription;
+                }
+
                 if (result.Provenance.FailureCategory == AnalysisFailureCategory.QuotaExhausted)
                 {
                     if (IsDailyQuota(result.Provenance)
@@ -593,6 +609,25 @@ namespace AIWeather.Localization
                 : result.Description;
         }
 
+        private static bool IsFreePoolFailure(AnalysisProvenance provenance) =>
+            provenance.ProviderFailureCode is "free_pool_exhausted" or "free_pool_daily_quota";
+
+        public static string FreePoolFailureSummary(AnalysisProvenance provenance)
+        {
+            var entries = provenance.AttemptDiagnostics
+                .GroupBy(item => item.Model, StringComparer.OrdinalIgnoreCase)
+                .Select(group => group.Last())
+                .Select(item => item.Model + ": " + FailureCategory(new AnalysisProvenance
+                {
+                    FailureCategory = item.FailureCategory,
+                    HttpStatus = item.HttpStatus
+                }));
+            var summary = Text("Runtime.FreePoolFailed") + " " + string.Join("; ", entries);
+            if (provenance.RetryAfterUtc is DateTime retry)
+                summary += " " + Text("Runtime.FreePoolRetry", FormatRetryAfter(retry));
+            return summary;
+        }
+
         private static string FriendlyRuntimeProviderName(string provider)
         {
             if (GeminiProviderProfile.IsPaid(provider))
@@ -610,6 +645,7 @@ namespace AIWeather.Localization
 
         public static string FallbackStatus(AnalysisProvenance provenance)
         {
+            if (IsFreePoolFailure(provenance)) return FreePoolFailureSummary(provenance);
             if (provenance.FailureCategory == AnalysisFailureCategory.QuotaExhausted)
             {
                 if (IsDailyQuota(provenance)

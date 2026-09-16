@@ -64,6 +64,7 @@ namespace AIWeather
             this.Loaded += (s, e) =>
             {
                 Logger.Info($"🔄 AI Weather view Loaded event fired");
+                ResumePendingPreview();
                 
                 if (DataContext is AIWeatherPreviewViewModel vm)
                 {
@@ -148,6 +149,7 @@ namespace AIWeather
             {
                 if (this.IsVisible)
                 {
+                    ResumePendingPreview();
                     Dispatcher.BeginInvoke(new Action(() =>
                     {
                         try
@@ -325,6 +327,16 @@ namespace AIWeather
                 return;
             }
 
+            if (!IsOnScreen())
+            {
+                _pendingPreview = (rtspUrl, username, password);
+                ReportPreviewStatus(UiLocalization.Text("Preview.VideoConnecting"));
+                Logger.Debug("RTSP preview start deferred until its view is attached to a visible window");
+                return;
+            }
+            _pendingPreview = null;
+            _requestedPreview = (rtspUrl, username, password);
+
             await _streamGate.WaitAsync(cancellationToken);
             try
             {
@@ -404,6 +416,9 @@ namespace AIWeather
                     EnableHardwareDecoding = true
                 };
 
+                player.EncounteredError += OnPreviewPlaybackLost;
+                player.EndReached += OnPreviewPlaybackLost;
+                player.Stopped += OnPreviewPlaybackLost;
                 Logger.Debug("MediaPlayer created");
 
                 VideoPanel.Visibility = Visibility.Visible;
@@ -570,6 +585,7 @@ namespace AIWeather
                 else
                 {
                     _activePlaybackUrl = playbackUrl;
+                    _previewReconnectAttempt = 0;
                     _previewHealthMonitor.ResetBurst();
                     Volatile.Write(ref _previewUnhealthy, 0);
                     if (_videoSurfaceReady)
@@ -611,6 +627,8 @@ namespace AIWeather
             finally
             {
                 _isStartingStream = false;
+                if (_requestedPreview.HasValue && _videoHost?.Player?.IsPlaying != true)
+                    SchedulePreviewReconnect();
                 _streamGate.Release();
             }
         }
@@ -894,6 +912,13 @@ namespace AIWeather
                 return;
             }
 
+            _requestedPreview = null;
+            _pendingPreview = null;
+            var reconnect = _previewReconnectCts;
+            _previewReconnectCts = null;
+            reconnect?.Cancel();
+            _startCts?.Cancel();
+
             await _streamGate.WaitAsync();
             try
             {
@@ -930,6 +955,12 @@ namespace AIWeather
                 {
                     var host = _videoHost;
                     var player = host.Player;
+                    if (player != null)
+                    {
+                        player.EncounteredError -= OnPreviewPlaybackLost;
+                        player.EndReached -= OnPreviewPlaybackLost;
+                        player.Stopped -= OnPreviewPlaybackLost;
+                    }
 
                     try
                     {

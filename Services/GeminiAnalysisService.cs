@@ -31,6 +31,8 @@ namespace AIWeather.Services
         private readonly TimeSpan _requestTimeout;
         private long _requestSequence;
         private bool _isInitialized;
+        private GeminiRequestProfile _requestProfile;
+        public GeminiRequestProfile CurrentProfile => _requestProfile;
 
         public GeminiAnalysisService(
             string apiKey,
@@ -105,6 +107,7 @@ namespace AIWeather.Services
             // The alias tracks Google's latest stable Flash release; concrete version IDs
             // can be retired while they remain saved as the operator-selected model.
             _primaryModelName = NormalizeModelName(modelName);
+            _requestProfile = GeminiRequestPolicy.StartingProfileFor(_primaryModelName);
             _httpProvider = httpProvider ?? throw new ArgumentNullException(nameof(httpProvider));
             _quotaCircuitForModel = quotaCircuitForModel ?? throw new ArgumentNullException(nameof(quotaCircuitForModel));
             _utcNow = utcNow ?? throw new ArgumentNullException(nameof(utcNow));
@@ -240,39 +243,8 @@ namespace AIWeather.Services
                 if (promptPrefix.Length > 0)
                     promptText = promptPrefix + "\n" + promptText;
 
-                var payload = new
-                {
-                    contents = new object[]
-                    {
-                        new
-                        {
-                            role = "user",
-                            parts = new object[]
-                            {
-                                new { text = promptText },
-                                new
-                                {
-                                    inlineData = new
-                                    {
-                                        mimeType = "image/jpeg",
-                                        data = base64Image
-                                    }
-                                }
-                            }
-                        }
-                    },
-                    generationConfig = new
-                    {
-                        temperature = 0.1,
-                        // Newer Gemini Flash models may spend part of the output budget on
-                        // internal reasoning. 512 tokens produced repeatedly truncated JSON
-                        // in live NINA runs, even though the HTTP request itself succeeded.
-                        maxOutputTokens = 2048,
-                        responseMimeType = "application/json"
-                    }
-                };
-
-                var serializedPayload = JsonSerializer.Serialize(payload);
+                var serializedPayload = GeminiRequestPolicy.BuildRequestBody(
+                    promptText, base64Image, _requestProfile, GeminiRequestPolicy.DefaultMaxOutputTokens);
 
                 // Every service instance performs exactly one request. Gemini Free creates
                 // one instance per pool entry and owns model ordering/cycles outside this
@@ -304,6 +276,12 @@ namespace AIWeather.Services
 
                         if (!response.IsSuccessStatusCode)
                         {
+                            if (GeminiRequestPolicy.IsRequestRejected((int)response.StatusCode)
+                                && GeminiRequestPolicy.NextProfile(_requestProfile) is { } nextProfile)
+                            {
+                                Logger.Warning($"Gemini model {currentModel} rejected request profile {_requestProfile}; using {nextProfile} on its next visit");
+                                _requestProfile = nextProfile;
+                            }
                             var serverRetryDelay = GetServerRetryDelay(response, json, _utcNow());
                             var quota = GeminiQuotaParser.Parse(
                                 response.StatusCode,
@@ -389,10 +367,16 @@ namespace AIWeather.Services
                         using var doc = JsonDocument.Parse(json);
                         var text = ExtractGeminiText(doc.RootElement);
 
-                        var result = PromptText.ParseAIResponse(text);
+                        if (GeminiRequestPolicy.WasCutShort(doc.RootElement))
+                        {
+                            throw new WeatherResponseParseException("Gemini output was truncated (MAX_TOKENS)", string.Empty);
+                        }
+                        var result = WeatherResponseParser.Parse(text);
                         if (!WeatherAnalysisValidator.IsValidTeacherResult(result, out var validationReason))
                         {
                             Logger.Warning($"Gemini returned a response rejected by the weather schema: {validationReason}");
+                            diagnostics[^1].FailureCategory = AnalysisFailureCategory.SchemaRejected;
+                            diagnostics[^1].Outcome = "invalid_weather_response";
                             return OnlineAnalysisAttempt.Failed(
                                 AnalysisMetadata.FailedOnline(
                                     AnalysisOrigin.Gemini,
@@ -490,9 +474,25 @@ namespace AIWeather.Services
                     AnalysisMetadata.FromHttpStatus(ex.StatusCode),
                     ex.StatusCode.HasValue ? (int)ex.StatusCode.Value : null);
             }
+            catch (WeatherResponseParseException ex)
+            {
+                if (diagnostics.Count > 0)
+                {
+                    diagnostics[^1].FailureCategory = AnalysisFailureCategory.MalformedResponse;
+                    diagnostics[^1].Outcome = "invalid_weather_response";
+                }
+                return BuildDiagnosticFailure(diagnostics, currentModel, attemptsUsed,
+                    stopwatch.ElapsedMilliseconds, ex.Message,
+                    AnalysisFailureCategory.MalformedResponse, 200);
+            }
             catch (JsonException ex)
             {
                 Logger.Error($"Gemini returned malformed envelope JSON: {ex.Message}");
+                if (diagnostics.Count > 0)
+                {
+                    diagnostics[^1].FailureCategory = AnalysisFailureCategory.MalformedResponse;
+                    diagnostics[^1].Outcome = "invalid_envelope";
+                }
                 return OnlineAnalysisAttempt.Failed(
                     AnalysisMetadata.FailedOnline(
                         AnalysisOrigin.Gemini,
@@ -774,70 +774,7 @@ namespace AIWeather.Services
         {
                         public static string FullPrompt => WeatherAnalysisPrompts.DetailedSystemPrompt;
 
-            public static WeatherAnalysisResult ParseAIResponse(string jsonResponse)
-            {
-                try
-                {
-                    jsonResponse = jsonResponse.Trim();
-                    if (jsonResponse.StartsWith("```json", StringComparison.OrdinalIgnoreCase))
-                    {
-                        jsonResponse = jsonResponse.Substring(7);
-                    }
-                    if (jsonResponse.StartsWith("```", StringComparison.OrdinalIgnoreCase))
-                    {
-                        jsonResponse = jsonResponse.Substring(3);
-                    }
-                    if (jsonResponse.EndsWith("```", StringComparison.OrdinalIgnoreCase))
-                    {
-                        jsonResponse = jsonResponse.Substring(0, jsonResponse.Length - 3);
-                    }
-                    jsonResponse = jsonResponse.Trim();
 
-                    using var json = JsonDocument.Parse(jsonResponse);
-                    var root = json.RootElement;
-
-                    var conditionStr = root.GetProperty("condition").GetString() ?? "Unknown";
-                    var condition = Enum.TryParse<WeatherCondition>(conditionStr, true, out var parsedCondition)
-                        ? parsedCondition
-                        : WeatherCondition.Unknown;
-
-                    var cloudCoverage = root.GetProperty("cloudCoverage").GetDouble();
-                    var rainDetected = root.GetProperty("rainDetected").GetBoolean();
-                    var fogDetected = root.GetProperty("fogDetected").GetBoolean();
-                    var isSafe = root.GetProperty("isSafe").GetBoolean();
-                    var description = root.GetProperty("description").GetString() ?? string.Empty;
-                    var confidence = root.TryGetProperty("confidence", out var confProp) ? confProp.GetDouble() : 85.0;
-
-                    return new WeatherAnalysisResult
-                    {
-                        Timestamp = DateTime.UtcNow,
-                        Condition = condition,
-                        CloudCoverage = cloudCoverage,
-                        Confidence = confidence,
-                        IsSafeForImaging = isSafe,
-                        Description = description,
-                        RainDetected = rainDetected,
-                        FogDetected = fogDetected,
-                        RawAnalysisData = jsonResponse
-                    };
-                }
-                catch (Exception ex)
-                {
-                    Logger.Error($"Error parsing AI response: {ex.Message}", ex);
-                    Logger.Debug($"Raw response: {jsonResponse}");
-
-                    return new WeatherAnalysisResult
-                    {
-                        Timestamp = DateTime.UtcNow,
-                        Condition = WeatherCondition.Unknown,
-                        CloudCoverage = 50,
-                        Confidence = 0,
-                        IsSafeForImaging = false,
-                        Description = $"Failed to parse AI response: {ex.Message}",
-                        RawAnalysisData = jsonResponse
-                    };
-                }
-            }
         }
     }
 }

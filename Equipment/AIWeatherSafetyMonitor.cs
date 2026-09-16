@@ -77,6 +77,11 @@ namespace AIWeather.Equipment
         private DateTime _externalReadUtc = DateTime.MinValue;
         private DateTime _externalConnectAttemptUtc = DateTime.MinValue;
         private bool _externalFailureLogged;
+        private bool? _externalStateLogged;
+        private readonly ProviderHealthTracker _providerHealth = new ProviderHealthTracker();
+        private ulong? _lastFrameFingerprint;
+        private int _identicalFrameRun;
+        public string ProviderHealth => _providerHealth.Describe();
 
         /// <summary>IsSafe is polled often; a COM read per poll would hammer the driver.</summary>
         private static readonly TimeSpan ExternalReadCacheDuration = TimeSpan.FromSeconds(5);
@@ -163,77 +168,33 @@ namespace AIWeather.Equipment
 
         private void UpdateAnalysisService()
         {
-            var failover = ActiveFailoverConfiguration;
-            var provider = failover?.AnalysisProvider ?? Properties.Settings.Default.AnalysisProvider;
-            if (string.IsNullOrWhiteSpace(provider))
+            _analysisService = AnalysisServiceFactory.CreateFromSettings(ActiveFailoverConfiguration);
+        }
+
+        private void NoteFrameIdentity(Bitmap frame)
+        {
+            try
             {
-                provider = (failover?.UseGitHubModels ?? Properties.Settings.Default.UseGitHubModels)
-                    ? "GitHubModels"
-                    : "Local";
+                var fingerprint = FrameFingerprint.Compute(frame);
+                if (_lastFrameFingerprint == fingerprint)
+                {
+                    _identicalFrameRun++;
+                    Logger.Warning($"Captured frame is identical to the previous one ({_identicalFrameRun} in a row) - the camera source may be frozen and the analysis is repeating an old image");
+                }
+                else
+                {
+                    if (_identicalFrameRun > 0)
+                    {
+                        Logger.Info($"Captured frame changed again after {_identicalFrameRun} identical frame(s)");
+                    }
+                    _identicalFrameRun = 0;
+                }
+                _lastFrameFingerprint = fingerprint;
             }
-
-            provider = provider.Trim();
-            var model = failover?.SelectedModel ?? Properties.Settings.Default.SelectedModel;
-
-            if (string.Equals(provider, "GitHubModels", StringComparison.OrdinalIgnoreCase))
+            catch (Exception ex)
             {
-                _analysisService = new GitHubModelsAnalysisService(
-                    failover?.GitHubToken ?? Properties.Settings.Default.GitHubToken,
-                    model);
-                return;
+                Logger.Debug($"Frame fingerprint skipped: {ex.Message}");
             }
-
-            if (string.Equals(provider, "OpenAI", StringComparison.OrdinalIgnoreCase))
-            {
-                _analysisService = new OpenAIAnalysisService(
-                    failover?.OpenAIKey ?? Properties.Settings.Default.OpenAIKey,
-                    model);
-                return;
-            }
-
-            if (GeminiProviderProfile.IsFree(provider))
-            {
-                _analysisService = new GeminiFreePoolAnalysisService(
-                    failover?.GeminiKey ?? Properties.Settings.Default.GeminiKey,
-                    GeminiProviderProfile.ParseFreeModelOrder(
-                        failover?.GeminiFreeModelOrder
-                        ?? Properties.Settings.Default.GeminiFreeModelOrder),
-                    failover?.GeminiFreeCycleCount
-                        ?? Properties.Settings.Default.GeminiFreeCycleCount,
-                    failover?.GeminiRequestEveryChecks
-                        ?? Properties.Settings.Default.GeminiRequestEveryChecks);
-                return;
-            }
-
-            if (GeminiProviderProfile.IsPaid(provider))
-            {
-                _analysisService = new GeminiAnalysisService(
-                    failover?.GeminiPaidKey ?? Properties.Settings.Default.GeminiPaidKey,
-                    model,
-                    failover?.GeminiPaidRequestEveryChecks
-                        ?? Properties.Settings.Default.GeminiPaidRequestEveryChecks,
-                    GeminiServiceTier.Paid);
-                return;
-            }
-
-            if (string.Equals(provider, "Anthropic", StringComparison.OrdinalIgnoreCase))
-            {
-                _analysisService = new AnthropicAnalysisService(
-                    failover?.AnthropicKey ?? Properties.Settings.Default.AnthropicKey,
-                    model);
-                return;
-            }
-
-            if (string.Equals(provider, "Ollama", StringComparison.OrdinalIgnoreCase))
-            {
-                _analysisService = new OllamaAnalysisService(
-                    failover?.OllamaBaseUrl ?? Properties.Settings.Default.OllamaBaseUrl,
-                    model,
-                    failover?.OllamaDisableThinking ?? Properties.Settings.Default.OllamaDisableThinking);
-                return;
-            }
-
-            _analysisService = new LocalWeatherAnalysisService();
         }
 
         private AIWeatherFailoverConfiguration? ActiveFailoverConfiguration =>
@@ -443,6 +404,10 @@ namespace AIWeather.Equipment
             _replicaNextLocalCheckUtc = DateTime.MinValue;
             _replicaFailoverRetryAfterUtc = DateTime.MinValue;
             _lastResult = null;
+            _providerHealth.Reset();
+            _lastFrameFingerprint = null;
+            _identicalFrameRun = 0;
+            _externalStateLogged = null;
             _lastAnalysisBundle = null;
             _lastImage?.Dispose();
             _lastImage = null;
@@ -1420,6 +1385,11 @@ namespace AIWeather.Equipment
                     Logger.Info($"External ASCOM safety monitor '{progId}' is readable again");
                 }
 
+                if (_externalStateLogged != externalSafe)
+                {
+                    Logger.Info($"External ASCOM safety monitor '{progId}' reports {(externalSafe ? "SAFE" : "UNSAFE")}");
+                    _externalStateLogged = externalSafe;
+                }
                 _externalSafeCached = externalSafe;
                 return externalSafe;
             }
@@ -1772,6 +1742,7 @@ namespace AIWeather.Equipment
 
                 Logger.Debug($"Image captured from {captureMode}, size: {frame.Width}x{frame.Height}");
                 var capturedUtc = DateTime.UtcNow;
+                NoteFrameIdentity(frame);
 
                 // Analyze the frame
                 var analysisService = await EnsureAnalysisServiceInitializedAsync(cancellationToken);
@@ -1790,6 +1761,9 @@ namespace AIWeather.Equipment
                     $"student={analysis.Student.Provenance.Model}");
                 _lastResult = result;
                 _lastAnalysisBundle = analysis;
+                if (_providerHealth.Record(analysis.Teacher?.Provenance ?? result.Provenance))
+                    Logger.Info($"Online provider health changed: {_providerHealth.Provider}, consecutive failures {_providerHealth.ConsecutiveFallbacks}");
+                RaisePropertyChanged(nameof(ProviderHealth));
                 _lastAstroContext = astroContext;
 
                 // Unknown/zero-confidence is a failure result, not fresh sky data. Preserve
