@@ -148,7 +148,8 @@ jobs:
   publish-manifest:
     runs-on: ubuntu-latest
     needs: [check-repo-exists, build-and-release]
-    if: needs.check-repo-exists.outputs.exists == 'true'
+    # A release in a fork is not permission to submit/update the official plugin entry.
+    if: needs.check-repo-exists.outputs.exists == 'true' && vars.PUBLISH_OFFICIAL_MANIFEST == 'true'
     steps:
       - name: Download manifest artifact
         uses: actions/download-artifact@v4

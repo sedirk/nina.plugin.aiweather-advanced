@@ -1,13 +1,13 @@
 {
   "Identifier": "AI Weather",
   "Name": "AI Weather - All Sky Camera Monitor",
-  "Version": "1.35.0.0",
+  "Version": "1.36.0.0",
   "MinimumApplicationVersion": "3.0.0.0",
   "Author": "Michele Bergo / sedirk",
   "Homepage": "https://github.com/sedirk/nina.plugin.aiweather-advanced",
   "Repository": "https://github.com/sedirk/nina.plugin.aiweather-advanced",
-  "License": "MIT",
-  "LicenseURL": "https://opensource.org/licenses/MIT",
+  "License": "MPL-2.0",
+  "LicenseURL": "https://www.mozilla.org/en-US/MPL/2.0/",
   "Tags": [
     "Weather",
     "Safety Monitor",
@@ -24,6 +24,18 @@
     }
   },
   "ChangeLog": [
+    {
+      "Version": "1.36.0.0",
+      "Date": "2026-11-08",
+      "Changes": [
+        "Integrated 17 upstream commits through 1.16.0 while preserving ADVANCED ONNX, Gemini Free quota handling and LAN failover",
+        "Made preview reservation and background RTSP opening cancellable, distinguished Starting from capture failure, and bounded native open/read waits",
+        "Removed snapshot-gated video visibility, coalesced output readiness probes, ignored stopped/obsolete player callbacks and prevented cancelled starts from restarting monitoring",
+        "Added independent environment vetoes, decision evidence retention, corrupt-frame detection and atomic image handoff",
+        "Kept transition confirmation and guide-star assistance opt-in and disabled by default; hazards and stale results remain protected",
+        "Local test candidate; public release requires independent plugin identity and configuration migration"
+      ]
+    },
     {
       "Version": "1.35.0.0",
       "Date": "2026-10-09",
