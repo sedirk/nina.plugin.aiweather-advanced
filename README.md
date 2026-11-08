@@ -1,16 +1,18 @@
-# AI Weather - All Sky Camera Monitor for NINA
+# Sky Sentinel - All Sky Camera Monitor for NINA
 
 [简体中文](README.zh-CN.md) | English
 
-Local integration of upstream 1.16.0.0 and RTSP startup/cancellation fixes:
-[November 8 integration and validation notes](docs/UPSTREAM_MERGE_20261108.zh-CN.md).
-This work has not been deployed or released.
+**Sky Sentinel 1.36.0.1** is the independently named successor to this repository's
+AI Weather Advanced fork, maintained by **sedirk** and derived from **Michele Bergo's AI Weather**.
+It uses its own GUID, assembly, safety-device ID and settings group. Existing settings
+are imported once without overwriting the legacy group. See the [release and migration guide](docs/RELEASE_1.36.0.1.md).
+The repository URL is unchanged; this is not the upstream author's release.
 
 A plugin for [N.I.N.A.](https://nighttime-imaging.eu/) (Nighttime Imaging 'N' Astronomy) that uses artificial intelligence to analyze images from all-sky cameras and determine real-time weather conditions. It integrates directly with NINA's safety monitoring system to automatically protect your astronomy equipment when conditions become unsafe.
 
 ## Why This Plugin?
 
-Unattended imaging sessions are at risk from sudden weather changes. Traditional cloud sensors measure a narrow slice of sky and may miss approaching clouds or fog. An all-sky camera sees the entire sky dome, and AI can interpret that image in ways that go beyond simple brightness thresholds: it distinguishes between thin cirrus and dense overcast, detects rain droplets on the lens, and identifies fog. AI Weather bridges the gap between a camera image and an actionable safety decision, letting NINA pause or abort a sequence before your equipment is damaged.
+Unattended imaging sessions are at risk from sudden weather changes. Traditional cloud sensors measure a narrow slice of sky and may miss approaching clouds or fog. An all-sky camera sees the entire sky dome, and AI can interpret that image in ways that go beyond simple brightness thresholds: it distinguishes between thin cirrus and dense overcast, detects rain droplets on the lens, and identifies fog. Sky Sentinel bridges the gap between a camera image and an actionable safety decision, letting NINA pause or abort a sequence before your equipment is damaged.
 
 ## Features
 
@@ -120,13 +122,17 @@ The built-in reviewer flattens the sharded teacher-student dataset into a search
 
 ## Installation
 
-1. Download the latest advanced release from the [Releases](https://github.com/sedirk/nina.plugin.aiweather-advanced/releases) page.
-2. Extract the plugin files to your NINA plugins folder:
+1. Close NINA and back up its configuration. If replacing the old Advanced fork, move its entire plugin folder outside NINA's plugin scan directory; do not mix the old and new DLLs.
+2. Download the latest Sky Sentinel release from the [Releases](https://github.com/sedirk/nina.plugin.aiweather-advanced/releases) page.
+3. Extract the Windows x64 archive into its own folder:
+   ```text
+   %LOCALAPPDATA%\NINA\Plugins\3.0.0\Sky Sentinel\
    ```
-   %LOCALAPPDATA%\NINA\Plugins\
-   ```
-3. Restart NINA.
-4. Go to **Options > Plugins** to configure AI Weather.
+4. Start NINA and open **Options > Plugins > Sky Sentinel**. On first load, recognized settings, credentials and custom paths are imported from the old local settings group; a local backup is made and the old group is retained. An existing Sky Sentinel group always takes precedence.
+5. Select **Sky Sentinel Safety Monitor** under Equipment. Saved sequences using the old plugin's Start/Stop Monitoring instructions must have those instructions replaced by the Sky Sentinel equivalents. NINA 3.3 expressions with the explicit `AIWeather_` prefix should use `SkySentinel_`.
+6. Review thresholds, primary/replica role, secrets-configured indicators and device connections before unattended operation. Existing dataset files stay in place; the importer records the previous default dataset directory explicitly instead of copying samples.
+
+This release is available from this repository; publication does not automatically add it to NINA's official plugin list. See the [migration guide](docs/RELEASE_1.36.0.1.md) for rollback and compatibility details.
 
 ## Configuration
 
@@ -244,7 +250,7 @@ is a useful starting range.
     protections through it.
   - **OR**: imaging stops only when *both* say **Unsafe**. For a second cloud sensor that
     cries cloudy too often — a narrow-field IR sensor reacting to clouds far from the
-    target while AI Weather judges a crop of the sky around the pointing (Folder Watch):
+    target while Sky Sentinel judges a crop of the sky around the pointing (Folder Watch):
     the device confirms the sky verdict instead of adding to it.
 - A device that cannot be connected or read counts as **Unsafe**, and sky data older than
   the maximum data age counts as **Unsafe**. With AND that stops imaging — a driver that
@@ -280,7 +286,7 @@ The plugin will begin periodic monitoring. The safety status is reported to NINA
 
 ### Using the Preview Panel
 
-Navigate to the AI Weather preview panel to see:
+Navigate to the Sky Sentinel preview panel to see:
 
 - The current sky image or live video stream
 - Analysis results updated after each check cycle
@@ -304,7 +310,7 @@ Rain and fog always trigger an Unsafe status regardless of the cloud coverage th
 
 ### Sequencer Symbols (N.I.N.A. 3.3+)
 
-On N.I.N.A. 3.3 and later, every analysis publishes its values to the Advanced Sequencer's **Symbols** sidebar under an **AIWeather** category, so they can be used in expressions and message templates (for example in Discord/notification instructions):
+On N.I.N.A. 3.3 and later, every analysis publishes its values to the Advanced Sequencer's **Symbols** sidebar under a **SkySentinel** category, so they can be used in expressions and message templates (for example in Discord/notification instructions):
 
 | Symbol | Type | Meaning |
 |--------|------|---------|
@@ -315,7 +321,7 @@ On N.I.N.A. 3.3 and later, every analysis publishes its values to the Advanced S
 | `Fog` | boolean | Fog detected in the last image |
 | `Safe` | boolean | The monitor's current verdict (including hysteresis) |
 
-Reference them directly (`Cloud`, `Confidence`), or as `AIWeather_Cloud` if another plugin ever defines a symbol with the same name. The values refresh with every monitoring cycle while the safety monitor is connected, and are blanked when it disconnects so an expression can never act on a stale reading. On N.I.N.A. versions before 3.3 the plugin behaves exactly as before — no symbols, no errors.
+Reference them directly (`Cloud`, `Confidence`), or as `SkySentinel_Cloud` if another plugin ever defines a symbol with the same name. The values refresh with every monitoring cycle while the safety monitor is connected, and are blanked when it disconnects so an expression can never act on a stale reading. On N.I.N.A. versions before 3.3 the plugin behaves exactly as before — no symbols, no errors.
 
 ## Building from Source
 
@@ -325,21 +331,20 @@ Reference them directly (`Cloud`, `Confidence`), or as `AIWeather_Cloud` if anot
 - NINA 3.x installed (for assembly references)
 
 ```
-git clone https://github.com/michelebergo/nina.plugin.aiweather.git
-cd nina.plugin.aiweather
+git clone https://github.com/sedirk/nina.plugin.aiweather-advanced.git
+cd nina.plugin.aiweather-advanced
+git switch advanced
 dotnet restore
-dotnet build
+dotnet build AIWeather.csproj -c Release -p:PostBuildEvent=
 ```
 
-## Support the project
+## Credits
 
-This plugin is developed and maintained independently in my free time.
-
-If it is useful for your astrophotography or automation workflow, you can support its continued development:
-
-[☕ Support development on Buy Me a Coffee](https://buymeacoffee.com/michelebergo)
-
-Your support helps cover development tools, testing hardware, hosting and future features.
+Sky Sentinel is maintained by **sedirk**. **Michele Bergo** created and maintains the original
+[AI Weather](https://github.com/michelebergo/nina.plugin.aiweather) project.
+Thanks to the original author and all NINA contributors and testers. If you wish to support
+the **original author's** work, his [Buy Me a Coffee page](https://buymeacoffee.com/michelebergo)
+is separate from this derivative project.
 
 ## License
 
@@ -347,10 +352,9 @@ Current upstream-derived code includes the MPL-2.0 changes merged from upstream 
 See [LICENSE](LICENSE) and the original author's [NOTICE](NOTICE). Historical MIT notices
 are retained in [LICENSE-MIT-legacy](LICENSE-MIT-legacy).
 
-This integration is local development, not a newly published release. Upstream requires
-an independently named derivative with its own plugin GUID. The existing fork's identity
-has **not** silently been changed in this merge; a public release still needs that identity
-and settings-migration work.
+The derivative is published as **Sky Sentinel**, author **sedirk**, GUID
+`83bb4fd5-b304-4655-8fb5-cf01195ad34f`. The original copyright and attribution remain in NOTICE.
+The former plugin name and GUID are not reused, and the upstream logo is not shipped.
 
 ## Contributing
 
@@ -358,7 +362,7 @@ Contributions are welcome. Please fork the repository, create a feature branch, 
 
 ## Support
 
-- **Issues**: [GitHub Issues](https://github.com/michelebergo/nina.plugin.aiweather/issues)
+- **Issues**: [GitHub Issues](https://github.com/sedirk/nina.plugin.aiweather-advanced/issues)
 - **NINA Community**: [NINA Discord](https://discord.gg/nighttime-imaging)
 
 ### ADVANCED 1.35.0.0: upstream 1.15.7 integration (2026-10-09)

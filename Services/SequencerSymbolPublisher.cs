@@ -19,7 +19,7 @@ namespace AIWeather.Services
     /// </summary>
     internal static class SequencerSymbolPublisher
     {
-        private const string ProviderName = "AIWeather";
+        private const string ProviderName = "SkySentinel";
 
         private static readonly object InitLock = new object();
         private static bool _initialized;

@@ -19,13 +19,13 @@ namespace NINA.Plugin.AIWeather.Test
         [TestCase("   ")]
         [TestCase(null)]
         public void NothingConfiguredMeansTheCurrentUsersDocuments(string? configured) {
-            SafetyStatusFile.Resolve(configured).Should().Be(Path.Combine(Documents, "N.I.N.A", "sky_conditions.txt"));
+            SafetyStatusFile.Resolve(configured).Should().Be(Path.Combine(Documents, "N.I.N.A", "skysentinel_conditions.txt"));
         }
 
         [Test]
         public void TheOldBakedInPathIsTreatedAsNothingConfigured() {
             SafetyStatusFile.Resolve(@"C:\Users\miche\Documents\N.I.N.A\sky_conditions.txt")
-                .Should().Be(Path.Combine(Documents, "N.I.N.A", "sky_conditions.txt"));
+                .Should().Be(Path.Combine(Documents, "N.I.N.A", "skysentinel_conditions.txt"));
         }
 
         [Test]

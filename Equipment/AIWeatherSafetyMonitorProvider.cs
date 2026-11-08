@@ -11,7 +11,7 @@ namespace AIWeather.Equipment
     [Export(typeof(IEquipmentProvider))]
     public class AIWeatherSafetyMonitorProvider : IEquipmentProvider<ISafetyMonitor>, IEquipmentProvider
     {
-        public string Name => "AI Weather";
+        public string Name => "Sky Sentinel";
 
         [ImportingConstructor]
         public AIWeatherSafetyMonitorProvider(IImageDataFactory imageDataFactory, IProfileService profileService, IGuiderMediator guiderMediator, IWeatherDataMediator weatherDataMediator)

@@ -14,7 +14,7 @@ namespace AIWeather.Services
         private const string LegacyBakedInPath = @"C:\Users\miche\Documents\N.I.N.A\sky_conditions.txt";
 
         public static string DefaultPath =>
-            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "N.I.N.A", "sky_conditions.txt");
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "N.I.N.A", "skysentinel_conditions.txt");
 
         public static string Resolve(string? configured)
         {

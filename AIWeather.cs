@@ -276,12 +276,19 @@ namespace AIWeather
         public AIWeather(IProfileService profileService)
         {
             Logger.Info(
-                $"AI Weather UI culture: {CultureInfo.CurrentUICulture.Name} " +
+                $"Sky Sentinel UI culture: {CultureInfo.CurrentUICulture.Name} " +
                 $"({(UiLocalization.IsChineseCulture() ? "Chinese" : "English fallback")})");
 
-            if (Properties.Settings.Default.UpdateSettings)
+            var upgradeSettings = Properties.Settings.Default.UpdateSettings;
+            if (upgradeSettings)
             {
                 Properties.Settings.Default.Upgrade();
+            }
+            var userConfigPath = System.Configuration.ConfigurationManager.OpenExeConfiguration(
+                System.Configuration.ConfigurationUserLevel.PerUserRoamingAndLocal).FilePath;
+            var migrated = Services.SkySentinelSettingsMigration.Import(Properties.Settings.Default, userConfigPath);
+            if (upgradeSettings || migrated)
+            {
                 Properties.Settings.Default.UpdateSettings = false;
                 CoreUtil.SaveSettings(Properties.Settings.Default);
             }
@@ -293,7 +300,7 @@ namespace AIWeather
 
             EnsureDefaults();
 
-            // Make the AIWeather category visible in the sequencer Symbols sidebar right
+            // Make the SkySentinel category visible in the sequencer Symbols sidebar right
             // away (N.I.N.A. 3.3+), with blank values until the first analysis fills them.
             Services.SequencerSymbolPublisher.TryRegisterAtStartup();
             
@@ -304,13 +311,13 @@ namespace AIWeather
                 {
                     var optionsDict = new ResourceDictionary
                     {
-                        Source = new Uri("pack://application:,,,/NINA.Plugin.AIWeather;component/Resources/Options.xaml", UriKind.Absolute)
+                        Source = new Uri("pack://application:,,,/NINA.Plugin.SkySentinel;component/Resources/Options.xaml", UriKind.Absolute)
                     };
                     Application.Current?.Resources.MergedDictionaries.Add(optionsDict);
 
                     var dataTemplatesDict = new ResourceDictionary
                     {
-                        Source = new Uri("pack://application:,,,/NINA.Plugin.AIWeather;component/Resources/DataTemplates.xaml", UriKind.Absolute)
+                        Source = new Uri("pack://application:,,,/NINA.Plugin.SkySentinel;component/Resources/DataTemplates.xaml", UriKind.Absolute)
                     };
                     Application.Current?.Resources.MergedDictionaries.Add(dataTemplatesDict);
                 });

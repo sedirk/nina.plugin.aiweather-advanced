@@ -11,3 +11,8 @@ notice and credit Michele Bergo as the original author, as the license requires.
 plugins. A fork or derivative work must be published under a different name - not one of
 these nor a confusable variant - with its own plugin identifier (GUID), and must not
 present Michele Bergo as the author of the modified version.
+
+Sky Sentinel modifications Copyright (c) 2026 sedirk.
+Sky Sentinel is an independently named derivative maintained by sedirk, with its own
+plugin GUID 83bb4fd5-b304-4655-8fb5-cf01195ad34f. It is derived from AI Weather by
+Michele Bergo. The original notice above is retained; no upstream endorsement is implied.

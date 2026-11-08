@@ -1,24 +1,18 @@
-# AI Weather - N.I.N.A. 全天相机天气监视器
+# Sky Sentinel - N.I.N.A. 全天相机天气监视器
 
 [English](README.md) | 简体中文
 
-AI Weather 是一款面向 [N.I.N.A.](https://nighttime-imaging.eu/)（Nighttime Imaging 'N' Astronomy）的全天相机天气监视与安全设备插件。它从 RTSP、HTTP 或本地图片目录取得天空图像，通过在线视觉模型、OpenAI 兼容服务或本地算法判断云量、降雨、雾气等状况，并把最终结果作为 N.I.N.A. Safety Monitor 的 `Safe / Unsafe` 状态提供给序列。
+Sky Sentinel 是一款面向 [N.I.N.A.](https://nighttime-imaging.eu/)（Nighttime Imaging 'N' Astronomy）的全天相机天气监视与安全设备插件。它从 RTSP、HTTP 或本地图片目录取得天空图像，通过在线视觉模型、OpenAI 兼容服务或本地算法判断云量、降雨、雾气等状况，并把最终结果作为 N.I.N.A. Safety Monitor 的 `Safe / Unsafe` 状态提供给序列。
 
 > [!IMPORTANT]
-> 本仓库是基于 [michelebergo/nina.plugin.aiweather](https://github.com/michelebergo/nina.plugin.aiweather) 持续开发的社区高级分支，保留原作者署名、上游 MPL-2.0 许可证及历史 MIT 声明。这里的高级功能可能尚未进入上游稳定版。2026-11-08 的源码融合尚未发布，参见[融合记录](docs/UPSTREAM_MERGE_20261108.zh-CN.md)。
+> 从 **1.36.0.1** 起，本项目以独立名称 **Sky Sentinel** 发布，作者 **sedirk**。它源于 **Michele Bergo** 的 [AI Weather](https://github.com/michelebergo/nina.plugin.aiweather)，保留原作者致谢、MPL-2.0 与历史 MIT 声明，使用独立 GUID、DLL、设备 ID 和设置组。仓库地址不变；这是衍生版本，不是原作者发布。旧配置仅首次导入且保留原组，详见[发布与迁移说明](docs/RELEASE_1.36.0.1.md)。
 
 > [!WARNING]
 > 图像识别可能误判，网络服务也可能限流或中断。本插件采用保守的失效安全策略，但它不能替代可靠的雨量、湿度、云量、屋顶联锁和紧急关盖等硬件保护。无人值守天文台应使用彼此独立的多重安全措施。
 
-## 2026-10-17 上游融合（尚未发布）
+## 当前版本
 
-已融合上游 1.15.8 的三个提交：按全天/固定视角和光污染/暗夜站点组合提示词、明确处理无法辨认的天空、更新 Claude 模型列表并保存手动输入的模型 ID。新增设置会随加密接管配置同步，从节点使用同步值并显示只读摘要。
-
-在线模型明确返回“天空不可读”时立即报告不安全，不再为了得到其他结论轮询 Gemini 免费池；该结果也不会作为云量训练标签。API 超时或错误仍与这类有效的不安全观测分开处理，不刷新旧结果的新鲜度。内置 ONNX、每终端共享 RTSP 会话和普通 Gemini / Gemini 免费池的独立策略保持不变。
-
-新增非默认提示词配置需要主从两端一并升级。本次仅融合源码并完成离线验证，没有安装、重启或发布；具体兼容性和验证范围见 [本轮融合说明](docs/UPSTREAM_MERGE_20261017.zh-CN.md)。下文早期功能概述中的主从模式及 Gemini 策略，以后续设计文档和当前实现为准。
-
-随后已融合上游 1.15.9（#19）的外部 ASCOM 安全监视器 AND/OR 组合及模拟整夜运行测试，用于更新英文 PR #20。默认仍为 AND，不自动改变现有配置；明确选择 OR 后，单路安全输入可承担判定，但新鲜的雨、雾或天空不可读观测仍否决安全。断开连接、停止监控和白天暂停不能被 OR 绕过；跟随主节点的从节点仍要求主节点安全且连接有效，本机外部设备只能追加否决。主节点以外部输入单独维持安全时，不刷新旧天空分析的时间戳；新旧端兼容边界见融合记录。当前离线测试为 **171 项通过**，数据集／集群 smoke 通过；本轮不安装插件、不重启 NINA、不创建 Release。
+已融合上游至 1.16.0.0。保留首帧取消修复、完整画面等比适配、每终端共享 RTSP 会话、主从与本地接管；预览窗口回归上游单层原生实现，移除额外遮罩及显露状态机。历史融合细节见 [11 月记录](docs/UPSTREAM_MERGE_20261108.zh-CN.md) 和 [10 月记录](docs/UPSTREAM_MERGE_20261017.zh-CN.md)。
 
 ## 这个高级分支增加了什么
 
@@ -27,13 +21,13 @@ AI Weather 是一款面向 [N.I.N.A.](https://nighttime-imaging.eu/)（Nighttime
 - **完整简体中文界面**：跟随 N.I.N.A. 当前语言自动切换；数据文件中的稳定机器值保持不变。
 - **仅夜间分析**：可按太阳高度角限制工作时段。白天不抓图、不调用本地或在线模型、不写数据集，并直接向 N.I.N.A. 报告 `Unsafe`。
 - **教师—学生数据集采集**：用成功的在线视觉模型结果作为教师标签，同时保存同一帧的本地影子算法结果，为将来训练站点专属模型积累数据。
-- **Gemini 配额保护、短时容灾与调用比例**：识别分钟/每日配额并停止无意义的连续重试；模型明确返回 `503` 时可临时切到动态发现的同系列 Flash 模型，短暂承担两次成功检查后自动探测并切回用户选定的主模型；也可设为每 `N` 次天气检查才调用一次 Gemini。
+- **Gemini 双策略**：普通 Gemini 只请求指定模型，不轮询、不降级；Gemini 免费按可调顺序轮询模型池，各模型独立记录配额和退避，支持整池循环次数及每 `N` 次天气检查调用一次。
 - **内置标签检查器**：无需逐层打开分片目录，即可搜索、筛选、浏览图片，对教师标签执行接受、人工修正、拒绝、重置复核或永久删除无用样本等操作。
 - **按检查次数采样**：每完成 `N` 次成功的在线天气检查保存一个周期样本；有意义的异常或分歧样本仍可独立采集。
 - **可控的数据量**：支持等比例降采样、JPEG 质量、内容寻址、近重复过滤、数据集容量和磁盘剩余空间保护。
 - **更完整的失效安全逻辑**：过期结果、相机或模型失败、可选外部 ASCOM 安全设备异常、白天停用或无法取得太阳高度时都不会继续沿用旧的 `Safe`。
 - **高级序列符号**：在 N.I.N.A. 3.3 及以上版本中发布 `Cloud`、`Confidence`、`Condition`、`Rain`、`Fog` 和 `Safe`。
-- **局域网主/从节点**：同一个插件包可选独立、主节点或从节点；全天相机、AI API 和数据集只在主节点运行一次，从节点只接收最终安全状态。
+- **局域网主/从节点**：同一包可选独立、主或从节点；主从都可预览本机相机流，终端内部预览与检测复用会话。从节点正常跟随主节点判定，仅在显式启用且满足条件的接管期间运行本机分析，不写数据集。
 
 教师—学生数据集的设计、字段、隐私边界和后续训练路线详见 [设计文档](docs/TEACHER_STUDENT_DATASET_DESIGN.zh-CN.md)；局域网单执行者与失效安全语义详见 [主/从节点冻结设计](docs/LAN_PRIMARY_REPLICA_CLUSTER_DESIGN.zh-CN.md)。RTSP 相关的两次独立工程事故分别记录在 [分析通道旧帧事故](docs/RTSP_STALE_FRAME_INCIDENT.zh-CN.md) 和 [实时预览白底与原生空域事故](docs/RTSP_PREVIEW_NATIVE_AIRSPACE_INCIDENT.zh-CN.md) 中。
 
@@ -44,8 +38,8 @@ AI Weather 是一款面向 [N.I.N.A.](https://nighttime-imaging.eu/)（Nighttime
 | 角色 | 本机执行的工作 | 网络行为 |
 |---|---|---|
 | 独立模式 | 保持原来的取图、识别、Safety Monitor 与数据集流程 | 不监听、不连接集群服务 |
-| 主节点 | 独占全天相机，执行本地/在线模型与数据集写入 | 在默认 TCP `18910` 发布最终安全快照 |
-| 从节点 | 不打开相机、不调用 API、不运行本地模型、不写数据集 | 轮询主节点并把主节点最终结果提供给本机 N.I.N.A. |
+| 主节点 | 运行本机相机预览、本地/在线分析与数据集写入 | 在默认 TCP `18910` 发布最终安全快照 |
+| 从节点 | 可显示相机预览；正常跟随时不调用模型，接管时复用本机流分析，不写数据集 | 轮询主节点并把主节点最终结果提供给本机 N.I.N.A. |
 
 模式在 Safety Monitor 连接时冻结；修改后要断开并重新连接设备才生效。系统不自动选主。从节点采用保守失效安全语义：刚启动、令牌错误、协议不兼容、网络状态过期、主节点分析过期或主节点本身不安全时，本机一律报告 `Unsafe`。传输新鲜度和天气分析新鲜度分开判断，因此“网络还通但主节点一直没有新分析”也不能维持旧的 `Safe`。
 
@@ -92,9 +86,9 @@ GitHub Models 服务已于 2026 年 7 月停止，保留的选项只会给出明
 
 ### Gemini 配额保护、短时容灾与调用比例
 
-插件不会再把所有 `429` 都当成同一种网络抖动。Gemini 返回明确的配额失败时，会记录配额类型和建议重试时间，并在该窗口内停止继续发送请求：短周期配额按服务端时间等待，连续探测仍失败时依次延长到至少 10、30、60 分钟；每日配额则等待 Google 规定的太平洋时区午夜重置。**配额按模型独立处理，`429` 不会触发模型轮换，也不会借备用模型绕过免费或付费额度。**
+Gemini 免费使用可排序模型池，各模型分别维护短时/每日配额状态。某模型额度耗尽不会阻断其他可用模型；明确的每日配额按太平洋时区午夜恢复，短时退避遵循服务端提示。普通 Gemini 则固定使用一个模型和独立 API 密钥，不执行自动轮换、重试或降级。
 
-如果用户选定的主模型明确返回 HTTP `503 Service Unavailable`，插件会在原有 60 秒整轮预算内临时尝试 API 当前公布、支持 `generateContent` 的另一个 Gemini Flash 系列模型。备用模型只在内存中接管，不会修改设置页的模型选择：它累计两次成功在线检查后，下一次检查重新探测主模型；主模型恢复即立刻切回，如果仍为 `503`，才重新开始一个很短的备用周期。每个网络尝试都会记录实际模型、HTTP 状态和耗时，因此最后一次超时不会再掩盖此前真实发生的 `503`。超时和普通网络中断仍采用次数与总时长都受限的指数退避。
+每次网络尝试记录实际模型、HTTP 状态与耗时；每轮受总时间预算约束，整池循环无可用结果后才返回失败并执行本地回退。具体行为以 [Gemini 可用性设计](docs/GEMINI_AVAILABILITY_FAILOVER.zh-CN.md) 为准。
 
 完整状态机、失败分类与安全边界见 [Gemini 可用性与临时模型容灾设计](docs/GEMINI_AVAILABILITY_FAILOVER.zh-CN.md)。
 
@@ -127,7 +121,7 @@ GitHub Models 服务已于 2026 年 7 月停止，保留的选项只会给出明
 
 如果全天相机固定使用夜间曝光参数，白天云层很容易大范围过曝。这类画面既浪费 API 请求，也会污染训练数据。可在插件设置中启用 **仅夜间分析**：
 
-1. 打开 N.I.N.A. 的 **选项 → 插件 → AI Weather**。
+1. 打开 N.I.N.A. 的 **选项 → 插件 → Sky Sentinel**。
 2. 启用 **仅夜间分析**。
 3. 设置太阳高度上限。默认建议为 `-6°`，即民用暮光结束后才开始工作。
 
@@ -215,9 +209,15 @@ GitHub Models 服务已于 2026 年 7 月停止，保留的选项只会给出明
 
 如果只需要上游发布的稳定功能，可从 [上游 Releases](https://github.com/michelebergo/nina.plugin.aiweather/releases) 下载并按 N.I.N.A. 插件安装方式部署。请注意：上游发布包不一定包含本页介绍的高级分支功能。
 
-### 当前高级分支
+### Sky Sentinel 发布包
 
-本仓库的高级功能目前以 `advanced` 分支源码为准。开发者可执行：
+1. 关闭 N.I.N.A. 并备份配置。若替换本仓库旧 Advanced 版，将旧插件整个目录移到插件扫描路径之外；不要混放新旧 DLL。
+2. 从本仓库 [Releases](https://github.com/sedirk/nina.plugin.aiweather-advanced/releases) 下载 Sky Sentinel 的 Windows x64 ZIP，解压到 `%LOCALAPPDATA%\NINA\Plugins\3.0.0\Sky Sentinel\`。
+3. 启动后打开 **选项 → 插件 → Sky Sentinel**。首次自动导入旧设置组中可识别的配置和凭据，保留旧组并在本机备份。已有 Sky Sentinel 配置不会被覆盖。
+4. 在设备页重新选择 **Sky Sentinel 安全监视器**。旧序列里的开始/停止监控指令需替换为 Sky Sentinel 版；显式 `AIWeather_` 符号前缀改为 `SkySentinel_`。
+5. 检查主从模式、相机/API 凭据已配置状态和安全阈值再连接。旧数据集原地沿用，不复制或删除样本。发布到本仓库不等于加入 NINA 官方插件列表。
+
+完整迁移、回滚及兼容性说明见[本次发布文档](docs/RELEASE_1.36.0.1.md)。开发者可编译 `advanced` 分支：
 
 ```powershell
 git clone https://github.com/sedirk/nina.plugin.aiweather-advanced.git
@@ -244,13 +244,13 @@ dotnet run --project tests/AIWeather.DatasetSmoke/AIWeather.DatasetSmoke.csproj 
 
 ## 基本配置
 
-1. 在 **选项 → 插件 → AI Weather** 中选择 RTSP、HTTP 图片或文件夹监视，并填写对应地址。
+1. 在 **选项 → 插件 → Sky Sentinel** 中选择 RTSP、HTTP 图片或文件夹监视，并填写对应地址。
 2. 选择 AI 提供方。初次使用在线服务时，先输入密钥并执行连接测试。
 3. 设置检查间隔、云量不安全高阈值和恢复安全低阈值。
 4. 无人值守站建议启用仅夜间分析，并确认 N.I.N.A. 中的观测站经纬度正确。
 5. 如有独立雨量或环境设备，可启用外部 ASCOM Safety Monitor 并选择设备。
-6. 前往 **设备 → Safety Monitor**，选择 **All Sky Camera Safety Monitor** 并连接。
-7. 打开 **成像 → AI Weather**，确认实时画面、活动日志、数据年龄和状态原因均正常。
+6. 前往 **设备 → Safety Monitor**，选择 **Sky Sentinel 安全监视器** 并连接。
+7. 打开 **成像 → Sky Sentinel**，确认实时画面、活动日志、数据年龄和状态原因均正常。
 8. 在实拍序列前，分别模拟相机断流、API 失败、外部设备断开和白天门控，确认系统都能进入预期的 `Unsafe`。
 
 ### 场地说明
@@ -266,18 +266,18 @@ dotnet run --project tests/AIWeather.DatasetSmoke/AIWeather.DatasetSmoke.csproj 
 
 ## 高级序列与外部集成
 
-N.I.N.A. 3.3 及以上版本会在高级序列符号侧栏中显示 `AIWeather` 分类：
+N.I.N.A. 3.3 及以上版本会在高级序列符号侧栏中显示 `SkySentinel` 分类：
 
 | 符号 | 类型 | 含义 |
 |---|---|---|
-| `AIWeather.Cloud` | 数字 | 云量百分比 |
-| `AIWeather.Confidence` | 数字 | 模型置信度百分比 |
-| `AIWeather.Condition` | 文本 | 当前天气类别 |
-| `AIWeather.Rain` | 布尔 | 是否检测到降雨 |
-| `AIWeather.Fog` | 布尔 | 是否检测到雾气 |
-| `AIWeather.Safe` | 布尔 | N.I.N.A. 实际使用的最终合并安全状态 |
+| `SkySentinel_Cloud` | 数字 | 云量百分比 |
+| `SkySentinel_Confidence` | 数字 | 模型置信度百分比 |
+| `SkySentinel_Condition` | 文本 | 当前天气类别 |
+| `SkySentinel_Rain` | 布尔 | 是否检测到降雨 |
+| `SkySentinel_Fog` | 布尔 | 是否检测到雾气 |
+| `SkySentinel_Safe` | 布尔 | N.I.N.A. 实际使用的最终合并安全状态 |
 
-插件还提供 **AI Weather - Start Monitoring** 和 **AI Weather - Stop Monitoring** 两个高级序列指令。断开监视器时符号会被清空，避免序列继续读取旧值。
+插件还提供 **Sky Sentinel - Start Monitoring** 和 **Sky Sentinel - Stop Monitoring** 两个高级序列指令。断开监视器时符号会被清空，避免序列继续读取旧值。
 
 可选的安全状态文件只写入 `Safe` 或 `Unsafe`，可供 ASCOM Generic File SafetyMonitor 或外部脚本读取。
 
@@ -302,6 +302,6 @@ N.I.N.A. 3.3 及以上版本会在高级序列符号侧栏中显示 `AIWeather` 
 
 此次融合包含采用 [MPL-2.0 许可证](LICENSE) 的新上游代码，同时保留 [NOTICE](NOTICE) 和[历史 MIT 许可文本](LICENSE-MIT-legacy)。感谢原作者 [Michele Bergo](https://github.com/michelebergo) 创建并持续维护 AI Weather，也感谢 N.I.N.A. 社区、测试用户和所有贡献者。
 
-上游 NOTICE 要求衍生发布使用独立名称和插件 GUID。本轮没有静默更换已有身份或配置，也没有发布新包；公开发布前仍需完成独立身份与配置迁移安排。
+本衍生版本使用独立名称 **Sky Sentinel**、作者 **sedirk** 和 GUID `83bb4fd5-b304-4655-8fb5-cf01195ad34f`，不复用原版发布身份或标志。原作者版权与致谢保留在 NOTICE 中。
 
 如希望支持上游作者，可访问其 [Buy Me a Coffee](https://buymeacoffee.com/michelebergo) 页面。

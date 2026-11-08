@@ -53,7 +53,7 @@ namespace AIWeather.Models
             return System.IO.Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
                 "NINA",
-                "AIWeather",
+                "SkySentinel",
                 "dataset",
                 "v1");
         }

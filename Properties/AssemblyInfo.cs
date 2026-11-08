@@ -8,12 +8,12 @@ using System.Runtime.InteropServices;
 // General Information about an assembly is controlled through the following
 // set of attributes. Change these attribute values to modify the information
 // associated with an assembly.
-[assembly: AssemblyTitle("AI Weather")]
+[assembly: AssemblyTitle("Sky Sentinel")]
 [assembly: AssemblyDescription("AI-powered all-sky camera weather monitoring with bundled site-trained ONNX inference")]
 [assembly: AssemblyConfiguration("")]
-[assembly: AssemblyCompany("Michele Bergo / sedirk")]
+[assembly: AssemblyCompany("sedirk")]
 [assembly: AssemblyProduct("NINA.Plugins")]
-[assembly: AssemblyCopyright("Copyright © 2026")]
+[assembly: AssemblyCopyright("Copyright © 2026 sedirk; derived from work by Michele Bergo")]
 [assembly: AssemblyTrademark("")]
 [assembly: AssemblyCulture("")]
 
@@ -23,20 +23,20 @@ using System.Runtime.InteropServices;
 [assembly: ComVisible(false)]
 
 // Plugin identifier used by N.I.N.A. plugin manager manifests (CreateManifest.ps1 reads GuidAttribute)
-[assembly: Guid("A1B2C3D4-E5F6-4A5B-8C9D-0E1F2A3B4C5D")]
+[assembly: Guid("83bb4fd5-b304-4655-8fb5-cf01195ad34f")]
 
 // The minimum Version of N.I.N.A. that this plugin is compatible with
 [assembly: AssemblyMetadata("MinimumApplicationVersion", "3.0.0.0")]
 
 // Required by the N.I.N.A. community plugin manifest repository
-[assembly: AssemblyMetadata("Identifier", "AI Weather")]
-[assembly: AssemblyMetadata("Author", "Michele Bergo / sedirk")]
+[assembly: AssemblyMetadata("Identifier", "Sky Sentinel")]
+[assembly: AssemblyMetadata("Author", "sedirk")]
 [assembly: AssemblyMetadata("Repository", "https://github.com/sedirk/nina.plugin.aiweather-advanced")]
 
 // Version information
-[assembly: AssemblyVersion("1.36.0.0")]
-[assembly: AssemblyFileVersion("1.36.0.0")]
-[assembly: AssemblyInformationalVersion("1.36.0.0")]
+[assembly: AssemblyVersion("1.36.0.1")]
+[assembly: AssemblyFileVersion("1.36.0.1")]
+[assembly: AssemblyInformationalVersion("1.36.0.1")]
 
 // The license your plugin code is using
 [assembly: AssemblyMetadata("License", "MPL-2.0")]
@@ -52,7 +52,7 @@ using System.Runtime.InteropServices;
 [assembly: AssemblyMetadata("ChangelogURL", "https://github.com/sedirk/nina.plugin.aiweather-advanced/releases")]
 
 // Featured logo displayed next to the plugin in the plugin list
-[assembly: AssemblyMetadata("FeaturedImageURL", "https://raw.githubusercontent.com/sedirk/nina.plugin.aiweather-advanced/advanced/icon.png")]
+[assembly: AssemblyMetadata("FeaturedImageURL", "")]
 
 // Optional screenshots (leave empty if not available)
 [assembly: AssemblyMetadata("ScreenshotURL", "")]
@@ -62,7 +62,7 @@ using System.Runtime.InteropServices;
 [assembly: AssemblyMetadata("ShortDescription", "AI-powered all-sky camera weather monitoring with automatic safety protection for unattended imaging sessions")]
 
 // Long description displayed in the plugin manager
-[assembly: AssemblyMetadata("LongDescription", @"Protect your equipment and imaging sessions with intelligent, real-time weather monitoring powered by AI vision models. AI Weather watches the sky so you don't have to.
+[assembly: AssemblyMetadata("LongDescription", @"Protect your equipment and imaging sessions with intelligent, real-time weather monitoring powered by AI vision models. Sky Sentinel watches the sky so you don't have to.
 
 🌩️ REAL-TIME WEATHER MONITORING:
 • Automatic Sky Analysis: AI vision models analyze your all-sky camera images to determine cloud coverage, detect rain and fog
@@ -105,7 +105,7 @@ using System.Runtime.InteropServices;
 1. Configure your all-sky camera source (RTSP URL, HTTP URL, or watched folder path)
 2. Choose an AI provider and enter your API key (or use Local for zero-config offline analysis)
 3. Set both cloud coverage thresholds: High turns the state Unsafe, Low lets it return to Safe, and between them the state does not change
-4. Connect the safety monitor under Equipment → Safety Monitor → All Sky Camera Safety Monitor
+4. Connect the safety monitor under Equipment → Safety Monitor → Sky Sentinel Safety Monitor
 5. Start monitoring — the plugin automatically protects your sequences
 
 💡 BEGINNER-FRIENDLY:
@@ -121,4 +121,6 @@ using System.Runtime.InteropServices;
 • Detailed Logging: Every analysis result is logged with timestamp, provider, cloud percentage, and safety status
 • Seamless NINA Integration: Works directly with NINA's safety monitor system to pause or abort sequences when conditions deteriorate
 
-Transform your all-sky camera into an intelligent weather guardian. Focus on imaging while AI Weather keeps watch over your equipment and data.")]
+Transform your all-sky camera into an intelligent weather guardian. Focus on imaging while Sky Sentinel keeps watch over your equipment and data.
+
+Maintained by sedirk. Derived from AI Weather by Michele Bergo; original attribution is preserved in NOTICE.")]

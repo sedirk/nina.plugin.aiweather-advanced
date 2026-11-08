@@ -69,8 +69,8 @@ namespace NINA.Plugin.AIWeather.Test
 
         [Test]
         public void TheArchiveLivesUnderThePluginsOwnFolder() {
-            global::AIWeather.Equipment.AIWeatherSafetyMonitor.DefaultDecisionFolder.Should().EndWith(Path.Combine("AIWeather", "decisions"));
-            global::AIWeather.Equipment.AIWeatherSafetyMonitor.CaptureFolder.Should().EndWith(Path.Combine("AIWeather", "captures"));
+            global::AIWeather.Equipment.AIWeatherSafetyMonitor.DefaultDecisionFolder.Should().EndWith(Path.Combine("SkySentinel", "decisions"));
+            global::AIWeather.Equipment.AIWeatherSafetyMonitor.CaptureFolder.Should().EndWith(Path.Combine("SkySentinel", "captures"));
         }
 
         [Test]

@@ -8,13 +8,13 @@ using System.ComponentModel.Composition;
 using System.Threading;
 using System.Threading.Tasks;
 
-namespace AIWeather.SequenceItems {
+namespace SkySentinel.SequenceItems {
 
     [Export(typeof(ISequenceItem))]
-    [ExportMetadata("Name", "AI Weather - Stop Monitoring")]
-    [ExportMetadata("Description", "Stops AI Weather all-sky camera monitoring")]
-    [ExportMetadata("Category", "AI Weather")]
-    [ExportMetadata("Icon", "AIWeather_StopIcon")]
+    [ExportMetadata("Name", "Sky Sentinel - Stop Monitoring")]
+    [ExportMetadata("Description", "Stops Sky Sentinel all-sky camera monitoring")]
+    [ExportMetadata("Category", "Sky Sentinel")]
+    [ExportMetadata("Icon", "SkySentinel_StopIcon")]
     public class StopMonitoringInstruction : SequenceItem {
 
         [ImportingConstructor]
@@ -26,22 +26,22 @@ namespace AIWeather.SequenceItems {
                 var monitor = AIWeatherSafetyMonitor.Instance;
 
                 if (!monitor.Connected) {
-                    Logger.Info("AI Weather monitoring is not running");
+                    Logger.Info("Sky Sentinel monitoring is not running");
                     progress?.Report(new ApplicationStatus() {
                         Status = UiLocalization.Text("Sequencer.NotRunning")
                     });
                     return Task.CompletedTask;
                 }
 
-                Logger.Info("AI Weather: Stopping monitoring from sequencer instruction");
+                Logger.Info("Sky Sentinel: Stopping monitoring from sequencer instruction");
                 monitor.Disconnect();
 
-                Logger.Info("AI Weather: Monitoring stopped from sequencer");
+                Logger.Info("Sky Sentinel: Monitoring stopped from sequencer");
                 progress?.Report(new ApplicationStatus() {
                     Status = UiLocalization.Text("Sequencer.Stopped")
                 });
             } catch (Exception ex) {
-                Logger.Error($"AI Weather: Error stopping monitoring from sequencer: {ex.Message}", ex);
+                Logger.Error($"Sky Sentinel: Error stopping monitoring from sequencer: {ex.Message}", ex);
             }
 
             return Task.CompletedTask;

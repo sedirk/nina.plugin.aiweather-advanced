@@ -24,15 +24,6 @@ public class PreviewStartupTest
         state.IsCurrent(restarted).Should().BeTrue();
     }
 
-    [TestCase(true, true, false, 250, true)]
-    [TestCase(true, false, true, 250, true)]
-    [TestCase(true, false, false, 6000, false)]
-    [TestCase(false, true, true, 6000, false)]
-    [TestCase(true, true, true, 249, false)]
-    public void RevealIsIndependentOfSnapshotsAndNeverTreatsStoppedAsPlaying(
-        bool playing, bool vout, bool dimensions, int ms, bool expected) =>
-        PreviewStartupState.CanReveal(playing, vout, dimensions, TimeSpan.FromMilliseconds(ms))
-            .Should().Be(expected);
 
     [Test]
     public async Task PendingReservationNeverInvokesSnapshotOrOpensSecondDecoder()

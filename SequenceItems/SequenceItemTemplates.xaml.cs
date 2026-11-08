@@ -1,7 +1,7 @@
 using System.ComponentModel.Composition;
 using System.Windows;
 
-namespace AIWeather.SequenceItems {
+namespace SkySentinel.SequenceItems {
     [Export(typeof(ResourceDictionary))]
     public partial class SequenceItemTemplates : ResourceDictionary {
         public SequenceItemTemplates() {

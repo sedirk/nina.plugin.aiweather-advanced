@@ -4,10 +4,10 @@
     <TargetFramework>net8.0-windows</TargetFramework>
     <OutputType>Library</OutputType>
     <RootNamespace>AIWeather</RootNamespace>
-    <AssemblyName>NINA.Plugin.AIWeather</AssemblyName>
-    <AssemblyTitle>AI Weather</AssemblyTitle>
+    <AssemblyName>NINA.Plugin.SkySentinel</AssemblyName>
+    <AssemblyTitle>Sky Sentinel</AssemblyTitle>
     <Description>AI-powered all-sky camera weather monitoring for NINA</Description>
-    <Company></Company>
+    <Company>sedirk</Company>
     <Product>NINA.Plugins</Product>
     <Copyright>Copyright © 2026</Copyright>
     <Nullable>enable</Nullable>
@@ -65,7 +65,6 @@
   </ItemGroup>
 
   <ItemGroup>
-    <Resource Include="icon.png" />
     <Content Include="LICENSE;NOTICE;LICENSE-MIT-legacy">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>

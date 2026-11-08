@@ -10,7 +10,5 @@ namespace AIWeather.Services
         public long Start() => Interlocked.Increment(ref _version);
         public void Stop() => Interlocked.Increment(ref _version);
         public bool IsCurrent(long request) => request == Interlocked.Read(ref _version);
-        public static bool CanReveal(bool playing, bool hasVideoOutput, bool hasDimensions, TimeSpan elapsed) =>
-            playing && (hasVideoOutput || hasDimensions) && elapsed >= TimeSpan.FromMilliseconds(250);
     }
 }

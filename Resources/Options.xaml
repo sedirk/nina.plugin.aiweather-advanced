@@ -9,7 +9,7 @@
     <conv:EnumToVisibilityConverter x:Key="EnumToVisibilityConverter"/>
     
     <!-- Options View Template - must use key pattern: <PluginName>_Options -->
-    <DataTemplate x:Key="AI Weather_Options">
+    <DataTemplate x:Key="Sky Sentinel_Options">
         <StackPanel Orientation="Vertical" Margin="10" DataContext="{Binding}">
 
             <!-- A single package contains every role. Replica is deliberately a separate

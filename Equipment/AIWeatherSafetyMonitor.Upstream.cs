@@ -21,7 +21,7 @@ namespace AIWeather.Equipment
         internal IWeatherAnalysisService AnalysisService => _analysisService;
         public string? LastCaptureFailure { get; private set; }
         public string? LastFrameSource { get; private set; }
-        public static string PluginDataFolder => Path.Combine(CoreUtil.APPLICATIONTEMPPATH, "AIWeather");
+        public static string PluginDataFolder => Path.Combine(CoreUtil.APPLICATIONTEMPPATH, "SkySentinel");
         public static string CaptureFolder => Path.Combine(PluginDataFolder, "captures");
         public static string DefaultDecisionFolder => Path.Combine(PluginDataFolder, "decisions");
         internal DecisionArchive Decisions = new DecisionArchive(DefaultDecisionFolder);

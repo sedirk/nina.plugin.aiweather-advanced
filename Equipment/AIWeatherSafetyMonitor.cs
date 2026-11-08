@@ -277,7 +277,7 @@ namespace AIWeather.Equipment
 
         public string Category => UiLocalization.Text("Equipment.Category");
         public bool HasSetupDialog => true;
-        public string Id => "AIWeatherSafetyMonitor";
+        public string Id => "SkySentinelSafetyMonitor";
         public string Name => UiLocalization.Text("Equipment.Name");
         public string Description => UiLocalization.Text("Equipment.Description");
         public string DriverInfo => UiLocalization.Text("Equipment.DriverInfo") + " v1.0";

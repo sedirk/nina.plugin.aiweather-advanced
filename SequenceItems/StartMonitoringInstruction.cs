@@ -8,13 +8,13 @@ using System.ComponentModel.Composition;
 using System.Threading;
 using System.Threading.Tasks;
 
-namespace AIWeather.SequenceItems {
+namespace SkySentinel.SequenceItems {
 
     [Export(typeof(ISequenceItem))]
-    [ExportMetadata("Name", "AI Weather - Start Monitoring")]
-    [ExportMetadata("Description", "Starts AI Weather all-sky camera monitoring and periodic weather checks")]
-    [ExportMetadata("Category", "AI Weather")]
-    [ExportMetadata("Icon", "AIWeather_StartIcon")]
+    [ExportMetadata("Name", "Sky Sentinel - Start Monitoring")]
+    [ExportMetadata("Description", "Starts Sky Sentinel all-sky camera monitoring and periodic weather checks")]
+    [ExportMetadata("Category", "Sky Sentinel")]
+    [ExportMetadata("Icon", "SkySentinel_StartIcon")]
     public class StartMonitoringInstruction : SequenceItem {
 
         [ImportingConstructor]
@@ -26,14 +26,14 @@ namespace AIWeather.SequenceItems {
                 var monitor = AIWeatherSafetyMonitor.Instance;
 
                 if (monitor.Connected) {
-                    Logger.Info("AI Weather monitoring is already running");
+                    Logger.Info("Sky Sentinel monitoring is already running");
                     progress?.Report(new ApplicationStatus() {
                         Status = UiLocalization.Text("Sequencer.Already")
                     });
                     return;
                 }
 
-                Logger.Info("AI Weather: Starting monitoring from sequencer instruction");
+                Logger.Info("Sky Sentinel: Starting monitoring from sequencer instruction");
                 progress?.Report(new ApplicationStatus() {
                     Status = UiLocalization.Text("Sequencer.Starting")
                 });
@@ -41,18 +41,18 @@ namespace AIWeather.SequenceItems {
                 var success = await monitor.Connect(token);
 
                 if (success) {
-                    Logger.Info("AI Weather: Monitoring started successfully from sequencer");
+                    Logger.Info("Sky Sentinel: Monitoring started successfully from sequencer");
                     progress?.Report(new ApplicationStatus() {
                         Status = UiLocalization.Text("Sequencer.Active")
                     });
                 } else {
-                    Logger.Warning("AI Weather: Failed to start monitoring from sequencer");
+                    Logger.Warning("Sky Sentinel: Failed to start monitoring from sequencer");
                     progress?.Report(new ApplicationStatus() {
                         Status = UiLocalization.Text("Sequencer.StartFailed")
                     });
                 }
             } catch (Exception ex) {
-                Logger.Error($"AI Weather: Error starting monitoring from sequencer: {ex.Message}", ex);
+                Logger.Error($"Sky Sentinel: Error starting monitoring from sequencer: {ex.Message}", ex);
             }
         }
 

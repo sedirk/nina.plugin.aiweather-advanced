@@ -76,7 +76,6 @@ internal static class Program
             await VerifyUnifiedCapturePrefersSharedPreviewAsync();
             VerifyRtspPreviewFit();
             VerifyRtspPreviewHealthWatchdog();
-            await VerifyRtspPreviewSurfaceRecoveryAsync();
             VerifyGeminiQuotaPolicy();
             VerifyGeminiProviderTierSplit();
             VerifyGeminiTransportRefreshesAfterProxyChange();
@@ -839,44 +838,6 @@ internal static class Program
                 }
             }
         });
-    }
-
-    private static async Task VerifyRtspPreviewSurfaceRecoveryAsync()
-    {
-        var probes = 0;
-        var recovery = new RtspPreviewSurfaceRecovery(
-            probeInterval: TimeSpan.Zero,
-            maximumProbes: 5);
-
-        var recovered = await recovery.WaitForSurfaceAsync(
-            _ => Task.FromResult(++probes == 3));
-        Assert(recovered && probes == 3,
-            "Delayed RTSP surface recovery did not accept a later frame from the same player");
-
-        probes = 0;
-        var exhausted = await recovery.WaitForSurfaceAsync(
-            _ =>
-            {
-                probes++;
-                return Task.FromResult(false);
-            });
-        Assert(!exhausted && probes == 5,
-            "RTSP surface recovery did not stop after its bounded same-session probes");
-
-        using var canceled = new CancellationTokenSource();
-        canceled.Cancel();
-        try
-        {
-            await recovery.WaitForSurfaceAsync(
-                _ => Task.FromResult(false),
-                canceled.Token);
-            throw new InvalidOperationException(
-                "Canceled RTSP surface recovery unexpectedly completed");
-        }
-        catch (OperationCanceledException)
-        {
-            // Expected: replacing or stopping the player must stop the old probe loop.
-        }
     }
 
     private static async Task<int> RunLiveRtspFreshnessCheckAsync()
