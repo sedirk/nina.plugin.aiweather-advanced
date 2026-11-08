@@ -101,6 +101,21 @@
     <Setting Name="ExternalMonitorMode" Type="System.Int32" Scope="User">
       <Value Profile="(Default)">0</Value>
     </Setting>
+    <Setting Name="UseEnvironmentSafetyMonitor" Type="System.Boolean" Scope="User">
+      <Value Profile="(Default)">False</Value>
+    </Setting>
+    <Setting Name="EnvironmentSafetyMonitorProgId" Type="System.String" Scope="User">
+      <Value Profile="(Default)" />
+    </Setting>
+    <Setting Name="KeepDecisionFrames" Type="System.Boolean" Scope="User">
+      <Value Profile="(Default)">True</Value>
+    </Setting>
+    <Setting Name="DecisionRetentionDays" Type="System.Int32" Scope="User">
+      <Value Profile="(Default)">7</Value>
+    </Setting>
+    <Setting Name="ConfirmTransitions" Type="System.Boolean" Scope="User">
+      <Value Profile="(Default)">False</Value>
+    </Setting>
     <Setting Name="AscomSafetyMonitorProgId" Type="System.String" Scope="User">
       <Value Profile="(Default)" />
     </Setting>
@@ -108,7 +123,22 @@
       <Value Profile="(Default)">False</Value>
     </Setting>
     <Setting Name="SafetyStatusFilePath" Type="System.String" Scope="User">
-      <Value Profile="(Default)">C:\\Users\\miche\\Documents\\N.I.N.A\\sky_conditions.txt</Value>
+      <Value Profile="(Default)" />
+    </Setting>
+    <Setting Name="GuideStarVetoEnabled" Type="System.Boolean" Scope="User">
+      <Value Profile="(Default)">False</Value>
+    </Setting>
+    <Setting Name="GuideStarVetoPercent" Type="System.Double" Scope="User">
+      <Value Profile="(Default)">70</Value>
+    </Setting>
+    <Setting Name="WeatherVoteEnabled" Type="System.Boolean" Scope="User">
+      <Value Profile="(Default)">False</Value>
+    </Setting>
+    <Setting Name="WeatherVoteProperty" Type="System.String" Scope="User">
+      <Value Profile="(Default)">SkyQuality</Value>
+    </Setting>
+    <Setting Name="WeatherVoteLimit" Type="System.Double" Scope="User">
+      <Value Profile="(Default)">0.2</Value>
     </Setting>
     <Setting Name="DatasetEnabled" Type="System.Boolean" Scope="User">
       <Value Profile="(Default)">False</Value>

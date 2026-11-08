@@ -378,6 +378,20 @@ namespace AIWeather
         /// picks the external monitor from a list instead of typing a ProgID. Falls back
         /// silently to manual entry when the ASCOM Platform is not installed.
         /// </summary>
+        private void OpenDecisionFolder_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                var folder = Equipment.AIWeatherSafetyMonitor.DefaultDecisionFolder;
+                System.IO.Directory.CreateDirectory(folder);
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("explorer.exe", folder) { UseShellExecute = true });
+            }
+            catch (System.Exception ex)
+            {
+                NINA.Core.Utility.Logger.Warning($"Could not open the decision folder: {ex.Message}");
+            }
+        }
+
         private void ChooseAscomSafetyMonitor_Click(object sender, RoutedEventArgs e)
         {
             try
@@ -393,7 +407,11 @@ namespace AIWeather
                 try
                 {
                     chooser.DeviceType = "SafetyMonitor";
-                    var current = Properties.Settings.Default.AscomSafetyMonitorProgId ?? string.Empty;
+                    // The same chooser serves both device rows; the button's Tag says which.
+                    var forEnvironment = sender is FrameworkElement { Tag: "Environment" };
+                    var current = (forEnvironment
+                        ? Properties.Settings.Default.EnvironmentSafetyMonitorProgId
+                        : Properties.Settings.Default.AscomSafetyMonitorProgId) ?? string.Empty;
                     var selected = (string)chooser.Choose(current);
 
                     if (!string.IsNullOrWhiteSpace(selected)

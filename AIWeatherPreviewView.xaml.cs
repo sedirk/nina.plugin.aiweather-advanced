@@ -32,6 +32,11 @@ namespace AIWeather
         private VideoHwndHost? _videoHost;
         private bool _isStartingStream;
         private readonly SemaphoreSlim _streamGate = new SemaphoreSlim(1, 1);
+        private readonly PreviewStartupState _startupState = new PreviewStartupState();
+        private string? _startingPlaybackUrl;
+        private Task<bool>? _surfaceProbeTask;
+        private MediaPlayer? _surfaceProbePlayer;
+        private int _previewCanSnapshot;
         private CancellationTokenSource? _startCts;
         private Media? _currentMedia;
         private string? _activePlaybackUrl;
@@ -235,6 +240,8 @@ namespace AIWeather
                         || message.Contains("pts_delay", StringComparison.OrdinalIgnoreCase)
                         || message.Contains("reference clock", StringComparison.OrdinalIgnoreCase)
                         || message.Contains("convert timestamp", StringComparison.OrdinalIgnoreCase)
+                        || message.Contains("Timestamp conversion failed", StringComparison.OrdinalIgnoreCase)
+                        || message.Contains("early picture", StringComparison.OrdinalIgnoreCase)
                         || message.Contains("buffer deadlock", StringComparison.OrdinalIgnoreCase)
                         || message.Contains("MatchingDeviceId", StringComparison.OrdinalIgnoreCase)
                         || message.Contains("Password in a URI", StringComparison.OrdinalIgnoreCase))
@@ -325,7 +332,14 @@ namespace AIWeather
         public void StartStream(string rtspUrl, string? username = null, string? password = null)
         {
             // Backward-compatible fire-and-forget entrypoint used by the ViewModel.
-            _ = StartStreamAsync(rtspUrl, username, password);
+            StartStreamObservedAsync(rtspUrl, username, password);
+        }
+
+        private async void StartStreamObservedAsync(string url, string? user, string? password)
+        {
+            try { await StartStreamAsync(url, user, password); }
+            catch (OperationCanceledException) { }
+            catch (Exception ex) { Logger.Warning($"Preview start failed: {ex.GetType().Name}"); }
         }
 
         public async Task StartStreamAsync(
@@ -341,6 +355,14 @@ namespace AIWeather
                 return;
             }
 
+            cancellationToken.ThrowIfCancellationRequested();
+            var playbackUrl = BuildAuthenticatedUrl(rtspUrl, username, password);
+            if (_isStartingStream && !forceRestart &&
+                string.Equals(_startingPlaybackUrl, playbackUrl, StringComparison.Ordinal))
+                return; // Loaded/SetView/Vout must not queue a second restart of the same player.
+            var request = _startupState.Start();
+            if (_isStartingStream) _startCts?.Cancel();
+
             if (!IsOnScreen())
             {
                 _pendingPreview = (rtspUrl, username, password);
@@ -354,13 +376,11 @@ namespace AIWeather
             await _streamGate.WaitAsync(cancellationToken);
             try
             {
-                if (_isStartingStream)
-                {
-                    Logger.Warning("StartStream ignored because a start is already in progress");
-                    return;
-                }
+                if (!_startupState.IsCurrent(request))
+                    throw new OperationCanceledException("Preview start superseded by stop or another start");
 
                 _isStartingStream = true;
+                _startingPlaybackUrl = playbackUrl;
                 ReportPreviewStatus(UiLocalization.Text("Preview.VideoConnecting"));
 
                 Logger.Info($"StartStream called with URL: {RedactRtspCredentials(rtspUrl)}");
@@ -382,7 +402,6 @@ namespace AIWeather
 
                 Logger.Info($"VideoPanel found. Size: {VideoPanel.ActualWidth}x{VideoPanel.ActualHeight}");
 
-                var playbackUrl = BuildAuthenticatedUrl(rtspUrl, username, password);
                 if (!forceRestart
                     && Volatile.Read(ref _previewUnhealthy) == 0
                     && _videoHost?.Player?.IsPlaying == true
@@ -401,6 +420,8 @@ namespace AIWeather
                 _startCts = null;
 
                 await StopStreamCoreAsync();
+                if (!_startupState.IsCurrent(request)) throw new OperationCanceledException();
+                cancellationToken.ThrowIfCancellationRequested();
 
                 // Create a fresh CTS for this start attempt. StopStreamCoreAsync clears _startCts.
                 _startCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -413,7 +434,8 @@ namespace AIWeather
                     await SharedRtspPreviewFrameProvider.Instance.RegisterAsync(
                         playbackUrl,
                         CaptureCurrentPreviewFrameAsync,
-                        startToken);
+                        startToken,
+                        () => Volatile.Read(ref _previewCanSnapshot) != 0);
                 var sharedSourceIdentity =
                     SharedRtspPreviewFrameProvider.CreateSourceIdentity(playbackUrl);
                 Logger.Info(
@@ -546,6 +568,7 @@ namespace AIWeather
 
                     if (player.IsPlaying)
                     {
+                        Volatile.Write(ref _previewCanSnapshot, 1);
                         Logger.Info("RTSP stream playing successfully!");
                         try
                         {
@@ -623,6 +646,7 @@ namespace AIWeather
             {
                 Logger.Info("StartStream canceled");
                 await StopStreamCoreAsync();
+                throw; // the caller must not mark a cancelled request running or start analysis
             }
             catch (UriFormatException ex)
             {
@@ -641,6 +665,7 @@ namespace AIWeather
             finally
             {
                 _isStartingStream = false;
+                _startingPlaybackUrl = null;
                 if (_requestedPreview.HasValue && _videoHost?.Player?.IsPlaying != true)
                     SchedulePreviewReconnect();
                 _streamGate.Release();
@@ -926,6 +951,7 @@ namespace AIWeather
                 return;
             }
 
+            _startupState.Stop();
             _requestedPreview = null;
             _pendingPreview = null;
             var reconnect = _previewReconnectCts;
@@ -959,6 +985,7 @@ namespace AIWeather
             {
                 _sharedPreviewFrameRegistration?.Dispose();
                 _sharedPreviewFrameRegistration = null;
+                Volatile.Write(ref _previewCanSnapshot, 0);
                 _activePlaybackUrl = null;
                 _previewHealthMonitor.ResetBurst();
                 _startCts?.Cancel();
@@ -968,6 +995,8 @@ namespace AIWeather
                 if (_videoHost != null)
                 {
                     var host = _videoHost;
+                    _videoHost = null; // late Vout/probe callbacks no longer own a surface
+                    host.Visibility = Visibility.Collapsed;
                     var player = host.Player;
                     if (player != null)
                     {
@@ -1162,130 +1191,59 @@ namespace AIWeather
 
         private void Player_Vout(object? sender, MediaPlayerVoutEventArgs e)
         {
-            if (sender is not MediaPlayer player)
-            {
-                return;
-            }
-
-            Volatile.Write(ref _voutObserved, 1);
-
+            // VLC emits Count=0 while stopping. That is NOT a first frame. Never let an
+            // old player's teardown reveal the next player's surface.
+            if (sender is not MediaPlayer player || e.Count == 0 ||
+                Dispatcher.HasShutdownStarted || Dispatcher.HasShutdownFinished) return;
             Dispatcher.BeginInvoke(new Action(async () =>
             {
+                if (!ReferenceEquals(_videoHost?.Player, player)) return;
+                Volatile.Write(ref _voutObserved, 1);
                 try
                 {
-                    var token = _startCts?.Token ?? CancellationToken.None;
-                    await RefreshVideoHostLayoutAfterVoutAsync(player, token);
+                    await RefreshVideoHostLayoutAfterVoutAsync(player, _startCts?.Token ?? CancellationToken.None);
                 }
-                catch (OperationCanceledException)
-                {
-                    // Stream teardown cancels any pending first-frame layout work.
-                }
-                catch (Exception ex)
-                {
-                    Logger.Debug($"Deferred RTSP video layout failed: {ex.Message}");
-                }
-            }), DispatcherPriority.Background);
+                catch (OperationCanceledException) { }
+                catch (Exception ex) { Logger.Debug($"Deferred RTSP layout failed: {ex.GetType().Name}"); }
+            }), DispatcherPriority.Render);
         }
 
-        private async Task<bool> RefreshVideoHostLayoutAfterVoutAsync(
-            MediaPlayer player,
-            CancellationToken cancellationToken)
+        private Task<bool> RefreshVideoHostLayoutAfterVoutAsync(MediaPlayer player, CancellationToken cancellationToken)
         {
-            // Vout/Playing can be raised before libvlc_video_get_size starts returning
-            // dimensions. Keep the real render target full-sized under the native cover and
-            // accept three independent signs of readiness: LibVLC size, a rendered output
-            // child, or a successfully decoded snapshot. The last one is important on Windows
-            // machines whose Direct3D backend renders correctly but reports video_get_size=0.
-            for (var attempt = 0; attempt < 60; attempt++)
+            // Called only on the dispatcher. Playing, Vout and recovery share one probe.
+            if (ReferenceEquals(_surfaceProbePlayer, player) && _surfaceProbeTask is { IsCompleted: false })
+                return _surfaceProbeTask;
+            _surfaceProbePlayer = player;
+            return _surfaceProbeTask = RevealVideoSurfaceAsync(player, cancellationToken);
+        }
+
+        private async Task<bool> RevealVideoSurfaceAsync(MediaPlayer player, CancellationToken cancellationToken)
+        {
+            var elapsed = System.Diagnostics.Stopwatch.StartNew();
+            while (elapsed.Elapsed < TimeSpan.FromSeconds(2))
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                if (_videoHost == null || !ReferenceEquals(_videoHost.Player, player))
+                var host = _videoHost;
+                if (host == null || !ReferenceEquals(host.Player, player)) return false;
+                if (_videoSurfaceReady) return true;
+                var hasSize = TryGetCurrentVideoSize(player, out _, out _);
+                if (PreviewStartupState.CanReveal(player.IsPlaying, Volatile.Read(ref _voutObserved) > 0,
+                    hasSize, elapsed.Elapsed))
                 {
-                    return false;
-                }
-
-                // Multiple Vout/Playing notifications may schedule overlapping probes. Once
-                // one probe has revealed a ready surface, later probes must never reapply the
-                // startup clip and blank an already playing preview.
-                if (_videoSurfaceReady)
-                {
-                    if (TryUpdateVideoHostLayoutToFit(allowBeforeReady: true))
-                    {
-                        _videoHost.ShowVideoSurface();
-                        return true;
-                    }
-                }
-
-                // LibVLC can reorder its native child hierarchy while vout is being created.
-                // Reassert the solid startup cover until a real output surface is measurable,
-                // otherwise the future 16:9 viewport briefly becomes a white rectangle.
-                _videoHost.ShowStartupCover();
-
-                if (TryGetCurrentVideoSize(player, out _, out _))
-                {
-                    // Keep the native target under the theme cover while Direct3D prepares the
-                    // first frame. Raising it only after this warm-up avoids a white flash.
-                    await Task.Delay(250, cancellationToken);
-                    if (_videoHost != null && ReferenceEquals(_videoHost.Player, player))
-                    {
-                        _videoSurfaceReady = true;
-                        if (TryUpdateVideoHostLayoutToFit(allowBeforeReady: true))
-                        {
-                            _videoHost.ShowVideoSurface();
-                            return true;
-                        }
-                    }
-                }
-
-                // Probe only twice per second. TakeSnapshot uses this MediaPlayer, so it does
-                // not open another RTSP connection or alter the single-session architecture.
-                if (attempt >= 5
-                    && attempt % 5 == 0
-                    && await TryProbeDecodedFrameSizeAsync(player, cancellationToken))
-                {
+                    // Visibility must not wait for a PNG snapshot or an AI frame. Clipping
+                    // the native parent until a snapshot exists can keep D3D occluded.
+                    // Keep the theme cover only for a short warm-up, then reveal the active vout.
+                    if (!hasSize) { _decodedVideoWidth = 16; _decodedVideoHeight = 9; }
                     _videoSurfaceReady = true;
-                    if (TryUpdateVideoHostLayoutToFit(allowBeforeReady: true))
-                    {
-                        _videoHost?.ShowVideoSurface();
-                        Logger.Info(
-                            $"RTSP preview surface revealed from decoded-frame probe: " +
-                            $"{_decodedVideoWidth:0}x{_decodedVideoHeight:0}");
-                        return true;
-                    }
+                    TryUpdateVideoHostLayoutToFit(allowBeforeReady: true);
+                    host.ShowVideoSurface();
+                    ReportPreviewStatus(null);
+                    Logger.Info($"RTSP video surface revealed after {elapsed.ElapsedMilliseconds}ms; dimensions available: {hasSize}");
+                    return true;
                 }
-
-                await Task.Delay(100, cancellationToken);
+                await Task.Delay(50, cancellationToken);
             }
-
-            // A Vout callback itself proves that VLC created a video output. If this backend
-            // exposes neither dimensions nor snapshots, reveal a conventional 16:9 target
-            // after a bounded warm-up instead of leaving a permanent dark cover. Do not apply
-            // this fallback when Playing was raised without any Vout: that would hide a real
-            // decoder/open failure behind an apparently successful black preview.
-            if (Volatile.Read(ref _voutObserved) == 0)
-            {
-                Logger.Warning(
-                    "RTSP playback reported Playing, but no video output or decoded frame " +
-                    "became available within 6 seconds");
-                return false;
-            }
-
-            // The video target is SS_BLACKRECT, so it stays dark rather than flashing white
-            // while the first frame is still being painted.
-            _decodedVideoWidth = 16;
-            _decodedVideoHeight = 9;
-            _videoSurfaceReady = true;
-            if (TryUpdateVideoHostLayoutToFit(allowBeforeReady: true))
-            {
-                _videoHost?.ShowVideoSurface();
-                Logger.Warning(
-                    "RTSP backend did not expose video dimensions within 6 seconds; " +
-                    "revealed the active vout using a 16:9 compatibility viewport");
-                return true;
-            }
-
-            Logger.Warning(
-                "RTSP vout started but the compatibility viewport could not be laid out");
+            Logger.Warning("RTSP is waiting for a video output (not for an AI analysis or snapshot)");
             return false;
         }
 

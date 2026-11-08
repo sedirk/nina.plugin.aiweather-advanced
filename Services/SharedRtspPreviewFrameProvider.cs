@@ -13,6 +13,7 @@ namespace AIWeather.Services
     internal enum SharedRtspPreviewCaptureStatus
     {
         Unavailable,
+        Starting,
         Captured,
         Failed
     }
@@ -41,6 +42,10 @@ namespace AIWeather.Services
                 null,
                 "no matching active preview");
 
+        public static SharedRtspPreviewCaptureResult Starting() =>
+            new SharedRtspPreviewCaptureResult(SharedRtspPreviewCaptureStatus.Starting, null,
+                "preview is acquiring the source");
+
         public static SharedRtspPreviewCaptureResult Captured(Bitmap frame) =>
             new SharedRtspPreviewCaptureResult(
                 SharedRtspPreviewCaptureStatus.Captured,
@@ -68,6 +73,8 @@ namespace AIWeather.Services
         private string _sourceIdentity = string.Empty;
         private Func<CancellationToken, Task<Bitmap?>>? _captureAsync;
         private long _generation;
+        private bool _reserving;
+        private Func<bool>? _ready;
 
         public static SharedRtspPreviewFrameProvider Instance { get; } =
             new SharedRtspPreviewFrameProvider();
@@ -77,12 +84,13 @@ namespace AIWeather.Services
         /// preview opens it. Registration is already visible while subscribers run, so a
         /// concurrent weather check cannot race in and create another decoder.
         /// </summary>
-        public event Func<string, Task>? SourceReserved;
+        public event Func<string, CancellationToken, Task>? SourceReserved;
 
         public async Task<IDisposable> RegisterAsync(
             string rtspUrl,
             Func<CancellationToken, Task<Bitmap?>> captureAsync,
-            CancellationToken cancellationToken = default)
+            CancellationToken cancellationToken = default,
+            Func<bool>? ready = null)
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(rtspUrl);
             ArgumentNullException.ThrowIfNull(captureAsync);
@@ -95,22 +103,25 @@ namespace AIWeather.Services
                 generation = ++_generation;
                 _sourceIdentity = identity;
                 _captureAsync = captureAsync;
+                _reserving = true;
+                _ready = ready;
             }
 
             try
             {
                 var handlers = SourceReserved?
                     .GetInvocationList()
-                    .Cast<Func<string, Task>>()
-                    .ToArray() ?? Array.Empty<Func<string, Task>>();
+                    .Cast<Func<string, CancellationToken, Task>>()
+                    .ToArray() ?? Array.Empty<Func<string, CancellationToken, Task>>();
 
                 foreach (var handler in handlers)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     try
                     {
-                        await handler(identity);
+                        await handler(identity, cancellationToken).WaitAsync(cancellationToken);
                     }
+                    catch (OperationCanceledException) { throw; }
                     catch (Exception ex)
                     {
                         // A stale decoder is an optimization concern, not a reason to tear
@@ -120,6 +131,11 @@ namespace AIWeather.Services
                     }
                 }
 
+                cancellationToken.ThrowIfCancellationRequested();
+                lock (_sync)
+                {
+                    if (_generation == generation) _reserving = false;
+                }
                 return new Registration(this, generation);
             }
             catch
@@ -158,6 +174,7 @@ namespace AIWeather.Services
                         return SharedRtspPreviewCaptureResult.Unavailable();
                     }
 
+                    if (_reserving || _ready?.Invoke() == false) return SharedRtspPreviewCaptureResult.Starting();
                     capture = _captureAsync;
                     generation = _generation;
                 }
@@ -256,6 +273,8 @@ namespace AIWeather.Services
                 }
 
                 _captureAsync = null;
+                _reserving = false;
+                _ready = null;
                 _sourceIdentity = string.Empty;
                 _generation++;
             }

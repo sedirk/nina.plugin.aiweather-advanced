@@ -5,7 +5,7 @@
 AI Weather 是一款面向 [N.I.N.A.](https://nighttime-imaging.eu/)（Nighttime Imaging 'N' Astronomy）的全天相机天气监视与安全设备插件。它从 RTSP、HTTP 或本地图片目录取得天空图像，通过在线视觉模型、OpenAI 兼容服务或本地算法判断云量、降雨、雾气等状况，并把最终结果作为 N.I.N.A. Safety Monitor 的 `Safe / Unsafe` 状态提供给序列。
 
 > [!IMPORTANT]
-> 本仓库是基于 [michelebergo/nina.plugin.aiweather](https://github.com/michelebergo/nina.plugin.aiweather) 持续开发的社区高级分支，保留原作者署名与 MIT 许可证。这里的高级功能可能尚未进入上游稳定版。
+> 本仓库是基于 [michelebergo/nina.plugin.aiweather](https://github.com/michelebergo/nina.plugin.aiweather) 持续开发的社区高级分支，保留原作者署名、上游 MPL-2.0 许可证及历史 MIT 声明。这里的高级功能可能尚未进入上游稳定版。2026-11-08 的源码融合尚未发布，参见[融合记录](docs/UPSTREAM_MERGE_20261108.zh-CN.md)。
 
 > [!WARNING]
 > 图像识别可能误判，网络服务也可能限流或中断。本插件采用保守的失效安全策略，但它不能替代可靠的雨量、湿度、云量、屋顶联锁和紧急关盖等硬件保护。无人值守天文台应使用彼此独立的多重安全措施。
@@ -300,6 +300,8 @@ N.I.N.A. 3.3 及以上版本会在高级序列符号侧栏中显示 `AIWeather` 
 
 ## 许可证与致谢
 
-本项目采用 [MIT 许可证](LICENSE)。感谢原作者 [Michele Bergo](https://github.com/michelebergo) 创建并持续维护 AI Weather，也感谢 N.I.N.A. 社区、测试用户和所有贡献者。
+此次融合包含采用 [MPL-2.0 许可证](LICENSE) 的新上游代码，同时保留 [NOTICE](NOTICE) 和[历史 MIT 许可文本](LICENSE-MIT-legacy)。感谢原作者 [Michele Bergo](https://github.com/michelebergo) 创建并持续维护 AI Weather，也感谢 N.I.N.A. 社区、测试用户和所有贡献者。
+
+上游 NOTICE 要求衍生发布使用独立名称和插件 GUID。本轮没有静默更换已有身份或配置，也没有发布新包；公开发布前仍需完成独立身份与配置迁移安排。
 
 如希望支持上游作者，可访问其 [Buy Me a Coffee](https://buymeacoffee.com/michelebergo) 页面。

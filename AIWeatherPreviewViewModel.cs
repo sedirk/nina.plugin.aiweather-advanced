@@ -245,7 +245,7 @@ namespace AIWeather
                 {
                     await ToggleStreamAsync(source);
                 }
-            }, source => source != null);
+            }, source => source != null, CommunityToolkit.Mvvm.Input.AsyncRelayCommandOptions.AllowConcurrentExecutions);
             
             // Raise property changed for capture mode visibility on initialization
             RaiseCapturePresentationChanged();
@@ -868,6 +868,8 @@ namespace AIWeather
         public string ProviderHealth => _safetyMonitor.ProviderHealth;
 
         public string DatasetStatusText => _safetyMonitor.DatasetStatusText;
+        public string AnalysedFrame => _safetyMonitor.LastCaptureFailure ?? _safetyMonitor.LastFrameSource ?? string.Empty;
+
         public DateTime? CaptureTimestamp { get; private set; }
         public DateTime? LastUpdate { get; private set; }
 
@@ -1337,7 +1339,7 @@ namespace AIWeather
         {
             try
             {
-                var captureDir = Path.Combine(CoreUtil.APPLICATIONTEMPPATH, "AllSkyCameraPlugin");
+                var captureDir = AIWeatherSafetyMonitor.CaptureFolder;
                 Logger.Info($"Looking for images in: {captureDir}");
                 
                 if (!Directory.Exists(captureDir))
@@ -1404,6 +1406,7 @@ namespace AIWeather
             RaisePropertyChanged(nameof(SafetyStatus));
             RaisePropertyChanged(nameof(SafetyReason));
             RaisePropertyChanged(nameof(WeatherCondition));
+            RaisePropertyChanged(nameof(AnalysedFrame));
             RaisePropertyChanged(nameof(CloudCoverage));
             RaisePropertyChanged(nameof(HighThreshold));
             RaisePropertyChanged(nameof(LowThreshold));
@@ -1527,130 +1530,101 @@ namespace AIWeather
                 source.Password, Properties.Settings.Default.RtspPassword);
         }
 
+        private readonly PreviewStartupState _streamToggleState = new PreviewStartupState();
+        private CancellationTokenSource? _streamStartCancellation;
+        private bool _stoppingStream;
+
         private async Task<bool> ToggleStreamAsync(CameraSource source)
         {
-            if (source == null) return false;
-
-            try
+            if (source == null || _stoppingStream) return false;
+            if (source.IsRunning || source.IsLoading)
             {
-                if (source.IsRunning)
+                _stoppingStream = true;
+                _streamToggleState.Stop();
+                _streamStartCancellation?.Cancel();
+                source.IsRunning = false;
+                try
                 {
-                    // Stop stream
                     AddLog(UiLocalization.Text("Log.StoppingStream", LogRedactor.RedactRtspUrl(source.FullUrl)));
-                    source.IsLoading = true;
-                    
-                    // Stop live video stream
-                    var view = GetVideoView();
-                    if (view != null)
-                    {
-                        await view.StopStreamAsync();
-                    }
-                    
-                    // Stop auto-refresh timer
+                    // Stop analysis before awaiting native player teardown.
                     _refreshTimer.Stop();
-                    
                     _safetyMonitor.Disconnect();
                     IsConnected = false;
+                    if (GetVideoView() is { } view) await view.StopStreamAsync();
                     CurrentImage = null;
-                    
-                    source.IsRunning = false;
                     source.IsLoading = false;
-                    AddLog(UiLocalization.Text("Log.StreamStopped", LogRedactor.RedactRtspUrl(source.FullUrl)));
                     StatusMessage = UiLocalization.Text("Runtime.StreamStopped");
+                    AddLog(UiLocalization.Text("Log.StreamStopped", LogRedactor.RedactRtspUrl(source.FullUrl)));
                     return true;
                 }
-                else
+                finally { source.IsLoading = false; _stoppingStream = false; }
+            }
+
+            if (string.IsNullOrWhiteSpace(source.MediaUrl)) return false;
+            // The view has one player. Do not let a second row silently replace an active start.
+            if (Sources.Any(other => !ReferenceEquals(other, source) && (other.IsRunning || other.IsLoading)))
+                return false;
+            var request = _streamToggleState.Start();
+            using var start = new CancellationTokenSource();
+            _streamStartCancellation = start;
+            source.IsRunning = true; // show a usable Stop button throughout startup
+            source.IsLoading = true;
+            StatusMessage = UiLocalization.Text("Runtime.StreamConnecting");
+            try
+            {
+                AddLog(UiLocalization.Text("Log.StartingStream", LogRedactor.RedactRtspUrl(source.FullUrl)));
+                Properties.Settings.Default.RtspUrl = source.FullUrl;
+                SaveNonEmptySourceCredentials(source);
+                CoreUtil.SaveSettings(Properties.Settings.Default);
+                var view = GetVideoView();
+                if (view == null)
                 {
-                    // Start stream
-                    if (string.IsNullOrWhiteSpace(source.MediaUrl))
-                    {
-                        AddLog(UiLocalization.Text("Log.MediaRequired", source.Protocol));
-                        return false;
-                    }
-
-                    Logger.Info($"Stream start - Protocol: '{source.Protocol}', FullUrl: '{LogRedactor.RedactRtspUrl(source.FullUrl)}'");
-                    AddLog(UiLocalization.Text("Log.StartingStream", LogRedactor.RedactRtspUrl(source.FullUrl)));
-                    source.IsLoading = true;
-                    StatusMessage = UiLocalization.Text("Runtime.StreamConnecting");
-
-                    // Update settings with this source's details
-                    Properties.Settings.Default.RtspUrl = source.FullUrl;
-                    SaveNonEmptySourceCredentials(source);
-                    CoreUtil.SaveSettings(Properties.Settings.Default);
-
-                    try
-                    {
-                        if (Uri.TryCreate(source.FullUrl, UriKind.Absolute, out var uri)
-                            && (string.IsNullOrWhiteSpace(uri.AbsolutePath) || uri.AbsolutePath == "/"))
-                        {
-                            AddLog(UiLocalization.Text("Log.MissingPath"));
-                        }
-                    }
-                    catch
-                    {
-                        // best-effort
-                    }
-
-                    // Start live video stream via LibVLC
-                    var view = GetVideoView();
-                    if (view != null)
-                    {
-                        Logger.Info($"Calling StartStream - URL: {LogRedactor.RedactRtspUrl(source.FullUrl)}, Authentication: {(string.IsNullOrWhiteSpace(source.Username) ? "embedded or not configured" : "configured separately")}");
-                        await view.StartStreamAsync(source.FullUrl, source.Username, source.Password);
-                        
-                        source.IsRunning = true;
-                        source.IsLoading = false;
-                        StatusMessage = UiLocalization.Text("Runtime.StreamActive");
-                        AddLog(UiLocalization.Text("Log.StreamStarted", LogRedactor.RedactRtspUrl(source.FullUrl)));
-                        
-                        // Also connect safety monitor for analysis
-                        AddLog(UiLocalization.Text("Log.ConnectingAnalysis"));
-                        Logger.Info($"Attempting to connect safety monitor for AI analysis. Current mode: {CurrentCaptureMode}");
-                        var connected = await _safetyMonitor.Connect(CancellationToken.None);
-                        Logger.Info($"Safety monitor Connect() returned: {connected}");
-                        if (connected)
-                        {
-                            IsConnected = true;
-                            var intervalMinutes = GetCheckIntervalMinutesClamped();
-                            AddLog(UiLocalization.Text("Log.AnalysisConnected"));
-                            AddLog(UiLocalization.Text("Log.AnalysisSchedule", intervalMinutes));
-
-                            // Connect() starts the periodic timer with an immediate first
-                            // check. Do not queue a second ForceCheckAsync here: live testing
-                            // showed two back-to-back Gemini calls on every RTSP start, wasting
-                            // quota and making rate-limit failures much more likely.
-                            StatusMessage = UiLocalization.Text("Runtime.WaitingAnalysis");
-
-                            // Start UI refresh timer to display latest results
-                            ApplyRefreshIntervalFromSettings();
-                            _refreshTimer.Start();
-                            Logger.Info($"UI refresh timer started with {intervalMinutes} minute interval");
-                        }
-                        else
-                        {
-                            IsConnected = false;
-                            AddLog(UiLocalization.Text("Log.AnalysisNotConnected"));
-                        }
-                        
-                        return true;
-                    }
-                    else
-                    {
-                        source.IsLoading = false;
-                        AddLog(UiLocalization.Text("Log.VideoNotInitialized"));
-                        StatusMessage = UiLocalization.Text("Runtime.VideoError");
-                        return false;
-                    }
+                    source.IsRunning = false;
+                    StatusMessage = UiLocalization.Text("Runtime.VideoError");
+                    return false;
                 }
+                await view.StartStreamAsync(source.FullUrl, source.Username, source.Password, start.Token);
+                start.Token.ThrowIfCancellationRequested();
+                if (!_streamToggleState.IsCurrent(request)) return false;
+
+                AddLog(UiLocalization.Text("Log.ConnectingAnalysis"));
+                // A stop during Connect must not resurrect monitoring after it completes.
+                var connected = await _safetyMonitor.Connect(start.Token);
+                if (start.IsCancellationRequested || !_streamToggleState.IsCurrent(request))
+                {
+                    _safetyMonitor.Disconnect();
+                    return false;
+                }
+                IsConnected = connected;
+                if (connected)
+                {
+                    AddLog(UiLocalization.Text("Log.AnalysisConnected"));
+                    StatusMessage = UiLocalization.Text("Runtime.WaitingAnalysis");
+                    ApplyRefreshIntervalFromSettings();
+                    _refreshTimer.Start();
+                }
+                else AddLog(UiLocalization.Text("Log.AnalysisNotConnected"));
+                return true;
+            }
+            catch (OperationCanceledException)
+            {
+                // Stop owns the final UI state. A cancelled old start may not start analysis.
+                return false;
             }
             catch (Exception ex)
             {
-                source.IsLoading = false;
-                source.IsRunning = false;
-                AddLog(UiLocalization.Text("Log.StreamError", ex.Message));
-                Logger.Error($"Stream toggle error for {LogRedactor.RedactRtspUrl(source.FullUrl)}: {ex.Message}", ex);
-                StatusMessage = UiLocalization.Text("Runtime.Error", ex.Message);
+                if (_streamToggleState.IsCurrent(request))
+                {
+                    source.IsRunning = false;
+                    StatusMessage = UiLocalization.Text("Runtime.Error", ex.Message);
+                }
+                Logger.Error($"Stream toggle failed: {ex.GetType().Name}", ex);
                 return false;
+            }
+            finally
+            {
+                if (_streamToggleState.IsCurrent(request)) source.IsLoading = false;
+                if (ReferenceEquals(_streamStartCancellation, start)) _streamStartCancellation = null;
             }
         }
 

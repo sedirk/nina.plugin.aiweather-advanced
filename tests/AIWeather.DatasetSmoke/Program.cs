@@ -622,7 +622,7 @@ internal static class Program
     {
         var provider = new SharedRtspPreviewFrameProvider();
         var reservedIdentity = string.Empty;
-        provider.SourceReserved += identity =>
+        provider.SourceReserved += (identity, cancellationToken) =>
         {
             reservedIdentity = identity;
             return Task.CompletedTask;

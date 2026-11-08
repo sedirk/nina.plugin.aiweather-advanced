@@ -20,6 +20,8 @@ namespace AIWeather.Models
         /// <summary>An explicit parsed Unknown answer, not an API failure envelope.
         /// CloudCoverage is a conservative sentinel, never a training measurement.</summary>
         public bool IsSkyUnreadable { get; set; }
+        /// <summary>Optional cloud-only guide-star override; never valid for hazards/Unknown.</summary>
+        public string? Veto { get; set; }
         
         /// <summary>
         /// Additional metadata from the analysis
@@ -46,6 +48,7 @@ namespace AIWeather.Models
                 RainDetected = RainDetected,
                 FogDetected = FogDetected,
                 IsSkyUnreadable = IsSkyUnreadable,
+                Veto = Veto,
                 RawAnalysisData = includeRawAnalysisData ? RawAnalysisData : null,
                 Provenance = Provenance.Clone()
             };

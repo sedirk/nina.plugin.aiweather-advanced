@@ -17,6 +17,66 @@ namespace AIWeather.Properties {
         
         private static Settings defaultInstance = ((Settings)(global::System.Configuration.ApplicationSettingsBase.Synchronized(new Settings())));
         
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("False")]
+        public bool GuideStarVetoEnabled {
+            get {
+                return ((bool)(this["GuideStarVetoEnabled"]));
+            }
+            set {
+                this["GuideStarVetoEnabled"] = value;
+            }
+        }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("70")]
+        public double GuideStarVetoPercent {
+            get {
+                return ((double)(this["GuideStarVetoPercent"]));
+            }
+            set {
+                this["GuideStarVetoPercent"] = value;
+            }
+        }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("False")]
+        public bool WeatherVoteEnabled {
+            get {
+                return ((bool)(this["WeatherVoteEnabled"]));
+            }
+            set {
+                this["WeatherVoteEnabled"] = value;
+            }
+        }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("SkyQuality")]
+        public string WeatherVoteProperty {
+            get {
+                return ((string)(this["WeatherVoteProperty"]));
+            }
+            set {
+                this["WeatherVoteProperty"] = value;
+            }
+        }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("0.2")]
+        public double WeatherVoteLimit {
+            get {
+                return ((double)(this["WeatherVoteLimit"]));
+            }
+            set {
+                this["WeatherVoteLimit"] = value;
+            }
+        }
+
         public static Settings Default {
             get {
                 return defaultInstance;
@@ -419,6 +479,67 @@ namespace AIWeather.Properties {
 
         [global::System.Configuration.UserScopedSettingAttribute()]
         [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("False")]
+        public bool UseEnvironmentSafetyMonitor {
+            get {
+                return ((bool)(this["UseEnvironmentSafetyMonitor"]));
+            }
+            set {
+                this["UseEnvironmentSafetyMonitor"] = value;
+            }
+        }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("")]
+        public string EnvironmentSafetyMonitorProgId {
+            get {
+                return ((string)(this["EnvironmentSafetyMonitorProgId"]));
+            }
+            set {
+                this["EnvironmentSafetyMonitorProgId"] = value;
+            }
+        }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("True")]
+        public bool KeepDecisionFrames {
+            get {
+                return ((bool)(this["KeepDecisionFrames"]));
+            }
+            set {
+                this["KeepDecisionFrames"] = value;
+            }
+        }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("7")]
+        public int DecisionRetentionDays {
+            get {
+                return ((int)(this["DecisionRetentionDays"]));
+            }
+            set {
+                this["DecisionRetentionDays"] = value;
+            }
+        }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("True")]
+        public bool ConfirmTransitions {
+            get {
+                return ((bool)(this["ConfirmTransitions"]));
+            }
+            set {
+                this["ConfirmTransitions"] = value;
+            }
+        }
+
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
         [global::System.Configuration.DefaultSettingValueAttribute("")]
         public string AscomSafetyMonitorProgId {
             get {
@@ -443,7 +564,7 @@ namespace AIWeather.Properties {
 
         [global::System.Configuration.UserScopedSettingAttribute()]
         [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
-        [global::System.Configuration.DefaultSettingValueAttribute("C:\\Users\\miche\\Documents\\N.I.N.A\\sky_conditions.txt")]
+        [global::System.Configuration.DefaultSettingValueAttribute("")]
         public string SafetyStatusFilePath {
             get {
                 return ((string)(this["SafetyStatusFilePath"]));

@@ -26,6 +26,9 @@ namespace AIWeather.Services
         private string _rtspPassword = "";
         private int _consecutiveRtspCaptureFailures;
 
+        private readonly object _activeCaptureSync = new object();
+        private CancellationTokenSource? _activeRtspCapture;
+
         private const int RtspFailuresBeforeReconnect = 2;
 
         public UnifiedCaptureService(ICameraMediator? cameraMediator = null)
@@ -104,6 +107,18 @@ namespace AIWeather.Services
             _folderService.ImageDataFactory = imageDataFactory;
         }
 
+        /// <summary>Why the last capture returned nothing, when the source can say; null otherwise.</summary>
+        public string? LastFailure => _currentMode == CaptureMode.FolderWatch ? _folderService.LastFailure : null;
+
+        /// <summary>Where the last frame came from, for the panel: the file for Folder Watch, the source kind otherwise.</summary>
+        public string? LastSourceDescription => _currentMode switch
+        {
+            CaptureMode.FolderWatch => _folderService.LastSourceDescription,
+            CaptureMode.RTSPStream => "RTSP frame",
+            CaptureMode.INDICamera => "downloaded image",
+            _ => null,
+        };
+
         /// <summary>
         /// Captures an image using the currently configured mode
         /// </summary>
@@ -131,7 +146,15 @@ namespace AIWeather.Services
             await _rtspCaptureGate.WaitAsync(ct);
             try
             {
-                return await CaptureFromRTSPCoreAsync(ct);
+                using var active = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                lock (_activeCaptureSync) _activeRtspCapture = active;
+                try { return await CaptureFromRTSPCoreAsync(active.Token); }
+                catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+                {
+                    Logger.Debug("Background capture yielded to the shared preview");
+                    return null;
+                }
+                finally { lock (_activeCaptureSync) _activeRtspCapture = null; }
             }
             finally
             {
@@ -161,6 +184,9 @@ namespace AIWeather.Services
                         "LibVLC preview; no second RTSP decoder was opened");
                     return sharedPreview.Frame;
                 }
+
+                if (sharedPreview.Status == SharedRtspPreviewCaptureStatus.Starting)
+                    return null; // release the capture gate; never open a competing decoder while reserving
 
                 if (sharedPreview.Status == SharedRtspPreviewCaptureStatus.Failed)
                 {
@@ -238,13 +264,18 @@ namespace AIWeather.Services
             }
         }
 
-        private Task OnSharedPreviewSourceReservedAsync(string sourceIdentity)
+        private Task OnSharedPreviewSourceReservedAsync(string sourceIdentity, CancellationToken cancellationToken)
         {
             // Reset can wait for a native OpenCV Read() to return. Keep that wait away from
             // WPF's dispatcher; RegisterAsync awaits this task before opening LibVLC.
-            return Task.Run(() =>
+            var configured = SharedRtspPreviewFrameProvider.CreateSourceIdentity(
+                BuildAuthenticatedUrl(_rtspUrl, _rtspUsername, _rtspPassword));
+            if (!string.Equals(configured, sourceIdentity, StringComparison.Ordinal))
+                return Task.CompletedTask;
+            lock (_activeCaptureSync) _activeRtspCapture?.Cancel();
+            return Task.Run(async () =>
             {
-                _rtspCaptureGate.Wait();
+                await _rtspCaptureGate.WaitAsync(cancellationToken);
                 try
                 {
                     var configuredUrl = BuildAuthenticatedUrl(
@@ -327,12 +358,7 @@ namespace AIWeather.Services
         {
             try
             {
-                if (!_folderService.IsValid())
-                {
-                    Logger.Warning($"Folder watch path is invalid or doesn't exist: {_folderService.FolderPath}");
-                    return null;
-                }
-
+                // The folder service reports a missing folder itself, with the reason kept for the panel.
                 return await _folderService.CaptureImageAsync();
             }
             catch (Exception ex)

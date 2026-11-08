@@ -30,7 +30,10 @@ namespace AIWeather.Services
         private string _lastInitializedRtspUrl = string.Empty;
         private string _captureSessionId = string.Empty;
 
-        private static readonly TimeSpan FirstFrameTimeout = TimeSpan.FromSeconds(15);
+        internal const int OpenTimeoutSeconds = 10;
+        internal const int ReadTimeoutSeconds = 5;
+        internal static readonly TimeSpan EmptyReadBudget = TimeSpan.FromSeconds(10);
+        private static readonly TimeSpan FirstFrameTimeout = TimeSpan.FromSeconds(10);
         private static readonly TimeSpan FreshFrameTimeout = TimeSpan.FromSeconds(5);
         private static readonly TimeSpan MaximumFrameAge = TimeSpan.FromSeconds(10);
         private static readonly TimeSpan PublishInterval = TimeSpan.FromMilliseconds(500);
@@ -111,19 +114,25 @@ namespace AIWeather.Services
                     // best-effort
                 }
 
-                var capture = await Task.Run(() =>
+                // Set native limits at open time. Never silently retry an unbounded backend.
+                // If cancellation wins, only the opening thread/continuation disposes its object.
+                var opening = Task.Run(() => new VideoCapture(rtspUrl, VideoCapture.API.Ffmpeg,
+                    new Tuple<CapProp, int>(CapProp.OpenTimeoutMsec, OpenTimeoutSeconds * 1000),
+                    new Tuple<CapProp, int>(CapProp.ReadTimeoutMsec, ReadTimeoutSeconds * 1000)));
+                VideoCapture capture;
+                try
                 {
-                    Logger.Debug($"RtspCaptureService - Creating VideoCapture with URL: {RedactRtspUrl(rtspUrl)}");
-                    try
+                    capture = await opening.WaitAsync(cancellationToken);
+                }
+                catch
+                {
+                    _ = opening.ContinueWith(task =>
                     {
-                        return new VideoCapture(rtspUrl, VideoCapture.API.Ffmpeg);
-                    }
-                    catch
-                    {
-                        // Fallback to default backend if FFmpeg preference isn't available.
-                        return new VideoCapture(rtspUrl);
-                    }
-                }, cancellationToken);
+                        if (task.Status == TaskStatus.RanToCompletion) task.Result.Dispose();
+                        else _ = task.Exception;
+                    }, TaskScheduler.Default);
+                    throw;
+                }
 
                 Logger.Debug($"RtspCaptureService - VideoCapture created, IsOpened: {capture.IsOpened}");
                 if (!capture.IsOpened)
@@ -204,7 +213,7 @@ namespace AIWeather.Services
             CancellationToken cancellationToken,
             TaskCompletionSource<bool> firstFrame)
         {
-            var consecutiveFailures = 0;
+            var emptyReads = System.Diagnostics.Stopwatch.StartNew();
             var lastPublishedUtc = DateTime.MinValue;
 
             try
@@ -230,10 +239,9 @@ namespace AIWeather.Services
 
                     if (!ok || frame.IsEmpty)
                     {
-                        consecutiveFailures++;
-                        if (consecutiveFailures >= 25)
+                        if (emptyReads.Elapsed >= EmptyReadBudget)
                         {
-                            Logger.Warning("RtspCaptureService - Continuous reader stopped after 25 empty/failed frames");
+                            Logger.Warning("RtspCaptureService - Continuous reader exceeded the empty-frame time budget");
                             break;
                         }
 
@@ -241,7 +249,7 @@ namespace AIWeather.Services
                         continue;
                     }
 
-                    consecutiveFailures = 0;
+                    emptyReads.Restart();
                     var receivedUtc = DateTime.UtcNow;
                     if (receivedUtc - lastPublishedUtc < PublishInterval)
                     {
@@ -733,11 +741,21 @@ namespace AIWeather.Services
                         
                         // Save with JPEG encoder and quality settings
                         var jpegEncoder = GetEncoder(System.Drawing.Imaging.ImageFormat.Jpeg);
-                        var encoderParams = new System.Drawing.Imaging.EncoderParameters(1);
+                        using var encoderParams = new System.Drawing.Imaging.EncoderParameters(1);
                         encoderParams.Param[0] = new System.Drawing.Imaging.EncoderParameter(
                             System.Drawing.Imaging.Encoder.Quality, 90L);
                         
-                        clonedBitmap.Save(filePath, jpegEncoder, encoderParams);
+                        var partPath = filePath + "." + Guid.NewGuid().ToString("N") + ".part";
+                        try
+                        {
+                            clonedBitmap.Save(partPath, jpegEncoder, encoderParams);
+                            cancellationToken.ThrowIfCancellationRequested();
+                            File.Move(partPath, filePath, overwrite: true);
+                        }
+                        finally
+                        {
+                            if (File.Exists(partPath)) File.Delete(partPath);
+                        }
                     }
                 }, cancellationToken);
 

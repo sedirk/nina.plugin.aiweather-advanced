@@ -35,17 +35,20 @@ namespace NINA.Plugin.AIWeather.Test
         }
 
         private FakeDevice _device = null!;
+        private FakeDevice _environment = null!;
         private AIWeatherSafetyMonitor _monitor = null!;
         private DateTime _clock;
         private string _statusFile = null!;
         private string _wikiRoot = null!;
-        private (bool use, int mode, string progId, double high, double low, int maxAge, int interval, bool writeFile, string path) _before;
+        private string _decisionFolder = null!;
+        private (bool use, int mode, string progId, double high, double low, int maxAge, int interval, bool writeFile, string path, bool useEnv, string envProgId, bool confirm, string model, bool keep) _before;
 
         [SetUp]
         public void SetUp() {
             var s = global::AIWeather.Properties.Settings.Default;
             _before = (s.UseAscomSafetyMonitor, s.ExternalMonitorMode, s.AscomSafetyMonitorProgId, s.CloudCoverageThreshold, s.CloudCoverageSafeThreshold,
-                       s.MaxDataAgeMinutes, s.CheckIntervalMinutes, s.WriteSafetyStatusFile, s.SafetyStatusFilePath);
+                       s.MaxDataAgeMinutes, s.CheckIntervalMinutes, s.WriteSafetyStatusFile, s.SafetyStatusFilePath,
+                       s.UseEnvironmentSafetyMonitor, s.EnvironmentSafetyMonitorProgId, s.ConfirmTransitions, s.SelectedModel, s.KeepDecisionFrames);
             _statusFile = Path.Combine(Path.GetTempPath(), "aiweather-test-" + Guid.NewGuid().ToString("N") + ".txt");
             _wikiRoot = Path.Combine(Path.GetTempPath(), "aiweather-wiki-" + Guid.NewGuid().ToString("N"));
             LlmWikiRawWriter.RootOverride = _wikiRoot;
@@ -58,11 +61,17 @@ namespace NINA.Plugin.AIWeather.Test
             s.CheckIntervalMinutes = 5;
             s.WriteSafetyStatusFile = true;
             s.SafetyStatusFilePath = _statusFile;
+            s.UseEnvironmentSafetyMonitor = false;
+            s.EnvironmentSafetyMonitorProgId = "ASCOM.FakeEnvironment.SafetyMonitor";
 
             _device = new FakeDevice();
+            _environment = new FakeDevice();
             _clock = new DateTime(2026, 10, 16, 22, 0, 0, DateTimeKind.Utc);
-            _monitor = new AIWeatherSafetyMonitor(_device, observeSettings: false) { Connected = true };
+            _monitor = new AIWeatherSafetyMonitor(_device, _environment, observeSettings: false) { Connected = true };
             _monitor.UtcNow = () => _clock;
+            _decisionFolder = Path.Combine(Path.GetTempPath(), "aiweather-night-" + Guid.NewGuid().ToString("N"));
+            _monitor.Decisions = new DecisionArchive(_decisionFolder);
+            s.KeepDecisionFrames = true;
             SetField("_isMonitoring", true); // no timer or camera; replay results explicitly
         }
 
@@ -71,10 +80,12 @@ namespace NINA.Plugin.AIWeather.Test
             await _monitor.ShutdownAsync();
             var s = global::AIWeather.Properties.Settings.Default;
             (s.UseAscomSafetyMonitor, s.ExternalMonitorMode, s.AscomSafetyMonitorProgId, s.CloudCoverageThreshold, s.CloudCoverageSafeThreshold,
-             s.MaxDataAgeMinutes, s.CheckIntervalMinutes, s.WriteSafetyStatusFile, s.SafetyStatusFilePath) = _before;
+             s.MaxDataAgeMinutes, s.CheckIntervalMinutes, s.WriteSafetyStatusFile, s.SafetyStatusFilePath,
+             s.UseEnvironmentSafetyMonitor, s.EnvironmentSafetyMonitorProgId, s.ConfirmTransitions, s.SelectedModel, s.KeepDecisionFrames) = _before;
             LlmWikiRawWriter.RootOverride = null;
             try { File.Delete(_statusFile); } catch { }
             try { Directory.Delete(_wikiRoot, true); } catch { }
+            try { Directory.Delete(_decisionFolder, true); } catch { }
         }
 
         private static void Mode(ExternalMonitorMode mode) => global::AIWeather.Properties.Settings.Default.ExternalMonitorMode = (int)mode;
@@ -100,6 +111,87 @@ namespace NINA.Plugin.AIWeather.Test
 
         private string StatusFile => File.Exists(_statusFile) ? File.ReadAllText(_statusFile) : "(not written)";
 
+        /// <summary>The humidity monitor on the dome changed its mind; re-read after the 5 s cache.</summary>
+        private void EnvironmentSays(bool safe) {
+            global::AIWeather.Properties.Settings.Default.UseEnvironmentSafetyMonitor = true;
+            _environment.Safe = safe;
+            _clock = _clock.AddSeconds(6);
+        }
+
+        // ---- the follow-up: a humidity limit that no clear sky may override ----
+
+        [Test]
+        public void Or_HumidityMonitorVetoesAClearTargetAndACryingIrSensor() {
+            Mode(ExternalMonitorMode.Or);
+            DeviceSays(false);          // IR cries cloudy
+            EnvironmentSays(false);     // humidity above the limit
+            Analysis(10);               // the target is clear
+
+            _monitor.IsSafe.Should().BeFalse("(sky OR cloud sensor) AND environment");
+            _monitor.SafetyStateReason.Should().Be("Environment safety monitor reports unsafe");
+            StatusFile.Should().Be("Unsafe");
+
+            EnvironmentSays(true);      // the air dries
+            _monitor.IsSafe.Should().BeTrue();
+            _monitor.SafetyStateReason.Should().Be("Safe on the sky analysis alone — external monitor unsafe or unreadable");
+        }
+
+        [Test]
+        public void Or_HumidityMonitorUnreadable_ImagingStops() {
+            Mode(ExternalMonitorMode.Or);
+            DeviceSays(true);
+            EnvironmentSays(true);
+            Analysis(10);
+            _monitor.IsSafe.Should().BeTrue();
+
+            _environment.Readable = false;
+            _clock = _clock.AddSeconds(6);
+            _monitor.IsSafe.Should().BeFalse("a device that cannot be read is exactly what its owner installed it against");
+            _monitor.SafetyStateReason.Should().Be("Environment safety monitor cannot be connected or read");
+        }
+
+        [Test]
+        public void And_TheEnvironmentMonitorIsAThirdAndInput() {
+            Mode(ExternalMonitorMode.And);
+            DeviceSays(true);
+            EnvironmentSays(false);
+            Analysis(10);
+
+            _monitor.IsSafe.Should().BeFalse();
+            _monitor.SafetyStateReason.Should().Be("Environment safety monitor reports unsafe");
+
+            EnvironmentSays(true);
+            _monitor.IsSafe.Should().BeTrue();
+            _monitor.SafetyStateReason.Should().Contain("10%");
+        }
+
+        [Test]
+        public void TheEnvironmentMonitorWorksWithoutAFirstExternalMonitor() {
+            global::AIWeather.Properties.Settings.Default.UseAscomSafetyMonitor = false;
+            EnvironmentSays(false);
+            Analysis(10);
+            _monitor.IsSafe.Should().BeFalse();
+
+            EnvironmentSays(true);
+            _monitor.IsSafe.Should().BeTrue();
+        }
+
+        [Test]
+        public void TheTwoDevicesAreReadIndependently() {
+            // The IR driver dying must not take the humidity monitor with it, and vice versa.
+            Mode(ExternalMonitorMode.Or);
+            DeviceSays(true);
+            EnvironmentSays(true);
+            Analysis(70);                       // sky unsafe: the IR sensor carries the verdict
+            _monitor.IsSafe.Should().BeTrue();
+
+            _device.Readable = false;
+            _clock = _clock.AddSeconds(6);
+            _monitor.IsSafe.Should().BeFalse();
+            _monitor.SafetyStateReason.Should().Be("Cloud coverage 70% (safe below 30%); External safety monitor cannot be connected or read");
+            _environment.Connected.Should().BeTrue("the environment device was never touched");
+        }
+
         // ---- the reporter's night ----
 
         [Test]
@@ -122,6 +214,157 @@ namespace NINA.Plugin.AIWeather.Test
             _monitor.IsSafe.Should().BeFalse();
             _monitor.SafetyStateReason.Should().Be("External safety monitor reports unsafe");
             StatusFile.Should().Be("Unsafe");
+        }
+
+        [Test]
+        public void Or_IrSensorClearOverACloudyTarget_TheReasonNamesTheSensor() {
+            // Field report #19: combined SAFE on the sensor alone, and the panel said
+            // "Sky cloud coverage 90%" as if the state were unsafe. That case was missing.
+            Mode(ExternalMonitorMode.Or);
+            DeviceSays(true);
+            Analysis(90);
+
+            _monitor.IsSafe.Should().BeTrue();
+            _monitor.SafetyStateReason.Should().Contain("Safe on the external monitor alone").And.Contain("90%");
+            StatusFile.Should().Be("Safe");
+        }
+
+        [Test]
+        public void AChangeOfStateLeavesADecisionBehind() {
+            // #21: the frame behind an alert, kept with its explanation. Only changes are
+            // kept: an overcast night is one decision, not a hundred copies of it.
+            var folder = Path.Combine(Path.GetTempPath(), "aiweather-night-decisions-" + Guid.NewGuid().ToString("N"));
+            _monitor.Decisions = new DecisionArchive(folder);
+            global::AIWeather.Properties.Settings.Default.UseAscomSafetyMonitor = false;
+            try
+            {
+                Analysis(10);                   // first verdict after connecting
+                Analysis(90);                   // Safe -> Unsafe
+                Analysis(92);                   // still unsafe: nothing new to explain
+                Analysis(20);                   // Unsafe -> Safe
+
+                var texts = Directory.GetFiles(folder, "decision_*.txt").OrderBy(f => f).Select(File.ReadAllText).ToList();
+                texts.Should().HaveCount(3);
+                texts[0].Should().Contain("Decision: Start -> Safe");
+                texts[1].Should().Contain("Decision: Safe -> Unsafe").And.Contain("Cloud coverage: 90%").And.Contain("Provider: Test");
+                texts[2].Should().Contain("Decision: Unsafe -> Safe").And.Contain("Cloud coverage: 20%");
+            }
+            finally { try { Directory.Delete(folder, true); } catch { } }
+        }
+
+        [Test]
+        public void AFallbackVerdictIsFiledAsTheOfflineAnalyzers() {
+            // Seen live on 20 Oct: Anthropic refused (credit too low), the offline analyzer
+            // answered, and the decision file said "Provider: Anthropic (claude-haiku-5-5)".
+            // A file kept as evidence must name who actually looked at the frame.
+            var folder = Path.Combine(Path.GetTempPath(), "aiweather-fallback-decisions-" + Guid.NewGuid().ToString("N"));
+            _monitor.Decisions = new DecisionArchive(folder);
+            global::AIWeather.Properties.Settings.Default.UseAscomSafetyMonitor = false;
+            try
+            {
+                _clock = _clock.AddMinutes(5);
+                _monitor.ApplyAnalysisResult(new WeatherAnalysisResult
+                {
+                    Timestamp = _clock, CloudCoverage = 22, Condition = WeatherCondition.PartlyCloudy,
+                    IsSafeForImaging = true, Confidence = 73,
+                    Provenance = new AnalysisProvenance { Provider = "Local", Model = "onnx-student",
+                        Origin = AnalysisOrigin.LocalOnnx, IsFallback = true, FailureCategory = AnalysisFailureCategory.Authentication },
+                });
+
+                var text = File.ReadAllText(Directory.GetFiles(folder, "decision_*.txt").Single());
+                text.Should().Contain("Provider: Local (local fallback, online failure: Authentication) (onnx-student)");
+                text.Should().NotContain("claude-");
+            }
+            finally { try { Directory.Delete(folder, true); } catch { } }
+        }
+
+        // ---- #21, night 23-24 Oct: three Safe -> Unsafe -> Safe cycles from single readings ----
+
+        private static WeatherAnalysisResult Reading(double coverage) => new WeatherAnalysisResult
+        {
+            CloudCoverage = coverage, Condition = coverage < 50 ? WeatherCondition.Clear : WeatherCondition.MostlyCloudy,
+            IsSafeForImaging = coverage < 50, Confidence = 80, Provenance = AnalysisMetadata.Online(AnalysisOrigin.Gemini, "Test", "test-model", 1, 0),
+        };
+
+        [Test]
+        public async Task AChangeOfStateWantsASecondFrame() {
+            global::AIWeather.Properties.Settings.Default.UseAscomSafetyMonitor = false;
+            global::AIWeather.Properties.Settings.Default.ConfirmTransitions = true;
+            Analysis(10);
+            _monitor.IsSafe.Should().BeTrue();
+
+            var asked = 0;
+            // The first frame says 75%: a change. The second frame says 5%: the change is off.
+            var chosen = await _monitor.ResolveTransitionAsync(Reading(75), () => { asked++; return Task.FromResult<WeatherAnalysisResult?>(Reading(5)); });
+            asked.Should().Be(1);
+            chosen.CloudCoverage.Should().Be(5, "the second frame decides");
+
+            // Both frames say cloudy: the change goes through, with the second frame's numbers.
+            chosen = await _monitor.ResolveTransitionAsync(Reading(75), () => { asked++; return Task.FromResult<WeatherAnalysisResult?>(Reading(80)); });
+            asked.Should().Be(2);
+            chosen.CloudCoverage.Should().Be(80);
+
+            // No change proposed: no second frame.
+            chosen = await _monitor.ResolveTransitionAsync(Reading(12), () => { asked++; return Task.FromResult<WeatherAnalysisResult?>(Reading(5)); });
+            asked.Should().Be(2);
+            chosen.CloudCoverage.Should().Be(12);
+        }
+
+        [Test]
+        public async Task TheFirstVerdictAfterConnectingNeedsNoConfirmation() {
+            // Seen live: the state starts Unsafe with no verdict, so the first "Clear" looked
+            // like a change and waited twenty seconds for a second frame. Nothing to protect yet.
+            global::AIWeather.Properties.Settings.Default.UseAscomSafetyMonitor = false;
+            global::AIWeather.Properties.Settings.Default.ConfirmTransitions = true;
+            var asked = 0;
+            var chosen = await _monitor.ResolveTransitionAsync(Reading(5), () => { asked++; return Task.FromResult<WeatherAnalysisResult?>(Reading(5)); });
+            asked.Should().Be(0);
+            chosen.CloudCoverage.Should().Be(5);
+        }
+
+        [Test]
+        public async Task WithoutASecondFrameTheFirstReadingStands() {
+            global::AIWeather.Properties.Settings.Default.UseAscomSafetyMonitor = false;
+            global::AIWeather.Properties.Settings.Default.ConfirmTransitions = true;
+            Analysis(10);
+            var chosen = await _monitor.ResolveTransitionAsync(Reading(75), () => Task.FromResult<WeatherAnalysisResult?>(null));
+            chosen.CloudCoverage.Should().Be(75, "a camera that cannot deliver a second frame does not veto an Unsafe");
+        }
+
+        [Test]
+        public async Task ConfirmationCanBeSwitchedOff() {
+            global::AIWeather.Properties.Settings.Default.UseAscomSafetyMonitor = false;
+            global::AIWeather.Properties.Settings.Default.ConfirmTransitions = false;
+            Analysis(10);
+            var asked = 0;
+            var chosen = await _monitor.ResolveTransitionAsync(Reading(75), () => { asked++; return Task.FromResult<WeatherAnalysisResult?>(Reading(5)); });
+            asked.Should().Be(0);
+            chosen.CloudCoverage.Should().Be(75);
+        }
+
+        [Test]
+        public void ASafeSkyWithCloudsSaysHowMany() {
+            // "Sky clear and data current" at 53% was a lie (#21). Safe is not clear.
+            global::AIWeather.Properties.Settings.Default.UseAscomSafetyMonitor = false;
+            Analysis(10);
+            _monitor.SafetyStateReason.Should().Be("Sky safe: cloud coverage 10% (unsafe at 50%)");
+        }
+
+        [Test]
+        public void TheOfflineAnalyzerIsFiledWithoutACloudModelName() {
+            // Provider "Local (gemini-flash-lite-latest)" named a model that never saw the frame (#21).
+            var folder = Path.Combine(Path.GetTempPath(), "aiweather-local-decisions-" + Guid.NewGuid().ToString("N"));
+            _monitor.Decisions = new DecisionArchive(folder);
+            global::AIWeather.Properties.Settings.Default.UseAscomSafetyMonitor = false;
+            global::AIWeather.Properties.Settings.Default.SelectedModel = "gemini-flash-lite-latest";
+            try
+            {
+                _clock = _clock.AddMinutes(5);
+                _monitor.ApplyAnalysisResult(new WeatherAnalysisResult { CloudCoverage = 53, Condition = WeatherCondition.MostlyCloudy, IsSafeForImaging = true, Confidence = 60, Provenance = AnalysisMetadata.LocalOnnx(0) });
+                var text = File.ReadAllText(Directory.GetFiles(folder, "decision_*.txt").Single());
+                text.Should().Contain("Provider: Local").And.NotContain("gemini");
+            }
+            finally { try { Directory.Delete(folder, true); } catch { } }
         }
 
         [Test]
@@ -285,7 +528,7 @@ namespace NINA.Plugin.AIWeather.Test
 
             Analysis(10);
             _monitor.IsSafe.Should().BeTrue();
-            _monitor.SafetyStateReason.Should().Be("Sky clear and data current");
+            _monitor.SafetyStateReason.Should().Be("Sky safe: cloud coverage 10% (unsafe at 50%)");
         }
 
         [Test]
@@ -341,6 +584,18 @@ namespace NINA.Plugin.AIWeather.Test
             Snapshot().IsSafe.Should().BeFalse();
             Snapshot().SafetyDecisionFresh.Should().BeFalse();
             StatusFile.Should().Be("Unsafe");
+        }
+
+        [Test]
+        public async Task CancelledConnectCannotStartMonitoringOrOpenAnEnvironmentDevice() {
+            EnvironmentSays(true);
+            using var stop = new System.Threading.CancellationTokenSource();
+            stop.Cancel();
+            (await _monitor.Connect(stop.Token)).Should().BeFalse();
+            _monitor.Connected.Should().BeFalse();
+            _monitor.IsSafe.Should().BeFalse();
+            _environment.Connected.Should().BeFalse();
+            Field<bool>("_isMonitoring").Should().BeFalse();
         }
 
         [Test]
@@ -485,6 +740,31 @@ namespace NINA.Plugin.AIWeather.Test
             Follow(SafePrimary());
             SetField("_replicaFailure", failure);
             _monitor.IsSafe.Should().BeFalse();
+        }
+
+        [Test]
+        public void FollowingReplicaKeepsItsOwnEnvironmentVeto() {
+            Mode(ExternalMonitorMode.Or);
+            DeviceSays(true);
+            EnvironmentSays(false);
+            Follow(SafePrimary());
+            _monitor.IsSafe.Should().BeFalse("a safe primary cannot override this machine's environment device");
+            _monitor.SafetyStateReason.Should().Be("Environment safety monitor reports unsafe");
+            EnvironmentSays(true);
+            _monitor.IsSafe.Should().BeTrue();
+        }
+
+        [Test]
+        public void PrimaryPublishesAnEnvironmentVetoWithoutHidingFreshSky() {
+            Mode(ExternalMonitorMode.Or);
+            DeviceSays(true);
+            EnvironmentSays(false);
+            Analysis(10);
+            var snapshot = Snapshot();
+            snapshot.IsSafe.Should().BeFalse();
+            snapshot.SourceFresh.Should().BeTrue();
+            snapshot.SafetyReason.Should().Be("environment-monitor-unsafe");
+            StatusFile.Should().Be("Unsafe");
         }
 
         [Test]

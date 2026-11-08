@@ -128,6 +128,9 @@ namespace AIWeather.Services
         internal string ProviderName => GeminiProviderProfile.DisplayName(_serviceTier);
         private bool UsesQuotaCircuit => _serviceTier == GeminiServiceTier.Free;
 
+        /// <summary>Whether <see cref="InitializeAsync"/> accepted the configuration; without it every frame goes to the offline analyzer.</summary>
+        internal bool IsInitialized => _isInitialized;
+
         public Task<bool> InitializeAsync(CancellationToken cancellationToken = default)
         {
             if (string.IsNullOrWhiteSpace(_apiKey))

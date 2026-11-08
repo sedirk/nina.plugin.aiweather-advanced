@@ -2,6 +2,10 @@
 
 [简体中文](README.zh-CN.md) | English
 
+Local integration of upstream 1.16.0.0 and RTSP startup/cancellation fixes:
+[November 8 integration and validation notes](docs/UPSTREAM_MERGE_20261108.zh-CN.md).
+This work has not been deployed or released.
+
 A plugin for [N.I.N.A.](https://nighttime-imaging.eu/) (Nighttime Imaging 'N' Astronomy) that uses artificial intelligence to analyze images from all-sky cameras and determine real-time weather conditions. It integrates directly with NINA's safety monitoring system to automatically protect your astronomy equipment when conditions become unsafe.
 
 ## Why This Plugin?
@@ -339,7 +343,14 @@ Your support helps cover development tools, testing hardware, hosting and future
 
 ## License
 
-MIT License. See [LICENSE](LICENSE) for details.
+Current upstream-derived code includes the MPL-2.0 changes merged from upstream 1.16.0.0.
+See [LICENSE](LICENSE) and the original author's [NOTICE](NOTICE). Historical MIT notices
+are retained in [LICENSE-MIT-legacy](LICENSE-MIT-legacy).
+
+This integration is local development, not a newly published release. Upstream requires
+an independently named derivative with its own plugin GUID. The existing fork's identity
+has **not** silently been changed in this merge; a public release still needs that identity
+and settings-migration work.
 
 ## Contributing
 

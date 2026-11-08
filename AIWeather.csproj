@@ -66,6 +66,9 @@
 
   <ItemGroup>
     <Resource Include="icon.png" />
+    <Content Include="LICENSE;NOTICE;LICENSE-MIT-legacy">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
     <Content Include="ModelAssets\aiweather_mobilenetv3_test_v1.onnx">
       <Link>models\aiweather_mobilenetv3_test_v1.onnx</Link>
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>

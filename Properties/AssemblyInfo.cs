@@ -39,10 +39,10 @@ using System.Runtime.InteropServices;
 [assembly: AssemblyInformationalVersion("1.35.0.0")]
 
 // The license your plugin code is using
-[assembly: AssemblyMetadata("License", "MIT")]
+[assembly: AssemblyMetadata("License", "MPL-2.0")]
 
 // The url to the license
-[assembly: AssemblyMetadata("LicenseURL", "https://opensource.org/licenses/MIT")]
+[assembly: AssemblyMetadata("LicenseURL", "https://www.mozilla.org/en-US/MPL/2.0/")]
 
 // Common tags that quickly describe your plugin
 [assembly: AssemblyMetadata("Tags", "Weather,Safety Monitor,All Sky Camera,AI,RTSP")]
@@ -82,7 +82,6 @@ using System.Runtime.InteropServices;
 • Ollama / Custom (FREE, Local): Any vision model on a local OpenAI-compatible server (Ollama, LM Studio, llama.cpp, LocalAI) — no API key, full privacy
 • OpenAI: GPT-4o and GPT-4o Mini for high-accuracy cloud and weather analysis
 • Anthropic Claude: excellent at detailed image understanding
-(GitHub Models was retired by GitHub on July 30, 2026 and no longer works.)
 
 🛡️ SAFETY FEATURES:
 • Two Cloud Thresholds: a high one that turns the state Unsafe and a low one that lets it return to Safe, so a sky hovering around a single number does not flip the sequence back and forth
@@ -94,6 +93,7 @@ using System.Runtime.InteropServices;
 • Fail-Safe Data Expiry: the sky input expires after the Maximum data age (automatic means three check intervals and never below 10 minutes). Default AND or no external device then reports Unsafe; explicit OR may rely on a readable safe external device without refreshing the old image timestamp. Disconnection, stopped monitoring and daylight suspension always report Unsafe
 • External ASCOM Safety Monitor: choose a second safety device and how it combines with the sky verdict. AND (default) requires both inputs to be safe. Explicit OR permits either input to carry the verdict, except fresh rain, fog or unreadable sky remains Unsafe. Unreachable devices count as unsafe. A following LAN replica cannot use OR to bypass an unsafe or unreachable primary; external device settings stay local to each computer
 • It says WHY: the panel names the reason for the current state - a cloudy sky, data too old with the age and the limit, or an unreachable external device - instead of leaving it in the log
+• It keeps the evidence: every change of state saves the exact frame that was analysed with a text file next to it (time, provider and model, condition, coverage, confidence, thresholds, what each monitor said, the reason), for a number of days you choose. The morning after an alert you can see what the AI saw
 
 🧠 IT LEARNS YOUR SITE:
 • Camera view and site darkness: tell it whether the camera is an all-sky fisheye or a fixed camera looking at part of the sky, and whether the site is light-polluted (clouds look bright) or dark (clouds are black holes in the star field). The prompt is composed from the answers, so a black sky at a dark site reads as overcast instead of clear. A frame with no readable sky at all is reported as Unknown and treated as unsafe, and noise specks are not counted as stars
